@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>EOFATA — End of Future : ATA</title>
+<link rel="icon" href="data:," />
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+<div id="app">
+  <div id="stage">
+  <canvas id="game" width="1280" height="720"></canvas>
+
+  <!-- ================= HUD ================= -->
+  <div id="hud" class="hidden">
+    <div class="hud-corner tl">
+      <div class="vitals">
+        <div class="vbar shield">
+          <div class="fill" id="shieldFill"></div>
+          <div class="ticks"></div>
+          <span class="vlabel">SHD</span>
+          <span class="vnum" id="shieldNum">60</span>
+        </div>
+        <div class="vbar hp">
+          <div class="fill" id="hpFill"></div>
+          <span class="vlabel">VIT</span>
+          <span class="vnum" id="hpNum">100</span>
+        </div>
+      </div>
+      <div class="hud-tip">TAB 背包 · F 拾取 · R 换弹</div>
+    </div>
+
+    <div class="hud-corner tr">
+      <div class="data-box">
+        <span class="data-num" id="dataNum">100</span>
+        <span class="data-unit">NB</span>
+      </div>
+      <canvas id="minimap" width="192" height="144"></canvas>
+    </div>
+
+    <div class="hud-corner br">
+      <div class="weapon-panel">
+        <img id="wIcon" class="w-icon" alt="">
+        <div class="w-tag" id="wTag">力学</div>
+        <div class="w-name" id="wName">轨道步枪</div>
+        <div class="w-ammo"><span id="wMag">12</span><i>/</i><span id="wRes">1</span></div>
+        <div class="w-sub">
+          <span id="wResLabel">备弹 1 夹</span>
+          <span id="wReloadHint">R 换弹</span>
+        </div>
+        <div class="reload-bar"><i id="reloadFill"></i></div>
+      </div>
+    </div>
+
+    <div class="hud-corner bl">
+      <div class="slots" id="slots"></div>
+    </div>
+
+    <div class="hud-bottom-center">
+      <div class="extract-banner hidden" id="extractBanner">
+        <div class="ex-label">// 撤离同步中</div>
+        <div class="ex-bar"><i id="exFill"></i></div>
+        <div class="ex-pct" id="exPct">0%</div>
+      </div>
+      <div class="prompt hidden" id="prompt"></div>
+    </div>
+
+    <div class="toast-wrap" id="toastWrap"></div>
+    <div class="intro" id="intro">
+      <div>WASD 移动 · 鼠标瞄准 · 左键射击</div>
+      <div>按住 <b>SHIFT</b> 奔跑（消耗耐力）</div>
+      <div>搜刮发光容器，<b>TAB</b> 打开背包分解成 <b>数据</b></div>
+      <div>找到撤离台，站入范围坚持 6 秒</div>
+    </div>
+  </div>
+  </div>
+
+  <!-- ================= 背包 ================= -->
+  <div id="inventory" class="overlay hidden">
+    <div class="inv-panel">
+      <div class="inv-head">
+        <span class="inv-title">背包 / INVENTORY</span>
+        <span class="inv-cap"><em id="invCount">0</em> / 24</span>
+        <button class="x-btn" id="invClose">ESC</button>
+      </div>
+      <div class="inv-body">
+        <div class="inv-grid" id="invGrid">
+          <div class="inv-items" id="invItems"></div>
+          <div class="inv-drop" id="invDrop"></div>
+        </div>
+        <div class="inv-side">
+          <div class="inv-detail" id="invDetail">
+            <div class="dt-empty">选择物品查看详情<br /><span>右键分解为数据</span></div>
+          </div>
+          <div class="side-sec">
+            <div class="sec-title">弹药制造 <em>备弹上限 2 夹</em></div>
+            <div class="craft-list" id="craftList"></div>
+          </div>
+          <div class="side-sec">
+            <button class="action-btn" id="healBtn">
+              <span>治疗 · 回复全部生命</span><em>50 NB · 3.0s</em>
+            </button>
+          </div>
+          <div class="action-progress hidden" id="actionProg">
+            <div class="ap-label" id="apLabel">分解中</div>
+            <div class="ap-bar"><i id="apFill"></i></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= 大厅 / 配装 ================= -->
+  <div id="lobby" class="screen">
+    <div class="lobby-panel">
+      <div class="lobby-head">
+        <div class="lobby-brand">EOFATA<span>// 大厅</span></div>
+        <div class="lobby-bank">
+          <span>可用数据</span><b id="lobbyBank">300</b><em>NB</em>
+          <span class="lobby-best">最佳 <i id="lobbyBest">0</i> NB</span>
+        </div>
+      </div>
+
+      <div class="lobby-body">
+        <div class="lobby-left">
+          <div class="lobby-sub">选择携带武器<em id="lobbyPick">0 / 2</em></div>
+          <div class="lobby-weapons" id="lobbyWeapons"></div>
+          <div class="lobby-keys">
+            <span><b>WASD</b> 移动</span>
+            <span><b>SHIFT</b> 奔跑</span>
+            <span><b>左键</b> 射击</span>
+            <span><b>1/2</b> 切枪</span>
+            <span><b>R</b> 换弹</span>
+            <span><b>TAB</b> 背包</span>
+            <span><b>F</b> 拾取</span>
+          </div>
+          <button class="ghost-btn stash-open" id="lobbyStash">
+            仓库 · <b id="lobbyStashCount">0</b> 件 · <i id="lobbyStashValue">0</i> NB
+          </button>
+        </div>
+
+        <div class="lobby-right">
+          <div class="lobby-sub">配给初始弹夹<em>每把 0–3 个</em></div>
+          <div class="lobby-load" id="lobbyLoad"></div>
+          <div class="lobby-sub lobby-sub-gap">携带数据<em id="lobbyCarryMax">上限 0</em></div>
+          <div class="load-row carry-row">
+            <span class="lr-name">进局数据</span>
+            <button class="lr-btn" id="carryMinus">−</button>
+            <span class="lr-num wide" id="lobbyCarry">0</span>
+            <button class="lr-btn" id="carryPlus">+</button>
+            <button class="lr-all" id="carryAll">全部</button>
+          </div>
+          <div class="lobby-calc">
+            <div class="row"><span>配给 + 携带消耗</span><b id="lobbyCost">0</b><em>NB</em></div>
+            <div class="row"><span>进场后账户</span><b id="lobbyRemain">300</b><em>NB</em></div>
+          </div>
+          <button id="lobbyStart" class="big-btn small dis">进入设施</button>
+          <div class="lobby-warn" id="lobbyWarn"></div>
+          <div class="lobby-msg" id="lobbyMsg"></div>
+          <div class="lobby-tip">配给 ≥1 个时枪内直接上弹，最多 3 个（1 上弹 + 2 备弹）。撤离后未花完的携带数据会退回仓库。</div>
+        </div>
+      </div>
+
+      <div class="lobby-foot">死亡不影响账户；撤离后本局剩余数据会存入账户。</div>
+    </div>
+  </div>
+
+  <!-- ================= 暂停 ================= -->
+  <div id="pause" class="screen hidden">
+    <div class="mini-panel">
+      <div class="mini-title">已暂停 / PAUSED</div>
+      <button class="big-btn small" id="resumeBtn">继续</button>
+      <button class="ghost-btn" id="muteBtn">音效：开</button>
+      <button class="ghost-btn" id="restartBtn2">放弃行动 · 返回大厅</button>
+      <div class="mini-foot">ESC 返回</div>
+    </div>
+  </div>
+
+  <!-- ================= 结算 ================= -->
+  <div id="results" class="screen hidden">
+    <div class="mini-panel result-panel">
+      <div class="res-tag" id="resTag">// SIGNAL LOST</div>
+      <div class="res-title" id="resTitle">信号中断</div>
+      <div class="res-grid">
+        <div><span>击杀</span><b id="resKills">0</b></div>
+        <div><span>拾取</span><b id="resLoot">0</b></div>
+        <div><span>数据</span><b id="resData">0 NB</b></div>
+        <div><span>用时</span><b id="resTime">00:00</b></div>
+      </div>
+      <div class="res-note" id="resNote"></div>
+      <div class="res-best" id="resBest"></div>
+      <button class="big-btn" id="againBtn">返回大厅</button>
+      <div class="mini-foot">R / ESC 返回大厅</div>
+    </div>
+  </div>
+
+  <!-- ================= 仓库 ================= -->
+  <div id="stash" class="screen hidden">
+    <div class="stash-panel">
+      <div class="stash-head">
+        <div class="stash-title">仓库<span>// STASH</span></div>
+        <div class="stash-meta">
+          <span>数据 <b id="stashBank">0</b> NB</span>
+          <span>物资 <b id="stashCount">0</b> 件 · <b id="stashValue">0</b> NB</span>
+        </div>
+        <button class="ghost-btn" id="stashClose">关闭 ESC</button>
+      </div>
+      <div class="stash-body">
+        <div class="stash-grid" id="stashGrid">
+          <div class="stash-items" id="stashItems"></div>
+        </div>
+        <div class="stash-side">
+          <div class="lobby-sub">物品详情</div>
+          <div class="stash-detail" id="stashDetail"></div>
+          <button class="big-btn small" id="stashAll">全部拆解</button>
+          <div class="stash-msg" id="stashMsg"></div>
+          <div class="stash-tip">右键单件 → 立即分解（不消耗时间）<br>左键查看详情</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="scanlines"></div>
+  <div class="vignette" id="vignette"></div>
+</div>
+
+<script src="js/config.js"></script>
+<script src="js/utils.js"></script>
+<script src="js/audio.js"></script>
+<script src="js/input.js"></script>
+<script src="js/map.js"></script>
+<script src="js/weapons.js"></script>
+<script src="js/inventory.js"></script>
+<script src="js/hud.js"></script>
+<script src="js/lobby.js"></script>
+<script src="js/stash.js"></script>
+<script src="js/sprites.js"></script>
+<script src="js/game.js"></script>
+</body>
+</html>
