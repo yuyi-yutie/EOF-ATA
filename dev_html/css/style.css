@@ -57,11 +57,11 @@ body{
 }
 .vignette{
   position:fixed;inset:0;pointer-events:none;z-index:59;
-  background:radial-gradient(ellipse at center,transparent 62%,rgba(0,0,0,.3) 100%);
+  background:radial-gradient(ellipse at center,transparent 62%,rgba(0,0,0,.12) 100%);
   transition:background .12s linear;
 }
 .vignette.hurt{
-  background:radial-gradient(ellipse at center,transparent 30%,rgba(255,40,30,.35) 100%);
+  background:radial-gradient(ellipse at center,transparent 46%,rgba(255,40,30,.16) 100%);
 }
 
 /* ---------- HUD ---------- */
@@ -80,33 +80,72 @@ body{
   transform:skewX(-16deg);
   overflow:hidden;
 }
-.vbar .fill{position:absolute;inset:0;width:100%;transform-origin:left center;transition:width .12s linear}
+.vbar .fill{
+  position:absolute;inset:0;width:100%;z-index:2;
+  transform-origin:left center;
+  transition:width .12s linear;
+}
+/* 受伤拖尾：比实际条慢半拍收缩，形成残影 */
+.vbar .trail{
+  position:absolute;inset:0;width:100%;z-index:1;display:block;
+  transition:width .55s cubic-bezier(.16,.84,.32,1);
+}
+/* 条内流光 */
+.vbar .fill::after{
+  content:"";position:absolute;inset:0;pointer-events:none;
+  background:linear-gradient(105deg,transparent 30%,rgba(255,255,255,.26) 50%,transparent 70%);
+  transform:translateX(-130%);
+  animation:barSweep 4.6s cubic-bezier(.45,.05,.25,1) infinite;
+}
+.vbar.shield .fill::after{animation-delay:.8s}
+.vbar.stamina .fill::after{animation-delay:1.6s}
 .vbar.shield{border-color:#3b5566}
 .vbar.shield .fill{background:linear-gradient(90deg,#3d7f9c,#8fd8f2)}
+.vbar.shield .trail{background:rgba(159,230,255,.5)}
 .vbar.hp{border-color:#5a2f2f;height:20px}
 .vbar.hp .fill{background:linear-gradient(90deg,#8c2b24,#ff5a4d)}
+.vbar.hp .trail{background:rgba(255,120,100,.5)}
+/* 耐力条：与生命/护盾同款斜切条，置于左上角生命组底部 */
+.vbar.stamina{border-color:#4f3d1d;height:14px}
+.vbar.stamina .fill{background:linear-gradient(90deg,#7a5a1e,#ffb648)}
+.vbar.stamina .trail{background:rgba(255,196,110,.5)}
+.vbar.stamina.low .fill{background:linear-gradient(90deg,#8c4a1c,#ff8a4d)}
+.vbar.stamina.exhausted .fill{background:linear-gradient(90deg,#8c2b24,#ff5a4d)}
+.vbar.stamina.exhausted{
+  border-color:#7d2b25;
+  animation:staminaPulse .42s ease-in-out infinite alternate;
+}
+.vbar.stamina.sprint{
+  border-color:rgba(255,182,72,.9);
+  box-shadow:0 0 14px rgba(255,182,72,.22);
+}
+.vbar.hp.low{animation:hpPulse 1.05s ease-in-out infinite}
+.vbar.shield.off{opacity:.55}
 .vbar .ticks{
-  position:absolute;inset:0;
+  position:absolute;inset:0;z-index:3;
   background:repeating-linear-gradient(90deg,transparent 0 24px,rgba(0,0,0,.55) 24px 26px);
 }
 .vlabel{
   position:absolute;left:8px;top:50%;transform:translateY(-50%) skewX(16deg);
   font-family:var(--mono);font-size:9px;letter-spacing:2px;color:rgba(255,255,255,.62);
+  z-index:4;
 }
 .vnum{
   position:absolute;right:8px;top:50%;transform:translateY(-50%) skewX(16deg);
   font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;letter-spacing:1px;
-  text-shadow:0 0 6px rgba(0,0,0,.9);
+  text-shadow:0 0 6px rgba(0,0,0,.9);z-index:4;
 }
+.vbar.stamina .vnum{font-size:11px}
+.vnum.pop{animation:numPop .26s cubic-bezier(.2,.9,.3,1.4)}
 .hud-tip{
-  font-family:var(--mono);font-size:10px;letter-spacing:1.5px;color:var(--txt-dim);
-  opacity:.8;
+  font-family:var(--mono);font-size:10px;letter-spacing:1.5px;color:#3f4b57;
+  opacity:.95;text-shadow:0 1px 2px rgba(0,0,0,.85),0 0 6px rgba(0,0,0,.35);
 }
 
 .data-box{
   display:flex;align-items:baseline;gap:6px;
   padding:6px 14px 8px;
-  background:linear-gradient(180deg,rgba(255,182,72,.10),rgba(255,182,72,.02));
+  background:linear-gradient(180deg,rgba(28,23,14,.92),rgba(12,13,15,.86));
   border:1px solid rgba(255,182,72,.35);
   border-left:3px solid var(--amber);
   clip-path:polygon(0 0,100% 0,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%);
@@ -140,17 +179,25 @@ body{
   filter:brightness(1.2) drop-shadow(0 0 12px rgba(0,0,0,.55));
 }
 .w-ammo{font-family:var(--mono);line-height:1;letter-spacing:1px}
-.w-ammo #wMag{font-size:38px;font-weight:700;color:#fff;text-shadow:0 0 14px rgba(255,255,255,.25)}
+.w-ammo #wMag{
+  display:inline-block;font-size:38px;font-weight:700;color:#fff;
+  text-shadow:0 0 14px rgba(255,255,255,.25);
+}
+.w-ammo #wMag.pop{animation:magPop .2s ease-out}
 .w-ammo i{font-style:normal;color:var(--txt-dim);font-size:18px;margin:0 6px}
 .w-ammo #wRes{font-size:20px;color:var(--txt-dim)}
 .w-sub{display:flex;justify-content:flex-end;gap:14px;font-family:var(--mono);font-size:10px;color:var(--txt-dim);margin-top:2px}
 .reload-bar{height:2px;background:rgba(255,255,255,.08);margin-top:6px;overflow:hidden}
-.reload-bar i{display:block;height:100%;width:0;background:var(--amber);box-shadow:0 0 8px var(--amber)}
+.reload-bar i{display:block;height:100%;width:0;background:var(--amber);box-shadow:0 0 8px var(--amber);transition:width .1s linear}
+.weapon-panel.reloading .reload-bar i{animation:reloadGlow .55s ease-in-out infinite alternate}
+.weapon-panel.reloading{border-right-color:var(--ice)}
+.weapon-panel.kick{animation:wpKick .16s ease-out}
+.weapon-panel.swap{animation:wpSwap .26s cubic-bezier(.2,.8,.2,1)}
 
 .slots{display:flex;gap:6px}
 .slot{
   width:88px;height:60px;position:relative;overflow:hidden;
-  background:rgba(9,12,14,.72);
+  background:rgba(9,12,14,.9);
   border:1px solid var(--line);
   display:flex;flex-direction:column;justify-content:flex-end;padding:3px 6px 5px;
   pointer-events:auto;cursor:pointer;
@@ -211,8 +258,9 @@ body{
 
 .intro{
   position:absolute;left:50%;bottom:170px;transform:translateX(-50%);
-  text-align:center;font-size:13px;line-height:1.9;color:#9aa6b1;letter-spacing:1px;
+  text-align:center;font-size:13px;line-height:1.9;color:#46525f;letter-spacing:1px;
   opacity:0;transition:opacity .9s ease;pointer-events:none;
+  text-shadow:0 1px 3px rgba(0,0,0,.95),0 0 10px rgba(0,0,0,.55);
 }
 .intro b{color:var(--amber)}
 
@@ -296,6 +344,26 @@ body{
 .lobby-right{width:372px;display:flex;flex-direction:column;gap:8px}
 .lobby-sub{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;letter-spacing:2px;color:var(--txt-dim)}
 .lobby-sub em{font-style:normal;color:var(--amber);letter-spacing:1px}
+.lobby-sub-gap2{margin-top:16px}
+.lobby-chars{display:flex;gap:8px;margin-top:10px}
+.pc-card{
+  display:flex;align-items:center;gap:10px;
+  padding:6px 14px 6px 8px;
+  border:1px solid var(--line);background:rgba(9,12,14,.72);
+  cursor:pointer;pointer-events:auto;
+  transition:border-color .12s,background .12s,transform .12s;
+}
+.pc-card:hover{border-color:var(--line2);transform:translateY(-1px)}
+.pc-card.on{
+  border-color:var(--amber);
+  background:rgba(255,182,72,.09);
+  box-shadow:0 0 0 1px rgba(255,182,72,.22) inset;
+}
+.pc-card img{height:54px;width:auto;display:block;filter:drop-shadow(0 2px 6px rgba(0,0,0,.55))}
+.pc-meta{display:flex;flex-direction:column;gap:2px}
+.pc-name{font-size:12px;color:#cfd8e0;letter-spacing:1px}
+.pc-tag{font-family:var(--mono);font-size:9px;color:var(--txt-dim);letter-spacing:1px}
+.pc-card.on .pc-name{color:#fff}
 .lobby-weapons{display:flex;flex-direction:column;gap:8px;margin-top:10px}
 .wp-card{
   display:grid;grid-template-columns:52px 1fr auto 20px;align-items:center;gap:10px;
@@ -547,4 +615,208 @@ body{
 .action-progress{padding:8px 10px;border:1px solid var(--line);background:#0a0d10}
 .ap-label{font-family:var(--mono);font-size:9px;letter-spacing:2px;color:var(--amber);margin-bottom:6px}
 .ap-bar{height:3px;background:rgba(255,255,255,.08);overflow:hidden}
-.ap-bar i{display:block;height:100%;width:0;background:var(--amber);box-shadow:0 0 8px var(--amber)}
+.ap-bar i{display:block;height:100%;width:0;background:var(--amber);box-shadow:0 0 8px var(--amber);transition:width .1s linear}
+
+/* ============================================================
+   UI 动效层
+   —— 入场 / 状态反馈 / 微交互；全部为纯 CSS，数值更新由 JS 打类触发
+   ============================================================ */
+
+/* ---------- HUD 入场 ---------- */
+#hud .hud-corner{--dx:-14px}
+#hud .tr,#hud .br{--dx:14px}
+#hud:not(.hidden) .hud-corner{
+  animation:hudIn .46s cubic-bezier(.22,.9,.28,1) both;
+}
+#hud:not(.hidden) .tl{animation-delay:.02s}
+#hud:not(.hidden) .tr{animation-delay:.09s}
+#hud:not(.hidden) .bl{animation-delay:.16s}
+#hud:not(.hidden) .br{animation-delay:.23s}
+#hud:not(.hidden) .vitals{animation:vitalsIn .5s cubic-bezier(.22,.9,.28,1) both}
+
+/* ---------- 数值反馈 ---------- */
+.data-box.flash{animation:dataFlash .5s ease-out}
+.data-num.pop{animation:dataPop .3s cubic-bezier(.2,.9,.3,1.3)}
+
+/* ---------- 武器槽 ---------- */
+.slot{animation:slotIn .3s cubic-bezier(.2,.8,.2,1) backwards}
+.slot:nth-child(2){animation-delay:.06s}
+.slot.active::after{
+  content:"";position:absolute;inset:0;pointer-events:none;
+  animation:slotPulse .6s ease-out;
+}
+.slot:active{transform:translateY(0) scale(.97)}
+
+/* ---------- 提示 / 撤离 / 进度 ---------- */
+.prompt:not(.hidden){animation:promptIn .2s cubic-bezier(.2,.8,.2,1)}
+.extract-banner:not(.hidden){
+  animation:bannerIn .3s ease-out, bannerGlow 1.3s ease-in-out .3s infinite alternate;
+}
+.ex-bar i{transition:width .1s linear}
+
+/* ---------- 屏幕 / 面板 ---------- */
+.screen:not(.hidden){animation:screenIn .24s ease-out}
+.screen:not(.hidden) > *{animation:panelIn .42s cubic-bezier(.2,.9,.25,1) both}
+.overlay:not(.hidden){animation:screenIn .2s ease-out}
+.overlay:not(.hidden) > *{animation:panelIn .34s cubic-bezier(.2,.9,.25,1) both}
+
+/* ---------- 大厅 / 结算 列表 ---------- */
+.wp-card{animation:cardIn .36s cubic-bezier(.2,.8,.2,1) backwards}
+.wp-card:nth-child(1){animation-delay:.03s}
+.wp-card:nth-child(2){animation-delay:.07s}
+.wp-card:nth-child(3){animation-delay:.11s}
+.wp-card:nth-child(4){animation-delay:.15s}
+.wp-card:nth-child(5){animation-delay:.19s}
+.wp-card:hover{transform:translateX(2px)}
+.res-grid div{animation:rowIn .34s ease-out backwards}
+.res-grid div:nth-child(1){animation-delay:.08s}
+.res-grid div:nth-child(2){animation-delay:.13s}
+.res-grid div:nth-child(3){animation-delay:.18s}
+.res-grid div:nth-child(4){animation-delay:.23s}
+.result-panel .res-title{animation:titleIn .5s cubic-bezier(.2,.9,.3,1.25) backwards}
+.result-panel .res-tag{animation:fadeUp .4s ease-out backwards}
+.result-panel .big-btn{animation:fadeUp .45s ease-out .3s backwards}
+
+/* ---------- 按钮流光 ---------- */
+.big-btn{position:relative;overflow:hidden}
+.big-btn::after{
+  content:"";position:absolute;top:0;left:0;width:34%;height:100%;
+  background:linear-gradient(100deg,transparent,rgba(255,255,255,.5),transparent);
+  transform:translateX(-140%) skewX(-20deg);pointer-events:none;
+  animation:btnSheen 4.2s ease-in-out infinite;
+}
+.big-btn:active{transform:translateY(1px) scale(.995)}
+#lobbyStart.dis::after{display:none}
+
+/* ---------- 微交互 ---------- */
+.craft-row,.action-btn,.lr-btn,.lr-all,.ghost-btn,.wp-card,.res-grid div,
+.inv-item,.stash-item,.cell,.x-btn{transition:transform .14s ease,border-color .14s ease,background .14s ease,color .14s ease,box-shadow .14s ease}
+.craft-row:hover{transform:translateX(2px)}
+.lr-btn:hover{transform:translateY(-1px)}
+.lr-all:hover{transform:translateY(-1px)}
+.ghost-btn:active{transform:translateY(1px)}
+.inv-item:hover{border-color:var(--line2);box-shadow:0 0 14px rgba(255,182,72,.14)}
+.stash-item:hover{border-color:var(--amber);box-shadow:0 0 12px rgba(255,182,72,.16)}
+
+/* ---------- 开场提示行 ---------- */
+.intro div{animation:introLine .55s ease-out backwards}
+.intro div:nth-child(1){animation-delay:.05s}
+.intro div:nth-child(2){animation-delay:.16s}
+.intro div:nth-child(3){animation-delay:.27s}
+.intro div:nth-child(4){animation-delay:.38s}
+
+/* ---------- 关键帧 ---------- */
+@keyframes hudIn{
+  from{opacity:0;transform:translateX(var(--dx)) translateY(-4px)}
+  to{opacity:1;transform:none}
+}
+@keyframes vitalsIn{
+  from{opacity:0;transform:translateX(-10px)}
+  to{opacity:1;transform:none}
+}
+@keyframes numPop{
+  0%{transform:translateY(-50%) skewX(16deg) scale(1)}
+  38%{transform:translateY(-50%) skewX(16deg) scale(1.3)}
+  100%{transform:translateY(-50%) skewX(16deg) scale(1)}
+}
+@keyframes magPop{
+  0%{transform:scale(1)}
+  40%{transform:scale(1.18) translateY(-2px)}
+  100%{transform:scale(1)}
+}
+@keyframes dataPop{
+  0%{transform:scale(1)}
+  35%{transform:scale(1.12)}
+  100%{transform:scale(1)}
+}
+@keyframes dataFlash{
+  0%{box-shadow:inset 0 0 26px rgba(255,182,72,.55)}
+  100%{box-shadow:inset 0 0 0 rgba(255,182,72,0)}
+}
+@keyframes barSweep{
+  0%,62%{transform:translateX(-130%)}
+  92%,100%{transform:translateX(330%)}
+}
+@keyframes staminaPulse{
+  from{border-color:#7d2b25;box-shadow:0 0 0 rgba(255,90,77,0)}
+  to{border-color:#ff5a4d;box-shadow:0 0 16px rgba(255,90,77,.4)}
+}
+@keyframes hpPulse{
+  0%,100%{border-color:#5a2f2f;box-shadow:0 0 0 rgba(255,90,77,0)}
+  50%{border-color:#ff5a4d;box-shadow:0 0 15px rgba(255,90,77,.34)}
+}
+@keyframes slotIn{
+  from{opacity:0;transform:translateY(12px)}
+  to{opacity:1;transform:none}
+}
+@keyframes slotPulse{
+  0%{box-shadow:0 0 0 0 rgba(255,182,72,.55) inset;opacity:1}
+  100%{box-shadow:0 0 0 14px rgba(255,182,72,0) inset;opacity:0}
+}
+@keyframes wpKick{
+  0%{transform:translate(0,0)}
+  25%{transform:translate(-5px,3px)}
+  60%{transform:translate(2px,-1px)}
+  100%{transform:none}
+}
+@keyframes wpSwap{
+  0%{opacity:.35;transform:translateX(16px)}
+  100%{opacity:1;transform:none}
+}
+@keyframes reloadGlow{
+  from{box-shadow:0 0 6px var(--amber)}
+  to{box-shadow:0 0 14px var(--ice);background:var(--ice)}
+}
+@keyframes promptIn{
+  from{opacity:0;transform:translateY(7px)}
+  to{opacity:1;transform:none}
+}
+@keyframes bannerIn{
+  from{opacity:0;transform:translateY(10px) scale(.97)}
+  to{opacity:1;transform:none}
+}
+@keyframes bannerGlow{
+  from{border-color:rgba(159,230,255,.35);box-shadow:0 0 16px rgba(159,230,255,.10)}
+  to{border-color:rgba(159,230,255,.85);box-shadow:0 0 30px rgba(159,230,255,.28)}
+}
+@keyframes screenIn{
+  from{opacity:0}
+  to{opacity:1}
+}
+@keyframes panelIn{
+  from{opacity:0;transform:translateY(16px) scale(.985)}
+  to{opacity:1;transform:none}
+}
+@keyframes cardIn{
+  from{opacity:0;transform:translateY(10px)}
+  to{opacity:1;transform:none}
+}
+@keyframes rowIn{
+  from{opacity:0;transform:translateY(8px)}
+  to{opacity:1;transform:none}
+}
+@keyframes titleIn{
+  0%{opacity:0;transform:translateY(-10px) scale(1.05);letter-spacing:18px}
+  100%{opacity:1;transform:none}
+}
+@keyframes fadeUp{
+  from{opacity:0;transform:translateY(8px)}
+  to{opacity:1;transform:none}
+}
+@keyframes btnSheen{
+  0%,70%{transform:translateX(-140%) skewX(-20deg)}
+  95%,100%{transform:translateX(420%) skewX(-20deg)}
+}
+@keyframes introLine{
+  from{opacity:0;transform:translateY(6px)}
+  to{opacity:1;transform:none}
+}
+
+/* ---------- 无障碍：减少动态 ---------- */
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{
+    animation-duration:.001ms !important;
+    animation-iteration-count:1 !important;
+    transition-duration:.001ms !important;
+  }
+}

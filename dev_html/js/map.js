@@ -288,142 +288,74 @@ const MapGen = (() => {
 
   /* ---------- 预渲染 ---------- */
   function buildVisuals(map) {
-    const { tiles, W, H, bmask, cmask } = map;
+    const { tiles, W, H } = map;
     const T = CFG.TILE;
     const cv = document.createElement('canvas');
     cv.width = W * T;
     cv.height = H * T;
     const g = cv.getContext('2d');
 
-    g.fillStyle = '#03060c';
-    g.fillRect(0, 0, cv.width, cv.height);
+    const rawAt = (x, y) => (x < 0 || y < 0 || x >= W || y >= H) ? 2 : tiles[y * W + x];
+    const floorAt = (x, y) => rawAt(x, y) === 1;
 
-    /* 地面 */
-    for (let y = 1; y < H - 1; y++) {
-      for (let x = 1; x < W - 1; x++) {
-        if (tiles[y * W + x] !== 1) continue;
-        const n = (x * 7 + y * 13) % 7;
-        g.fillStyle = n === 0 ? '#0e1c2c' : n === 1 ? '#0b1726' : n === 2 ? '#0d1a29' : '#0c1826';
-        g.fillRect(x * T, y * T, T, T);
-        g.strokeStyle = 'rgba(90,210,255,0.10)';
-        g.lineWidth = 1;
-        g.strokeRect(x * T + 0.5, y * T + 0.5, T - 1, T - 1);
-      }
-    }
-
-    /* 地面涂装（停机坪 / 引导线） */
-    for (let i = 0; i < 4; i++) {
-      const cx = rnd(6, W - 6) * T;
-      const cy = rnd(6, H - 6) * T;
-      const r = rnd(70, 160);
-      g.strokeStyle = 'rgba(90,220,255,0.09)';
-      g.lineWidth = 2;
-      g.beginPath(); g.arc(cx, cy, r, 0, TAU); g.stroke();
-      g.beginPath(); g.arc(cx, cy, r * 0.55, 0, TAU); g.stroke();
-      g.beginPath();
-      g.moveTo(cx - r * 1.25, cy);
-      g.lineTo(cx + r * 1.25, cy);
-      g.stroke();
-    }
-
-    /* 地面污渍 */
-    for (let i = 0; i < 110; i++) {
-      const x = rnd(2, W - 2) * T;
-      const y = rnd(2, H - 2) * T;
-      if (MapGen.isWall(map, x, y)) continue;
-      g.fillStyle = 'rgba(0,4,10,0.3)';
-      g.beginPath();
-      g.ellipse(x, y, rnd(8, 36), rnd(5, 20), rnd(0, TAU), 0, TAU);
-      g.fill();
-    }
-
-    /* 室内地坪：略暖，和室外地面区分 */
-    for (const b of map.buildings) {
-      const x0 = (b.x + 1) * T, y0 = (b.y + 1) * T;
-      const w = (b.w - 2) * T, h = (b.h - 2) * T;
-      if (w <= 0 || h <= 0) continue;
-      const cx = x0 + w / 2, cy = y0 + h / 2;
-      const grad = g.createRadialGradient(cx, cy, 10, cx, cy, Math.max(w, h) * 0.62);
-      grad.addColorStop(0, 'rgba(90,215,255,0.08)');
-      grad.addColorStop(1, 'rgba(90,215,255,0)');
-      g.fillStyle = grad;
-      g.fillRect(x0, y0, w, h);
-
-      g.strokeStyle = 'rgba(90,215,255,0.16)';
-      g.lineWidth = 1;
-      g.strokeRect(x0 + 1.5, y0 + 1.5, w - 3, h - 3);
-    }
-
-    /* 建筑墙体：近黑实心 + 青色霓虹轮廓 */
-    for (let y = 1; y < H - 1; y++) {
-      for (let x = 1; x < W - 1; x++) {
-        if (!bmask[y * W + x]) continue;
-        const x0 = x * T, y0 = y * T;
-        g.fillStyle = '#02050a';
-        g.fillRect(x0, y0, T, T);
-
-        const above = tiles[(y - 1) * W + x] === 1;
-        const below = tiles[(y + 1) * W + x] === 1;
-        const left = tiles[y * W + x - 1] === 1;
-        const right = tiles[y * W + x + 1] === 1;
-
-        if (above) {
-          g.fillStyle = 'rgba(90,215,255,0.16)';
-          g.fillRect(x0, y0, T, 6);
-          g.fillStyle = 'rgba(150,240,255,0.85)';
-          g.fillRect(x0, y0, T, 2);
-        }
-        if (below) {
-          g.fillStyle = 'rgba(90,215,255,0.1)';
-          g.fillRect(x0, y0 + T - 5, T, 5);
-          g.fillStyle = 'rgba(150,240,255,0.5)';
-          g.fillRect(x0, y0 + T - 2, T, 2);
-        }
-        if (left) {
-          g.fillStyle = 'rgba(150,240,255,0.5)';
-          g.fillRect(x0, y0, 2, T);
-        }
-        if (right) {
-          g.fillStyle = 'rgba(150,240,255,0.5)';
-          g.fillRect(x0 + T - 2, y0, 2, T);
+    /* 地板：按 80px 一块铺地砖，随机挑变体，避免整片重复 */
+    const floorTiles = MapTiles.floorTiles();
+    if (floorTiles) {
+      const B = MapTiles.FLOOR_WORLD;
+      const cols = Math.ceil(cv.width / B);
+      const rows = Math.ceil(cv.height / B);
+      for (let by = 0; by < rows; by++) {
+        for (let bx = 0; bx < cols; bx++) {
+          const h = ((bx * 73856093) ^ (by * 19349663)) >>> 0;
+          g.drawImage(floorTiles[h % floorTiles.length], bx * B, by * B);
         }
       }
+    } else {
+      g.fillStyle = MapTiles.FLOOR_FALLBACK;
+      g.fillRect(0, 0, cv.width, cv.height);
     }
 
-    /* 小掩体（货箱）：近黑箱体 + 青色轮廓 */
-    for (const c of map.covers) {
-      const x0 = c.x * T, y0 = c.y * T, w = c.w * T, h = c.h * T;
-      g.fillStyle = '#02060b';
-      g.fillRect(x0, y0, w, h);
-      g.fillStyle = 'rgba(90,215,255,0.07)';
-      g.fillRect(x0 + 2, y0 + 2, w - 4, h - 4);
-      g.strokeStyle = 'rgba(150,240,255,0.7)';
-      g.lineWidth = 2;
-      g.strokeRect(x0 + 1, y0 + 1, w - 2, h - 2);
-      g.strokeStyle = 'rgba(90,215,255,0.45)';
-      g.lineWidth = 1;
-      g.beginPath();
-      g.moveTo(x0 + 5, y0 + 5); g.lineTo(x0 + w - 5, y0 + h - 5);
-      g.moveTo(x0 + w - 5, y0 + 5); g.lineTo(x0 + 5, y0 + h - 5);
-      g.stroke();
-      g.fillStyle = 'rgba(180,250,255,0.35)';
-      g.fillRect(x0 + 2, y0 + 2, w - 4, 2);
-    }
-
-    /* 边界墙 */
+    /* 墙体：瓦片纹理 */
+    const wallPat = MapTiles.wallPattern(g);
+    g.fillStyle = wallPat || MapTiles.WALL_FALLBACK;
     for (let y = 0; y < H; y++) {
       for (let x = 0; x < W; x++) {
-        if (tiles[y * W + x] === 1) continue;
-        if (bmask[y * W + x] || cmask[y * W + x]) continue;
-        g.fillStyle = (x + y) % 2 === 0 ? '#01040a' : '#02060c';
+        if (floorAt(x, y)) continue;
         g.fillRect(x * T, y * T, T, T);
-        const above = y > 0 && tiles[(y - 1) * W + x] === 1;
-        if (above) {
-          g.fillStyle = 'rgba(90,215,255,0.12)';
-          g.fillRect(x * T, y * T, T, 5);
-          g.fillStyle = 'rgba(150,240,255,0.6)';
-          g.fillRect(x * T, y * T, T, 2);
+      }
+    }
+
+    /* 墙脚投影：紧贴墙体下方的地板压一层软阴影 */
+    for (let y = 1; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        if (!floorAt(x, y) || floorAt(x, y - 1)) continue;
+        const grad = g.createLinearGradient(0, y * T, 0, y * T + 16);
+        grad.addColorStop(0, MapTiles.SHADOW);
+        grad.addColorStop(1, 'rgba(74,54,32,0)');
+        g.fillStyle = grad;
+        g.fillRect(x * T, y * T, T, 16);
+      }
+    }
+
+    /* 墙体：下沿可见侧面 + 描边 */
+    const SIDE = 9;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        if (floorAt(x, y)) continue;
+        const x0 = x * T, y0 = y * T;
+
+        if (floorAt(x, y + 1)) {
+          g.fillStyle = MapTiles.SIDE_COLOR;
+          g.fillRect(x0, y0 + T - SIDE, T, SIDE);
+          g.fillStyle = 'rgba(0,0,0,0.30)';
+          g.fillRect(x0, y0 + T - SIDE, T, 2);
         }
+
+        g.fillStyle = MapTiles.OUTLINE;
+        if (floorAt(x, y - 1)) g.fillRect(x0, y0, T, 2);
+        if (floorAt(x, y + 1)) g.fillRect(x0, y0 + T - 2, T, 2);
+        if (floorAt(x - 1, y)) g.fillRect(x0, y0, 2, T);
+        if (floorAt(x + 1, y)) g.fillRect(x0 + T - 2, y0, 2, T);
       }
     }
 
@@ -434,19 +366,24 @@ const MapGen = (() => {
     mini.width = W;
     mini.height = H;
     const mg = mini.getContext('2d');
-    mg.fillStyle = '#05070a';
+    mg.fillStyle = '#ffffff';
     mg.fillRect(0, 0, W, H);
     for (let y = 0; y < H; y++) {
       for (let x = 0; x < W; x++) {
         const t = tiles[y * W + x];
-        if (t === 1) mg.fillStyle = '#123448';
-        else if (bmask[y * W + x]) mg.fillStyle = '#03060c';
-        else if (cmask[y * W + x]) mg.fillStyle = '#081826';
+        if (t === 1) mg.fillStyle = '#d3bfa1';
+        else if (map.bmask[y * W + x]) mg.fillStyle = '#2e2f31';
+        else if (map.cmask[y * W + x]) mg.fillStyle = '#4e5054';
         else continue;
         mg.fillRect(x, y, 1, 1);
       }
     }
     map.mini = mini;
+
+    /* 贴图还没加载完（autostart 等场景）：加载好后重铺一次 */
+    if (!MapTiles.ready(0) || !MapTiles.ready(1)) {
+      MapTiles.onReady(() => buildVisuals(map));
+    }
   }
 
   /* ---------- 碰撞与查询 ---------- */

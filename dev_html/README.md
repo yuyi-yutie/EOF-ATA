@@ -1,7 +1,7 @@
 # EOFATA — 2D 撤离射击原型
 
 > End of Future : ATA
-> 纯前端 Canvas 2D 原型，无依赖、无构建；人物与武器贴图由 Blender 渲染后内置在 `assets/`。双击 `index.html` 即玩。
+> 纯前端 Canvas 2D 原型，无依赖、无构建；人物与武器贴图内置在 `assets/`（见「渲染资源」）。双击 `index.html` 即玩。
 
 ---
 
@@ -117,20 +117,19 @@ python -m http.server 8080
 
 | 类型 | 威胁 | 行为 |
 |---|---|---|
-| 裂体 | 低 | 近战贴脸，数量最多 |
-| 蚀甲体 | 中 | 慢速重击，血厚 |
-| 突刺体 | 高 | 0.5s 蓄力后直线冲锋，命中 20 伤害并把你撞开 |
-| 喷吐体 | 高 | 保持 230–420 距离，发射酸弹；弹体会被墙挡下 |
+| 僵尸 | 低 | 未激活时慢走巡逻，激活后奔跑贴脸；攻击 36 帧（前摇 ~0.62s，第 17 帧出伤），整套动作期间不移动 |
+| 喷吐僵尸 | 高 | 保持 230–420 距离；攻击 12 帧（第 3 帧吐出酸弹），整套动作期间不移动；酸弹会被墙挡下 |
 
-- 全场 **13 群 / 52 只**；每 5 群里有 1 群是精英群（只出蚀甲体 / 突刺体 / 喷吐体）。
-- 远程敌人会绕圈保持射程，逼你找掩体或冲脸；开阔地硬拼很容易被冲锋 + 酸弹夹击。
+- 全场 **13 群 / 52 只**：普通群 3–4 只（约 16% 是喷吐僵尸），每 5 群里有 1 群是精英群（2–3 只，喷吐僵尸占一半）。
+- 远程僵尸会绕圈保持射程，逼你找掩体或冲脸；开阔地硬拼很容易被近战贴脸 + 酸弹夹击。
+- 敌人都是侧视逐帧动画：`walk` / `run` / `attack` 三段，素材单朝向（朝右），面向左时水平镜像。走/跑按**实际位移**推进（一圈 50px，见 `sprites.js` 的 `stride`），所以速度变化时不会滑步；攻击按时长播完。近战僵尸的 walk/run 在导出时做过帧筛选：walk 去掉和第 1 帧几乎重复的第 15 帧，run 从 10 帧里去掉重复姿势并重排成平滑循环（顺序写在 `_tools/build_sprite_assets.py` 的 `ENEMIES.order`）。
 
 ---
 
 ## 生存规则
 
 - **护盾 60**：优先全额吸收伤害，**溢出不会穿透到血量**；脱战 4.5 秒后以 30/s 回满。
-- **耐力 100**：按住 `SHIFT` 奔跑；奔跑 21/s 消耗，松开 0.7s 后以 17/s 回复。耐力耗尽会强制走路，回到 28 才能再次奔跑。耐力未满时，玩家左侧显示半环耐力条（与身体留空隙）。
+- **耐力 100**：按住 `SHIFT` 奔跑；奔跑 21/s 消耗，松开 0.7s 后以 17/s 回复。耐力耗尽会强制走路，回到 28 才能再次奔跑。耐力条常驻屏幕左上角，与血量、护盾条同款（低于 30% 转橙，耗尽转红）。
 - **血量 100**：只能靠背包内治疗（50 NB / 3s）回满。
 - **背包不暂停世界**：分解/治疗期间移动会中断，且背包中移速降为 55%——找安全角落再整理。
 - **数据**：局内从"携带数据"开始；撤离后剩余数据退回账户（跨局）；死亡则丢失未花完的携带数据与全部本局物资。
@@ -139,16 +138,51 @@ python -m http.server 8080
 
 ## 渲染资源
 
-`assets/` 下是 Blender 5.3 正交渲染的透明 PNG：
+**人物（三渲二）**：两个角色同样由 Blender 渲染（`_blender/render_player_toon.py`），模型、骨架、材质与僵尸同一套做法；**源文件在 `blender_draft/player_toon.blend`**，场景里并排放着 `Rig_Scout` / `Rig_Assault` 两套骨架，改完重新渲即可。
+
+角色在大厅「选择角色」里切换（选择存在 `localStorage: eofata.char`，只影响外观）。每个角色 = 一张站立图 + 一张行走帧表；移动时播行走帧（走路 14 帧/秒、奔跑 19 帧/秒），站着时直接画站立图。
+
+| 角色 | 站立图 | 行走帧表 |
+|---|---|---|
+| 潜行者（标准） | `person.png` 216×506 | `player_walk.png` 12 帧 6×2，格 112×237 |
+| 突击手（突击） | `person_2.png` 270×484 | `player_walk_2.png` 12 帧 6×2，格 136×227 |
+
+`js/player_art.js` 以脚底为锚点绘制，两个角色的绘制高度都按 52px 对齐。
+
+**武器（三渲二）**：五把枪在 Blender 里拼装（`_blender/render_weapons_toon.py`，源文件 `blender_draft/weapons_toon.blend`）：声学喇叭炮、光学长枪、热学散热机匣、力学轨道步枪、电学线圈枪。枪口统一朝 +X，**握把建在世界原点**，所以 `pivot.json` 里的原点像素位置可以直接换算成旋转锚点 `gx/gy`。`_tools/build_weapon_assets.py` 负责裁切 + 描边 + 导出 `w0..w4.png`。
 
 | 文件 | 用途 |
 |---|---|
-| `player.png` | 侧视 1:1 头身 Q 版（无手脚、悬浮）；游戏里只随准星左右翻转 |
-| `w0..w4_top.png` | 五把武器的俯视贴图；以握把为旋转原点，全向旋转 |
-| `w0..w4_side.png` | 五把武器的侧视图；HUD 武器槽与右下武器面板图标 |
-| `weapons_lineup.png` | 五把武器的比例参考图 |
+| `player_walk.png` | 人物行走帧表（15 帧，5×3） |
+| `person.png` / `person_2.png` | 两个角色的站立图，不移动时使用 |
+| `player_walk_2.png` | 突击手的行走帧表（12 帧，6×2） |
+| `floor_tiles.png` | 地砖变体图集（4 格，96px，三渲二倒角砖），按 64px（= 2 格）分块随机铺 |
+| `wall_tile.png` | 墙面板贴图（128px，三渲二），平铺；墙体另有深色侧面与描边 |
+| `w0..w4.png` | 五把武器侧视图（三渲二）：以握把为旋转原点全向旋转，同时作为 HUD 图标 |
+| `zombie_walk/run/attack.png` | 近战僵尸的三段动画帧表（walk 14 帧 / run 6 帧 / attack 36 帧，格 164×180） |
+| `zombie_y_walk/attack.png` | 喷吐僵尸的两段动画帧表（8 列，格 252×173） |
+| `player_steps.png` | 上一版人物帧表（16 帧），已不再加载 |
+| `w0..w4_side.png` / `w0..w4_top.png` | 更早的武器贴图，已不再加载 |
+| `weapons_lineup.png` / `player.png` | 更早的比例参考图 / 机械人物贴图，仅作对照保留 |
 
-重新生成：在 Blender 中执行 `_blender/render_player.py` 与 `_blender/render_weapons.py`（会新建独立的 `EOFATA_*` 场景，不动你当前场景）。
+素材来自 `art_draft/player3d/`（两个角色的 `walk/` + `idle/` 渲染帧）、`art_draft/enemies/zombie3d/`、`art_draft/tiles/` 与 `art_draft/weapons/{s,g,r,l,d}.png`，由 `_tools/build_sprite_assets.py` 导出：角色和敌人走同一套「裁切框 + alpha 膨胀描边 + 缩放排帧表」；武器按 `s/g/r/l/d` 顺序导出成 `w0..w4.png`（`s`、`r` 在脚本里镜像）。换素材后重跑该脚本，按它打印的 `cellW/cellH/ax/ay` 更新 `js/sprites.js` 的 `CHARS`；武器改 `GUNS` 里的 `w` 与 `gx/gy`。
+
+五把武器的绘制长度统一在 **38–40px**（按包围盒斜边归一到约 42px），所以看起来大小接近，只是轮廓高矮不同。
+
+**敌人（三渲二）**：僵尸不再是 AI 逐帧图，而是 **Blender 渲染的三渲二动画**——`_blender/render_zombie.py` 在 Blender 里搭方块僵尸（刚性绑骨架）、用 `Diffuse → Shader to RGB → ColorRamp(常量) → Emission` 做硬边两段明暗、正交相机 18° 侧视角，逐帧渲染到 `art_draft/enemies/zombie3d/{zombie,zombie_y}/{walk,run,attack}/`。
+
+描边不在 3D 里做，而是在 `_tools/build_sprite_assets.py` 里用 **alpha 膨胀**（`MaxFilter` + 黑色底层）画，线宽在贴图分辨率上恒定；每个敌人的所有动画共用一个裁切框，锚点取 walk 的身体中心 + 脚底，绘制高度统一 64px（角色约 52px）。
+
+| 敌人 | 动画 | 说明 |
+|---|---|---|
+| 僵尸 | walk 14 / run 10 / attack 36 | 走路摆腿 + 摆臂 + 上下起伏；攻击第 17 帧挥下 |
+| 喷吐僵尸 | walk 18 / attack 12 | 蓝色口水；攻击第 3 帧前探喷吐 |
+
+重渲：在 Blender 里 `exec(compile(open(r"...\dev_html\_blender\render_zombie.py").read(), "render_zombie.py", "exec"))`，再调 `build_character()` / `build_rig()` / `bake()` / `render` 那一套（脚本底部有 `walk_pose` / `run_pose` / `attack_pose` / `spit_pose`）。渲完重跑 `_tools/build_sprite_assets.py` 即可。
+
+**地图（三渲二）**：地砖/墙面板由 `_blender/render_tiles_toon.py` 渲染（源文件 `blender_draft/tiles_toon.blend`，正交俯视、可无缝平铺），`_tools/build_tile_assets.py` 负责导出 `assets/floor_tiles.png` 与 `assets/wall_tile.png`；旧的 `art_draft/tiles/` AI 图仅作对照保留。——地板从 `地板瓦片.png` 取 4 个图像完整、杂点最少的格子（192px，自带砖缝）做变体图集，铺地时按 64px 分块随机挑一块；墙面取 `墙瓦片.png` 里单个亮瓦片的内部一小块（40px，避开砖缝），只当表面质感用；`参考图.png` 是风格参考（米色大砖 + 暖白实心墙 + 深色墙脚），所以墙体用「暖白面 + 9px 深色侧面 + 黑描边 + 墙脚投影」来还原。尺寸按地图格（32px）约定为整数倍：**地板 2 格 = 64px、墙贴图 4 格 = 128px**（地板的两倍），墙厚仍是 1 格 = 32px。改尺寸在 `js/tiles.js` 的 `FLOOR.world` / `WALL.world`，换变体在 `_tools/build_tile_assets.py` 的 `FLOOR_CELLS`。
+
+更早的武器贴图由 Blender 5.3 生成：`_blender/render_weapons.py`（会新建独立的 `EOFATA_*` 场景，不动你当前场景）；`_blender/render_player.py` 同样只为旧版人物保留。
 
 ---
 
@@ -159,8 +193,10 @@ dev_html/
 ├── index.html          DOM 骨架（HUD / 背包 / 大厅 / 结算）
 ├── README.md
 ├── DESIGN-v1.md        设计与数值方案
-├── assets/             Blender 渲染的人物/武器 PNG
-├── _blender/           渲染脚本（render_player.py / render_weapons.py）
+├── art_draft/          草稿素材（walk/ 人物 15 帧，weapons/ 武器图，normal/ 为上一版）
+├── assets/             贴图（人物帧表 / 站立图 / 武器 w0..w4 / 地图瓦片）
+├── _blender/           旧版渲染脚本（render_weapons.py / render_player.py）
+├── _tools/             素材导出脚本（build_sprite_assets.py）
 ├── css/style.css       霓虹全息 HUD 与面板
 └── js/
     ├── config.js       全部数值表（改这里调平衡）
@@ -173,7 +209,9 @@ dev_html/
     ├── hud.js          HUD / 小地图 / 提示 / 结算
     ├── lobby.js        大厅 / 账户 / 配装
     ├── stash.js        大仓库（12×8 格 / 跨局 / 瞬时分解）
-    ├── sprites.js      贴图加载与就绪判断
+    ├── sprites.js      贴图加载、人物帧表几何与武器握把锚点
+    ├── player_art.js   人物行走帧绘制、动画推进与武器挂点
+    ├── enemy_art.js    敌人动画（walk / run / attack）绘制与帧选取
     └── game.js         主循环、玩家、敌人、渲染
 ```
 

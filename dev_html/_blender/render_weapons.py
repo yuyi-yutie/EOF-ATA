@@ -1,6 +1,10 @@
 import bpy, math, os
 
-OUT = r"C:/Users/yy197/Documents/GitHub/EOF-ATA/dev_html/assets"
+# Output dir: set EOFATA_W_OUT to render into a scratch folder first.
+OUT = os.environ.get(
+    "EOFATA_W_OUT",
+    r"C:/Users/yy197/Documents/GitHub/EOF-ATA/dev_html/assets",
+)
 os.makedirs(OUT, exist_ok=True)
 
 for s in list(bpy.data.scenes):
@@ -50,8 +54,9 @@ M_AMBER  = mat("M_AMBER",  (0.35, 0.16, 0.03), 0.3, 0.25, (1.0, 0.50, 0.08), 1.1
 M_ORANGE = mat("M_ORANGE", (0.40, 0.12, 0.03), 0.3, 0.25, (1.0, 0.35, 0.08), 1.4)
 M_VIOLET = mat("M_VIOLET", (0.22, 0.08, 0.35), 0.3, 0.22, (0.65, 0.30, 1.0), 1.5)
 
-# 每把枪的握把位置：渲染前平移到原点，作为旋转轴
-GRIP_X = [-0.22, -0.18, -0.10, -0.30, -0.16]
+# Hands: matte leather-tan, deliberately duller than the gun metal.
+M_HAND   = mat("M_HAND",   (0.075, 0.05, 0.034), 0.0, 0.80)
+M_HAND_D = mat("M_HAND_D", (0.048, 0.032, 0.022), 0.0, 0.84)
 
 
 def rbox(name, loc, scale, bevel=0.03, material=None, rot=(0, 0, 0)):
@@ -109,65 +114,133 @@ def sphere(name, loc, scale, material):
     return ob
 
 
-def build_weapon(i):
+# ------------------------------------------------------------
+# Hand seen from above: back of the hand over the gun's near top
+# edge, four fingers hooked down its near side, thumb forward.
+# `top` is the gun's top surface height at that station.
+# ------------------------------------------------------------
+def hand(A, x, top=0.125, big=1.0):
+    zt = top + 0.012
+    A(sphere("palm", (x - 0.004, -0.115, zt), (0.10 * big, 0.062 * big, 0.038 * big), M_HAND))
+    for k in range(4):
+        fx = x - 0.058 + k * 0.0385
+        A(rbox("finger", (fx, -0.142, zt - 0.055), (0.015, 0.026, 0.055), 0.008, M_HAND_D))
+    A(sphere("thumb", (x + 0.078 * big, -0.148, zt - 0.015), (0.045 * big, 0.026, 0.024), M_HAND))
+
+
+def build_weapon(i, with_hands=False):
     objs = []
     A = objs.append
+    grip_x = 0.0
 
-    if i == 0:  # 共振霰弹：厚重、宽枪口、琥珀色
-        A(rbox("sg_body", (0.0, 0, 0.0), (0.52, 0.13, 0.12), 0.05, M_MID))
-        A(rbox("sg_top", (0.0, 0, 0.13), (0.40, 0.09, 0.03), 0.02, M_DARK))
-        A(cyl("sg_barrel", (0.72, 0, 0.02), 0.085, 0.70, M_TRIM))
-        A(cyl("sg_tube", (0.72, 0, -0.08), 0.055, 0.62, M_DARK))
-        A(cyl("sg_muzzle", (1.10, 0, 0.02), 0.13, 0.10, M_DARK))
-        A(torus("sg_ring", (1.05, 0, 0.02), 0.115, 0.02, M_AMBER))
-        A(rbox("sg_stock", (-0.62, 0, -0.01), (0.28, 0.10, 0.09), 0.04, M_DARK))
-        A(rbox("sg_grip", (-0.22, 0, -0.16), (0.08, 0.07, 0.12), 0.03, M_DARK))
-        A(rbox("sg_glow", (0.02, 0.115, 0.0), (0.26, 0.02, 0.04), 0.01, M_AMBER))
+    if i == 0:
+        # Sonic shotgun: chunky receiver, pump handguard, fat muzzle.
+        A(rbox("sg_recv", (-0.16, 0, 0.0), (0.34, 0.145, 0.125), 0.045, M_MID))
+        A(rbox("sg_rail", (0.02, 0, 0.128), (0.24, 0.06, 0.022), 0.01, M_DARK))
+        A(rbox("sg_stock", (-0.72, 0, -0.01), (0.24, 0.105, 0.10), 0.035, M_DARK))
+        A(rbox("sg_butt", (-0.97, 0, -0.01), (0.05, 0.115, 0.11), 0.02, M_MID))
+        A(rbox("sg_grip", (-0.40, 0, -0.13), (0.075, 0.075, 0.135), 0.03, M_DARK,
+               rot=(0, math.radians(-16), 0)))
+        A(cyl("sg_pump", (0.42, 0, -0.02), 0.105, 0.40, M_MID, verts=20))
+        for k in range(3):
+            A(torus("sg_pump_ring", (0.28 + k * 0.14, 0, -0.02), 0.108, 0.014, M_DARK))
+        A(cyl("sg_barrel", (0.92, 0, 0.01), 0.052, 0.66, M_TRIM))
+        A(cyl("sg_tube", (0.86, 0, -0.105), 0.038, 0.58, M_DARK))
+        A(cone("sg_muzzle", (1.27, 0, 0.01), 0.115, 0.085, 0.10, M_DARK))
+        A(torus("sg_ring", (1.22, 0, 0.01), 0.10, 0.018, M_AMBER))
+        A(rbox("sg_fs", (1.10, 0, 0.085), (0.018, 0.022, 0.05), 0.006, M_DARK))
+        A(rbox("sg_rs", (-0.10, 0, 0.125), (0.035, 0.045, 0.035), 0.008, M_DARK))
+        A(rbox("sg_mag", (0.06, 0, -0.20), (0.10, 0.085, 0.085), 0.02, M_TRIM))
+        A(rbox("sg_glow", (0.04, 0.15, 0.02), (0.20, 0.012, 0.03), 0.006, M_AMBER))
+        grip_x = -0.40
+        if with_hands:
+            hand(A, -0.40, top=0.125)
+            hand(A, 0.46, top=0.085)
 
-    elif i == 1:  # 棱镜激光：细长、晶体、青色
-        A(rbox("ls_body", (0.02, 0, 0.0), (0.42, 0.10, 0.10), 0.04, M_MID))
-        A(cyl("ls_barrel", (0.72, 0, 0.0), 0.042, 1.10, M_STEEL))
-        A(rbox("ls_stock", (-0.50, 0, 0.0), (0.22, 0.08, 0.08), 0.03, M_DARK))
-        A(rbox("ls_grip", (-0.18, 0, -0.14), (0.07, 0.06, 0.11), 0.02, M_DARK))
-        A(torus("ls_ring1", (0.88, 0, 0), 0.085, 0.016, M_CYAN))
-        A(torus("ls_ring2", (1.02, 0, 0), 0.075, 0.014, M_CYAN))
-        A(sphere("ls_crystal", (1.22, 0, 0), (0.10, 0.10, 0.10), M_CYAN))
-        A(rbox("ls_glow", (0.0, 0.095, 0.0), (0.20, 0.015, 0.03), 0.01, M_CYAN))
+    elif i == 1:
+        # Prism laser: slim receiver, long barrel, crystal muzzle.
+        A(rbox("ls_recv", (-0.08, 0, 0.0), (0.30, 0.105, 0.095), 0.035, M_MID))
+        A(rbox("ls_rail", (0.02, 0, 0.10), (0.22, 0.045, 0.02), 0.008, M_DARK))
+        A(rbox("ls_stock", (-0.62, 0, -0.005), (0.24, 0.08, 0.075), 0.025, M_DARK))
+        A(rbox("ls_butt", (-0.85, 0, -0.005), (0.04, 0.088, 0.085), 0.015, M_MID))
+        A(rbox("ls_grip", (-0.30, 0, -0.12), (0.065, 0.068, 0.125), 0.025, M_DARK,
+               rot=(0, math.radians(-16), 0)))
+        A(rbox("ls_guard", (0.36, 0, -0.005), (0.20, 0.075, 0.075), 0.03, M_MID))
+        A(cyl("ls_barrel", (0.95, 0, 0.0), 0.030, 1.00, M_STEEL))
+        A(cyl("ls_shroud", (0.62, 0, 0.0), 0.048, 0.34, M_TRIM))
+        A(torus("ls_r1", (1.10, 0, 0), 0.072, 0.014, M_CYAN))
+        A(torus("ls_r2", (1.24, 0, 0), 0.062, 0.013, M_CYAN))
+        A(sphere("ls_crystal", (1.40, 0, 0), (0.085, 0.085, 0.085), M_CYAN))
+        A(rbox("ls_prism", (0.06, 0, 0.135), (0.075, 0.055, 0.045), 0.012, M_CYAN,
+               rot=(0, 0, math.radians(45))))
+        A(rbox("ls_glow", (0.0, 0.108, 0.005), (0.18, 0.012, 0.026), 0.005, M_CYAN))
+        grip_x = -0.30
+        if with_hands:
+            hand(A, -0.30, top=0.100)
+            hand(A, 0.38, top=0.070)
 
-    elif i == 2:  # 辐射投射器：罐体、粗喷口、橙色
-        A(rbox("rp_body", (0.10, 0, 0.0), (0.40, 0.18, 0.14), 0.05, M_MID))
-        A(cyl("rp_tank", (-0.30, 0, 0.06), 0.16, 0.46, M_DARK, rot=(0, math.radians(90), 0)))
-        A(torus("rp_tank_ring", (-0.45, 0, 0.06), 0.16, 0.02, M_ORANGE))
-        A(cone("rp_nozzle", (0.85, 0, 0.0), 0.10, 0.22, 0.40, M_TRIM))
-        A(torus("rp_nozzle_ring", (1.03, 0, 0.0), 0.215, 0.025, M_ORANGE))
-        A(rbox("rp_grip", (-0.10, 0, -0.18), (0.08, 0.07, 0.13), 0.03, M_DARK))
-        A(rbox("rp_glow", (0.16, 0.16, 0.0), (0.18, 0.02, 0.05), 0.01, M_ORANGE))
-        A(rbox("rp_glow2", (0.16, -0.16, 0.0), (0.18, 0.02, 0.05), 0.01, M_ORANGE))
+    elif i == 2:
+        # Thermal launcher: fat body, side canister, flared nozzle.
+        A(rbox("rp_body", (0.06, 0, 0.0), (0.36, 0.165, 0.145), 0.05, M_MID))
+        A(rbox("rp_rail", (0.06, 0, 0.15), (0.22, 0.06, 0.02), 0.008, M_DARK))
+        A(rbox("rp_stock", (-0.60, 0, -0.01), (0.24, 0.115, 0.105), 0.03, M_DARK))
+        A(rbox("rp_butt", (-0.85, 0, -0.01), (0.04, 0.12, 0.11), 0.015, M_MID))
+        A(rbox("rp_grip", (-0.28, 0, -0.15), (0.075, 0.075, 0.135), 0.028, M_DARK,
+               rot=(0, math.radians(-16), 0)))
+        A(cyl("rp_tank", (-0.16, 0.22, -0.01), 0.115, 0.42, M_DARK))
+        A(torus("rp_tank_ring", (0.02, 0.22, -0.01), 0.118, 0.016, M_ORANGE))
+        A(cone("rp_nozzle", (0.70, 0, 0.0), 0.10, 0.215, 0.42, M_MID))
+        A(torus("rp_nozzle_ring", (0.88, 0, 0.0), 0.205, 0.022, M_ORANGE))
+        A(rbox("rp_glow", (0.10, 0.168, 0.02), (0.16, 0.012, 0.035), 0.006, M_ORANGE))
+        A(rbox("rp_glow2", (0.10, -0.168, 0.02), (0.16, 0.012, 0.035), 0.006, M_ORANGE))
+        grip_x = -0.28
+        if with_hands:
+            hand(A, -0.28, top=0.145)
+            hand(A, 0.54, top=0.130)
 
-    elif i == 3:  # 轨道步枪：双轨、长、白蓝
-        A(rbox("rg_body", (-0.34, 0, 0.0), (0.30, 0.13, 0.10), 0.04, M_MID))
-        A(rbox("rg_rail1", (0.40, 0.055, 0.0), (0.78, 0.028, 0.05), 0.015, M_STEEL))
-        A(rbox("rg_rail2", (0.40, -0.055, 0.0), (0.78, 0.028, 0.05), 0.015, M_STEEL))
-        A(rbox("rg_core", (0.40, 0, -0.01), (0.74, 0.018, 0.02), 0.01, M_CYAN))
-        A(rbox("rg_scope", (-0.28, 0, 0.12), (0.20, 0.06, 0.06), 0.02, M_DARK))
-        A(cyl("rg_scope_lens", (-0.06, 0, 0.12), 0.045, 0.04, M_CYAN))
-        A(rbox("rg_stock", (-0.72, 0, -0.01), (0.22, 0.09, 0.08), 0.03, M_DARK))
-        A(rbox("rg_grip", (-0.30, 0, -0.15), (0.07, 0.06, 0.11), 0.02, M_DARK))
-        A(cyl("rg_muzzle", (1.18, 0, 0.0), 0.05, 0.08, M_TRIM))
+    elif i == 3:
+        # Railgun: twin rails, glowing core, top optic.
+        A(rbox("rg_recv", (-0.38, 0, 0.0), (0.30, 0.125, 0.105), 0.04, M_MID))
+        A(rbox("rg_stock", (-0.78, 0, -0.005), (0.20, 0.10, 0.09), 0.03, M_DARK))
+        A(rbox("rg_butt", (-0.99, 0, -0.005), (0.04, 0.108, 0.10), 0.015, M_MID))
+        A(rbox("rg_grip", (-0.34, 0, -0.135), (0.07, 0.072, 0.13), 0.026, M_DARK,
+               rot=(0, math.radians(-15), 0)))
+        A(rbox("rg_rail1", (0.36, 0.062, 0.0), (0.62, 0.024, 0.055), 0.012, M_STEEL))
+        A(rbox("rg_rail2", (0.36, -0.062, 0.0), (0.62, 0.024, 0.055), 0.012, M_STEEL))
+        A(rbox("rg_core", (0.36, 0, -0.012), (0.60, 0.016, 0.018), 0.006, M_CYAN))
+        for k in range(4):
+            A(rbox("rg_bridge", (0.02 + k * 0.22, 0, 0.012), (0.018, 0.075, 0.045), 0.006, M_TRIM))
+        A(cyl("rg_muzzle", (1.02, 0, 0.0), 0.048, 0.10, M_TRIM))
+        A(rbox("rg_scope", (-0.18, 0, 0.135), (0.16, 0.055, 0.05), 0.015, M_DARK))
+        A(cyl("rg_lens", (-0.03, 0, 0.135), 0.042, 0.03, M_CYAN))
+        A(rbox("rg_fs", (0.86, 0, -0.012), (0.016, 0.03, 0.075), 0.006, M_DARK))
+        grip_x = -0.34
+        if with_hands:
+            hand(A, -0.34, top=0.105)
+            hand(A, 0.30, top=0.060)
 
-    else:  # 电弧枪：线圈、紫色
-        A(rbox("ag_body", (0.0, 0, 0.0), (0.40, 0.13, 0.12), 0.05, M_MID))
-        A(cyl("ag_barrel", (0.75, 0, 0.0), 0.055, 1.00, M_STEEL))
-        A(torus("ag_coil1", (0.52, 0, 0), 0.135, 0.028, M_VIOLET))
-        A(torus("ag_coil2", (0.74, 0, 0), 0.135, 0.028, M_VIOLET))
-        A(torus("ag_coil3", (0.96, 0, 0), 0.135, 0.028, M_VIOLET))
-        A(rbox("ag_prong1", (1.18, 0.09, 0), (0.14, 0.025, 0.04), 0.01, M_TRIM))
-        A(rbox("ag_prong2", (1.18, -0.09, 0), (0.14, 0.025, 0.04), 0.01, M_TRIM))
-        A(sphere("ag_tip", (1.22, 0, 0), (0.05, 0.05, 0.05), M_VIOLET))
-        A(rbox("ag_grip", (-0.16, 0, -0.17), (0.07, 0.06, 0.12), 0.02, M_DARK))
-        A(rbox("ag_glow", (0.0, 0.115, 0.0), (0.18, 0.018, 0.04), 0.01, M_VIOLET))
+    else:
+        # Arc gun: coiled barrel, split electrode.
+        A(rbox("ag_recv", (-0.10, 0, 0.0), (0.32, 0.135, 0.115), 0.04, M_MID))
+        A(rbox("ag_rail", (0.02, 0, 0.12), (0.20, 0.05, 0.02), 0.008, M_DARK))
+        A(rbox("ag_stock", (-0.62, 0, -0.005), (0.22, 0.095, 0.085), 0.028, M_DARK))
+        A(rbox("ag_butt", (-0.84, 0, -0.005), (0.04, 0.102, 0.092), 0.015, M_MID))
+        A(rbox("ag_grip", (-0.30, 0, -0.13), (0.07, 0.07, 0.13), 0.026, M_DARK,
+               rot=(0, math.radians(-15), 0)))
+        A(cyl("ag_guard", (0.30, 0, -0.005), 0.075, 0.24, M_TRIM))
+        A(cyl("ag_barrel", (0.86, 0, 0.0), 0.048, 0.80, M_STEEL))
+        for k in range(3):
+            A(torus("ag_coil", (0.56 + k * 0.20, 0, 0), 0.125, 0.024, M_VIOLET))
+        A(rbox("ag_prong1", (1.24, 0.085, 0), (0.13, 0.022, 0.038), 0.008, M_TRIM))
+        A(rbox("ag_prong2", (1.24, -0.085, 0), (0.13, 0.022, 0.038), 0.008, M_TRIM))
+        A(sphere("ag_tip", (1.28, 0, 0), (0.045, 0.045, 0.045), M_VIOLET))
+        A(rbox("ag_glow", (0.0, 0.138, 0.005), (0.16, 0.012, 0.03), 0.006, M_VIOLET))
+        grip_x = -0.30
+        if with_hands:
+            hand(A, -0.30, top=0.115)
+            hand(A, 0.34, top=0.070)
 
-    return objs
+    return objs, grip_x
 
 
 def clear_objs(objs):
@@ -175,10 +248,8 @@ def clear_objs(objs):
         bpy.data.objects.remove(ob, do_unlink=True)
 
 
-# ---------- 相机 & 灯光 ----------
 cam_data = bpy.data.cameras.new("W_CAM")
 cam_data.type = 'ORTHO'
-cam_data.ortho_scale = 2.55
 cam = bpy.data.objects.new("W_CAM", cam_data)
 scene.collection.objects.link(cam)
 scene.camera = cam
@@ -200,40 +271,42 @@ area("wkey", (-2.2, -2.4, 5.0), 900, (1.0, 0.96, 0.9), 3.0, (math.radians(35), 0
 area("wfill", (2.8, -1.6, 3.6), 360, (0.45, 0.75, 1.0), 3.0, (math.radians(55), 0, math.radians(50)))
 area("wrim", (0.4, 2.8, 3.2), 650, (0.55, 0.9, 1.0), 3.0, (math.radians(-140), 0, math.radians(6)))
 
-# 逐个武器：俯视 + 侧视
+# Per weapon: top view + side view (both clean, hands are gone).
 for i in range(5):
-    objs = build_weapon(i)
-    # 握把移到原点：贴图的中心就是旋转轴
+    objs, gx = build_weapon(i)
     for ob in objs:
-        ob.location.x -= GRIP_X[i]
+        ob.location.x -= gx
 
-    cam_data.ortho_scale = 3.2
+    cam_data.ortho_scale = 3.5
     cam.location = (0, 0, 8)
     cam.rotation_euler = (0, 0, 0)
     scene.render.filepath = OUT + ("/w%d_top.png" % i)
     bpy.ops.render.render(write_still=True)
+    clear_objs(objs)
 
-    cam_data.ortho_scale = 2.6
+    objs, gx = build_weapon(i)
+    for ob in objs:
+        ob.location.x -= gx
+    cam_data.ortho_scale = 2.9
     cam.location = (0.38, -8, 0.10)
     cam.rotation_euler = (math.radians(90), 0, 0)
     scene.render.filepath = OUT + ("/w%d_side.png" % i)
     bpy.ops.render.render(write_still=True)
-
     clear_objs(objs)
 
-# 一排总览（便于检查比例）
+# Lineup for proportion checks.
 all_objs = []
 for i in range(5):
-    objs = build_weapon(i)
+    objs, _ = build_weapon(i)
     for ob in objs:
-        ob.location.x += (i - 2) * 3.4
+        ob.location.x += (i - 2) * 3.6
     all_objs += objs
 cam.location = (0, 0, 8)
 cam.rotation_euler = (0, 0, 0)
-cam_data.ortho_scale = 17.0
+cam_data.ortho_scale = 18.0
 scene.render.resolution_x = 1792
 scene.render.resolution_y = 512
 scene.render.filepath = OUT + "/weapons_lineup.png"
 bpy.ops.render.render(write_still=True)
 
-print("WEAPONS DONE")
+print("WEAPONS DONE ->", OUT)

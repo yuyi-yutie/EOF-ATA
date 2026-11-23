@@ -8,6 +8,8 @@
 const CFG = {
   VW: 1280,
   VH: 720,
+  /* 视野缩放：1 = 原视野，越大看得越近 */
+  ZOOM: 1.25,
   TILE: 32,
   MAP_W: 128,
   MAP_H: 96,
@@ -41,28 +43,22 @@ const CFG = {
     staminaRecover: 28
   },
 
-  /* 敌人：近战 / 冲锋 / 远程 */
+  /* 敌人：两种僵尸
+     攻击动画参数：atkFrames 帧数 / atkFps 播放帧率 / hitFrame 出伤帧（从 1 数）
+     整套动作期间不移动（前摇 + 出伤 + 后摇），播完才进入冷却 */
   ENEMY: {
-    crawler: {
-      key: 'crawler', name: '裂体', hp: 45, speed: 112, dmg: 8, r: 11,
-      color: '#ff6b5a', dark: '#5c211b', windup: 0.22, cd: 0.85,
-      behavior: 'melee'
+    zombie: {
+      key: 'zombie', name: '僵尸', hp: 45, speed: 112, dmg: 8, r: 11,
+      color: '#93c46a', dark: '#2c3a1e', cd: 0.85,
+      behavior: 'melee',
+      atkFrames: 36, atkFps: 26, hitFrame: 17
     },
-    brute: {
-      key: 'brute', name: '蚀甲体', hp: 140, speed: 64, dmg: 16, r: 16,
-      color: '#d8a03c', dark: '#4d3a12', windup: 0.32, cd: 1.15,
-      behavior: 'melee'
-    },
-    charger: {
-      key: 'charger', name: '突刺体', hp: 72, speed: 98, dmg: 20, r: 12,
-      color: '#ff9f43', dark: '#5a3210', windup: 0.52, cd: 2.6,
-      behavior: 'charger', dashSpeed: 540, dashTime: 0.30
-    },
-    spitter: {
-      key: 'spitter', name: '喷吐体', hp: 95, speed: 76, dmg: 12, r: 13,
-      color: '#c07bff', dark: '#3d1f52', windup: 0.2, cd: 2.2,
+    zombie_y: {
+      key: 'zombie_y', name: '喷吐僵尸', hp: 95, speed: 76, dmg: 12, r: 13,
+      color: '#5aa9ff', dark: '#1e3350', cd: 2.2,
       behavior: 'ranged', keepMin: 230, keepMax: 420,
-      shotSpeed: 330, shotDmg: 12, shotLife: 3.2
+      shotSpeed: 330, shotDmg: 12, shotLife: 3.2,
+      atkFrames: 12, atkFps: 18, hitFrame: 3
     }
   },
 

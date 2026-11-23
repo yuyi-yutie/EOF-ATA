@@ -24,7 +24,9 @@ const Lobby = (() => {
   let picked = [];
   const mags = {};
   let carry = 0;
+  let character = 0;
   let msgTimer = 0;
+  const CHAR_KEY = 'eofata.char';
 
   function init() {
     el.root = document.getElementById('lobby');
@@ -43,7 +45,11 @@ const Lobby = (() => {
     el.stashBtn = document.getElementById('lobbyStash');
     el.stashCount = document.getElementById('lobbyStashCount');
     el.stashValue = document.getElementById('lobbyStashValue');
+    el.chars = document.getElementById('lobbyChars');
+    el.charName = document.getElementById('lobbyCharName');
 
+    character = loadChar();
+    buildChars();
     buildWeapons();
     el.start.addEventListener('click', start);
     document.getElementById('carryMinus').addEventListener('click', () => addCarry(-100));
@@ -54,6 +60,41 @@ const Lobby = (() => {
     });
     el.stashBtn.addEventListener('click', () => Stash.show(true));
 
+    refresh();
+  }
+
+  /* ---------- 角色 ---------- */
+  function loadChar() {
+    try {
+      const v = parseInt(localStorage.getItem(CHAR_KEY), 10);
+      return isFinite(v) ? clamp(v, 0, Sprites.chars.length - 1) : 0;
+    } catch (e) { return 0; }
+  }
+
+  function saveChar() {
+    try { localStorage.setItem(CHAR_KEY, String(character)); } catch (e) { /* ignore */ }
+  }
+
+  function buildChars() {
+    el.chars.innerHTML = '';
+    Sprites.chars.forEach((c, i) => {
+      const d = document.createElement('div');
+      d.className = 'pc-card';
+      d.dataset.i = i;
+      d.innerHTML =
+        '<img src="' + c.idle.src + '" alt="">' +
+        '<span class="pc-meta">' +
+          '<span class="pc-name">' + c.name + '</span>' +
+          '<span class="pc-tag">' + c.role + '</span>' +
+        '</span>';
+      d.addEventListener('click', () => selectChar(i));
+      el.chars.appendChild(d);
+    });
+  }
+
+  function selectChar(i) {
+    character = clamp(i, 0, Sprites.chars.length - 1);
+    saveChar();
     refresh();
   }
 
@@ -117,6 +158,15 @@ const Lobby = (() => {
 
     for (let i = 0; i < el.weapons.children.length; i++) {
       el.weapons.children[i].classList.toggle('on', picked.indexOf(i) >= 0);
+    }
+
+    if (el.chars) {
+      for (let i = 0; i < el.chars.children.length; i++) {
+        el.chars.children[i].classList.toggle('on', i === character);
+      }
+    }
+    if (el.charName && Sprites.chars[character]) {
+      el.charName.textContent = Sprites.chars[character].name;
     }
 
     el.load.innerHTML = '';
@@ -189,7 +239,8 @@ const Lobby = (() => {
     Game.startRun(null, {
       weapons: picked.slice(),
       mags: picked.map(i => mags[i] || 0),
-      data: carry
+      data: carry,
+      character: character
     });
   }
 

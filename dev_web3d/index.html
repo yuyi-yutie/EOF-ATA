@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>EOFATA 3D — End of Future : ATA</title>
+<link rel="icon" href="data:," />
+<link rel="stylesheet" href="css/app.css" />
+</head>
+<body>
+<div id="app">
+  <canvas id="gl"></canvas>
+  <div id="cross"></div>
+  <div id="hitmark"></div>
+  <div id="dmgFlash"></div>
+
+  <div id="hud">
+    <div class="hud-tl">
+      <div class="vbar shd"><i id="shdFill"></i><span class="lab">SHD</span><span class="num" id="shdNum">60</span></div>
+      <div class="vbar hp"><i id="hpFill"></i><span class="lab">VIT</span><span class="num" id="hpNum">100</span></div>
+      <div class="vbar sta"><i id="staFill"></i></div>
+    </div>
+
+    <div class="hud-tr">
+      <div class="stat"><span>KILL</span><b id="kills">0</b></div>
+      <div class="stat"><span>LOOT</span><b id="loot">0</b></div>
+      <div class="stat"><span>TIME</span><b id="timer">00:00</b></div>
+      <div class="cam" id="camInfo">60° · 60fps</div>
+    </div>
+
+    <div class="hud-br">
+      <div class="wtag" id="wTag">声学</div>
+      <div class="wname" id="wName">共振霰弹</div>
+      <div class="wammo"><b id="wMag">6</b><i>/</i><span id="wRes">2</span></div>
+      <div class="reload hidden" id="reloadWrap"><i id="reloadFill"></i></div>
+    </div>
+
+    <div class="ex-wrap" id="extractWrap">
+      <div class="ex-label">// 撤离同步中</div>
+      <div class="ex-bar"><i id="exFill"></i></div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+    <div class="dbg" id="dbg">dbg</div>
+
+    <div class="hint">
+      <b>WASD</b> 移动 · <b>SHIFT</b> 奔跑 · <b>左键</b> 射击 · <b>R</b> 换弹 · <b>1–5</b> 换枪
+      · <b>F</b> 拾取 · <b>[ ]</b> 俯角 · <b>滚轮</b> 远近
+    </div>
+  </div>
+
+  <div id="endScreen" class="hidden">
+    <div class="end-panel">
+      <div class="end-title" id="endTitle">撤离成功</div>
+      <div class="end-body" id="endBody"></div>
+      <button id="againBtn">再来一局</button>
+    </div>
+  </div>
+
+  <div id="loading">载入中…</div>
+</div>
+
+<script>
+  window.__errs = [];
+  window.addEventListener('error', function (e) {
+    window.__errs.push((e.message || 'err') + ' @' + (e.filename || '') + ':' + (e.lineno || 0));
+    document.title = 'ERR: ' + window.__errs.join(' | ').slice(0, 400);
+  });
+</script>
+<script src="js/config.js"></script>
+<script src="js/models.js"></script>
+<script src="js/world.js"></script>
+<script src="js/gl.js"></script>
+<script src="js/hud.js"></script>
+<script src="js/game.js"></script>
+</body>
+</html>

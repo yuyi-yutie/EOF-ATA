@@ -9,13 +9,34 @@ const HUD = (() => {
   let miniT = 0;
   let lastData = -1;
   let lastPrompt = '';
+  let lastHp = -1;
+  let lastShield = -1;
+  let lastStam = -1;
+  let lastMag = -1;
+  let lastWeapon = -1;
+
+  /* 重播一次 CSS 动画：移除类名 → 强制回流 → 重新加上 */
+  function bump(node, cls) {
+    if (!node) return;
+    node.classList.remove(cls);
+    void node.offsetWidth;
+    node.classList.add(cls);
+  }
 
   function init() {
     el.hud = document.getElementById('hud');
     el.hpFill = document.getElementById('hpFill');
     el.hpNum = document.getElementById('hpNum');
+    el.hpTrail = document.getElementById('hpTrail');
     el.shieldFill = document.getElementById('shieldFill');
     el.shieldNum = document.getElementById('shieldNum');
+    el.shieldTrail = document.getElementById('shieldTrail');
+    el.stamFill = document.getElementById('stamFill');
+    el.stamNum = document.getElementById('stamNum');
+    el.stamTrail = document.getElementById('stamTrail');
+    el.hpBar = el.hpFill.parentElement;
+    el.shieldBar = el.shieldFill.parentElement;
+    el.stamBar = el.stamFill.parentElement;
     el.dataNum = document.getElementById('dataNum');
     el.slots = document.getElementById('slots');
     el.wTag = document.getElementById('wTag');
@@ -24,7 +45,9 @@ const HUD = (() => {
     el.wRes = document.getElementById('wRes');
     el.wResLabel = document.getElementById('wResLabel');
     el.wIcon = document.getElementById('wIcon');
+    el.wPanel = el.wIcon.parentElement;
     el.reloadFill = document.getElementById('reloadFill');
+    el.dataBox = el.dataNum.parentElement;
     el.prompt = document.getElementById('prompt');
     el.toastWrap = document.getElementById('toastWrap');
     el.exBanner = document.getElementById('extractBanner');
@@ -45,7 +68,7 @@ const HUD = (() => {
       d.className = 'slot';
       d.style.setProperty('--wc', w.color);
       d.innerHTML =
-        '<img class="icon" src="assets/w' + wIdx + '_side.png" alt="">' +
+        '<img class="icon" src="' + Sprites.GUNS[wIdx].src + '" alt="">' +
         '<span class="k">' + (i + 1) + '</span>' +
         '<span class="n">' + w.name + '</span>' +
         '<span class="a">0</span>' +
@@ -57,6 +80,12 @@ const HUD = (() => {
 
   function show(v) {
     el.hud.classList.toggle('hidden', !v);
+    if (v) {
+      /* 新一局：重置数值跟踪，避免沿用上一局的数字触发弹跳 */
+      lastHp = lastShield = lastStam = lastMag = -1;
+      lastWeapon = -1;
+      lastData = -1;
+    }
   }
 
   function toast(text, kind) {
@@ -87,21 +116,57 @@ const HUD = (() => {
     const p = G.player;
     if (!p) return;
 
-    el.hpFill.style.width = (p.hp / p.maxHp * 100).toFixed(1) + '%';
-    el.hpNum.textContent = Math.ceil(p.hp);
-    el.shieldFill.style.width = (p.shield / p.maxShield * 100).toFixed(1) + '%';
-    el.shieldNum.textContent = Math.ceil(p.shield);
+    /* 生命 / 护盾 / 耐力：真实条 + 拖尾条（拖尾用更长的过渡形成残影） */
+    const hpPct = clamp(p.hp / p.maxHp, 0, 1) * 100;
+    el.hpFill.style.width = hpPct.toFixed(1) + '%';
+    el.hpTrail.style.width = hpPct.toFixed(1) + '%';
+    const hpInt = Math.ceil(p.hp);
+    if (hpInt !== lastHp) {
+      el.hpNum.textContent = hpInt;
+      if (lastHp > hpInt) bump(el.hpNum, 'pop');
+      lastHp = hpInt;
+    }
+    el.hpBar.classList.toggle('low', hpPct <= 30);
+
+    const shieldPct = clamp(p.shield / p.maxShield, 0, 1) * 100;
+    el.shieldFill.style.width = shieldPct.toFixed(1) + '%';
+    el.shieldTrail.style.width = shieldPct.toFixed(1) + '%';
+    const shieldInt = Math.ceil(p.shield);
+    if (shieldInt !== lastShield) {
+      if (shieldInt < lastShield) bump(el.shieldNum, 'pop');
+      el.shieldNum.textContent = shieldInt;
+      lastShield = shieldInt;
+    }
+    el.shieldBar.classList.toggle('low', shieldPct > 0 && shieldPct <= 25);
+    el.shieldBar.classList.toggle('off', p.shield <= 0.01);
+
+    const stamRatio = clamp(p.stamina / p.maxStamina, 0, 1);
+    const stamPct = (stamRatio * 100).toFixed(1) + '%';
+    el.stamFill.style.width = stamPct;
+    el.stamTrail.style.width = stamPct;
+    const stamInt = Math.ceil(p.stamina);
+    if (stamInt !== lastStam) {
+      el.stamNum.textContent = stamInt;
+      lastStam = stamInt;
+    }
+    el.stamBar.classList.toggle('low', stamRatio > 0 && stamRatio < 0.3);
+    el.stamBar.classList.toggle('exhausted', !!p.exhausted);
+    el.stamBar.classList.toggle('sprint', !!p.sprinting && !p.exhausted);
 
     if (G.data !== lastData) {
-      lastData = G.data;
       el.dataNum.textContent = fmt(G.data);
+      if (lastData >= 0) bump(el.dataNum, 'pop');
+      lastData = G.data;
     }
 
     const w = WEAPONS[p.weapon];
     const st = p.ammo[p.weapon];
     if (el.wIcon && el.wIcon.dataset.w !== String(p.weapon)) {
       el.wIcon.dataset.w = String(p.weapon);
-      el.wIcon.src = 'assets/w' + p.weapon + '_side.png';
+      el.wIcon.src = Sprites.GUNS[p.weapon].src;
+      bump(el.wPanel, 'swap');
+      lastMag = st.mag;
+      lastWeapon = p.weapon;
     }
     el.wTag.textContent = w.tag;
     el.wTag.style.color = w.color;
@@ -113,6 +178,13 @@ const HUD = (() => {
     el.reloadFill.style.width = p.reloadTotal > 0 && p.reloadT > 0
       ? ((1 - p.reloadT / p.reloadTotal) * 100).toFixed(1) + '%'
       : '0%';
+    el.wPanel.classList.toggle('reloading', p.reloadT > 0);
+    if (lastWeapon === p.weapon && st.mag < lastMag) {
+      bump(el.wPanel, 'kick');
+      bump(el.wMag, 'pop');
+    }
+    lastWeapon = p.weapon;
+    lastMag = st.mag;
 
     for (let i = 0; i < G.carried.length; i++) {
       const s = el.slots.children[i];
@@ -172,9 +244,9 @@ const HUD = (() => {
     // 撤离台
     const pulse = 0.55 + 0.45 * Math.sin(performance.now() / 260);
     for (const e of G.map.extracts) {
-      g.fillStyle = 'rgba(159,230,255,' + pulse.toFixed(2) + ')';
+      g.fillStyle = 'rgba(10,110,145,' + pulse.toFixed(2) + ')';
       g.fillRect(e.x * sx - 2, e.y * sy - 2, 4, 4);
-      g.strokeStyle = 'rgba(159,230,255,0.35)';
+      g.strokeStyle = 'rgba(10,110,145,0.45)';
       g.strokeRect(e.x * sx - 5, e.y * sy - 5, 10, 10);
     }
 
@@ -200,8 +272,18 @@ const HUD = (() => {
     }
 
     // 视口框
-    g.strokeStyle = 'rgba(255,255,255,0.08)';
-    g.strokeRect(G.cam.x * sx, G.cam.y * sy, CFG.VW * sx, CFG.VH * sy);
+    g.strokeStyle = 'rgba(20,40,60,0.35)';
+    g.strokeRect(G.cam.x * sx, G.cam.y * sy, (CFG.VW / CFG.ZOOM) * sx, (CFG.VH / CFG.ZOOM) * sy);
+
+    // 扫描线：自上而下循环扫过小地图
+    const scanY = ((performance.now() / 2600) % 1) * (H + 24) - 24;
+    const grad = g.createLinearGradient(0, scanY, 0, scanY + 18);
+    grad.addColorStop(0, 'rgba(159,230,255,0)');
+    grad.addColorStop(1, 'rgba(159,230,255,0.16)');
+    g.fillStyle = grad;
+    g.fillRect(0, scanY, W, 18);
+    g.fillStyle = 'rgba(159,230,255,0.32)';
+    g.fillRect(0, scanY + 18, W, 1);
   }
 
   function showPause(v) {

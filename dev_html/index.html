@@ -18,14 +18,24 @@
       <div class="vitals">
         <div class="vbar shield">
           <div class="fill" id="shieldFill"></div>
+          <i class="trail" id="shieldTrail"></i>
           <div class="ticks"></div>
           <span class="vlabel">SHD</span>
           <span class="vnum" id="shieldNum">60</span>
         </div>
         <div class="vbar hp">
           <div class="fill" id="hpFill"></div>
+          <i class="trail" id="hpTrail"></i>
+          <div class="ticks"></div>
           <span class="vlabel">VIT</span>
           <span class="vnum" id="hpNum">100</span>
+        </div>
+        <div class="vbar stamina">
+          <div class="fill" id="stamFill"></div>
+          <i class="trail" id="stamTrail"></i>
+          <div class="ticks"></div>
+          <span class="vlabel">STA</span>
+          <span class="vnum" id="stamNum">100</span>
         </div>
       </div>
       <div class="hud-tip">TAB 背包 · F 拾取 · R 换弹</div>
@@ -124,7 +134,9 @@
 
       <div class="lobby-body">
         <div class="lobby-left">
-          <div class="lobby-sub">选择携带武器<em id="lobbyPick">0 / 2</em></div>
+          <div class="lobby-sub">选择角色<em id="lobbyCharName">潜行者</em></div>
+          <div class="lobby-chars" id="lobbyChars"></div>
+          <div class="lobby-sub lobby-sub-gap2">选择携带武器<em id="lobbyPick">0 / 2</em></div>
           <div class="lobby-weapons" id="lobbyWeapons"></div>
           <div class="lobby-keys">
             <span><b>WASD</b> 移动</span>
@@ -229,6 +241,7 @@
 <script src="js/utils.js"></script>
 <script src="js/audio.js"></script>
 <script src="js/input.js"></script>
+<script src="js/tiles.js"></script>
 <script src="js/map.js"></script>
 <script src="js/weapons.js"></script>
 <script src="js/inventory.js"></script>
@@ -236,6 +249,8 @@
 <script src="js/lobby.js"></script>
 <script src="js/stash.js"></script>
 <script src="js/sprites.js"></script>
+<script src="js/player_art.js"></script>
+<script src="js/enemy_art.js"></script>
 <script src="js/game.js"></script>
 </body>
 </html>

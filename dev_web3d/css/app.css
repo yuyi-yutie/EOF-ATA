@@ -1,0 +1,160 @@
+/* EOFATA 3D — HUD */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: 100%; height: 100%; overflow: hidden;
+  background: #14171a;
+  font-family: "JetBrains Mono", "Cascadia Mono", Consolas, "Noto Sans Mono CJK SC", monospace;
+  color: #e8e2d6;
+  user-select: none;
+}
+
+#app { position: fixed; inset: 0; }
+#gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: none; }
+
+/* 准星 */
+#cross {
+  position: absolute; width: 18px; height: 18px; margin: -9px 0 0 -9px;
+  pointer-events: none; z-index: 40;
+}
+#cross::before, #cross::after {
+  content: ""; position: absolute; background: #f0b04c; opacity: .85;
+  box-shadow: 0 0 6px rgba(240, 176, 76, .7);
+}
+#cross::before { left: 50%; top: 0; width: 2px; height: 100%; margin-left: -1px; }
+#cross::after { top: 50%; left: 0; height: 2px; width: 100%; margin-top: -1px; }
+#cross.hit { transform: scale(1.35); transition: transform .06s; }
+#cross.hit::before, #cross.hit::after { background: #ff5a48; box-shadow: 0 0 10px rgba(255, 90, 72, .9); }
+
+/* 受伤闪红 */
+#dmgFlash {
+  position: absolute; inset: 0; pointer-events: none; z-index: 30;
+  box-shadow: inset 0 0 120px rgba(200, 40, 30, .0);
+  transition: box-shadow .25s ease-out;
+}
+#dmgFlash.hit {
+  box-shadow: inset 0 0 140px rgba(200, 40, 30, .75);
+  transition: box-shadow .02s;
+}
+
+#hud { position: absolute; inset: 0; pointer-events: none; z-index: 20; }
+
+/* 生命条 */
+.hud-tl { position: absolute; left: 26px; top: 22px; width: 260px; }
+.vbar {
+  position: relative; height: 16px; margin-bottom: 6px;
+  background: rgba(10, 12, 14, .55);
+  border: 1px solid rgba(240, 236, 226, .18);
+  overflow: hidden;
+}
+.vbar i {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 100%;
+  transition: width .12s linear;
+}
+.vbar.hp i { background: linear-gradient(90deg, #b23b34, #e2604f); }
+.vbar.shd i { background: linear-gradient(90deg, #2f6f8f, #6fd8ef); }
+.vbar.sta { height: 6px; }
+.vbar.sta i { background: #d8c27a; }
+.vbar .lab { position: absolute; left: 6px; top: -1px; font-size: 10px; letter-spacing: .12em; color: rgba(255,255,255,.55); }
+.vbar .num { position: absolute; right: 6px; top: -1px; font-size: 11px; color: #f7f2e6; }
+
+/* 右上 */
+.hud-tr { position: absolute; right: 26px; top: 22px; text-align: right; }
+.stat { font-size: 11px; letter-spacing: .18em; color: rgba(232, 226, 214, .5); margin-bottom: 3px; }
+.stat b { color: #e8e2d6; font-size: 14px; margin-left: 8px; letter-spacing: 0; }
+.cam { margin-top: 10px; font-size: 11px; color: #f0b04c; opacity: .8; letter-spacing: .1em; }
+
+/* 右下武器 */
+.hud-br {
+  position: absolute; right: 26px; bottom: 26px; min-width: 210px;
+  text-align: right; padding: 12px 14px;
+  background: linear-gradient(180deg, rgba(14, 16, 19, .0), rgba(14, 16, 19, .62));
+  border-right: 2px solid rgba(240, 176, 76, .55);
+}
+.wtag { font-size: 10px; letter-spacing: .3em; color: #f0b04c; }
+.wname { font-size: 19px; letter-spacing: .06em; margin: 2px 0 6px; }
+.wammo { font-size: 15px; color: rgba(232, 226, 214, .6); }
+.wammo b { font-size: 30px; color: #fff; letter-spacing: -.02em; }
+.wammo i { margin: 0 4px; font-style: normal; opacity: .4; }
+.reload { height: 3px; margin-top: 8px; background: rgba(255,255,255,.12); }
+.reload i { display: block; height: 100%; width: 0; background: #6fd8ef; }
+
+/* 撤离 */
+.ex-wrap {
+  position: absolute; left: 50%; bottom: 96px; width: 320px; margin-left: -160px;
+  opacity: 0; transition: opacity .2s; text-align: center;
+}
+.ex-wrap.on { opacity: 1; }
+.ex-label { font-size: 11px; letter-spacing: .3em; color: #f0b04c; margin-bottom: 6px; }
+.ex-bar { height: 5px; background: rgba(255,255,255,.14); }
+.ex-bar i { display: block; height: 100%; width: 0; background: #f0b04c; box-shadow: 0 0 12px rgba(240,176,76,.8); }
+
+/* 提示 */
+.toast {
+  position: absolute; left: 50%; top: 88px; transform: translateX(-50%);
+  padding: 6px 16px; font-size: 12px; letter-spacing: .1em;
+  background: rgba(10, 12, 14, .7); border: 1px solid rgba(240, 176, 76, .35);
+  opacity: 0; transition: opacity .18s;
+}
+.toast.show { opacity: 1; }
+
+.hint {
+  position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%);
+  font-size: 11px; color: rgba(232, 226, 214, .38); letter-spacing: .04em; white-space: nowrap;
+}
+.hint b { color: rgba(240, 176, 76, .8); font-weight: 500; }
+
+.dbg {
+  position: absolute; left: 26px; bottom: 22px;
+  font-size: 11px; color: rgba(120, 220, 255, .75); letter-spacing: .05em;
+  display: none;
+}
+.dbg.on { display: block; }
+
+/* 结束 */
+#endScreen {
+  position: absolute; inset: 0; z-index: 50;
+  background: rgba(10, 12, 14, .72);
+  display: flex; align-items: center; justify-content: center;
+  backdrop-filter: blur(3px);
+}
+#endScreen.hidden { display: none; }
+.end-panel {
+  min-width: 340px; padding: 28px 34px; text-align: center;
+  background: #16191d; border: 1px solid rgba(240, 236, 226, .16);
+  box-shadow: 0 20px 60px rgba(0,0,0,.5);
+}
+.end-title { font-size: 26px; letter-spacing: .18em; margin-bottom: 18px; }
+.end-title.win { color: #f0b04c; }
+.end-title.lose { color: #e2604f; }
+.end-body { display: flex; justify-content: space-around; gap: 22px; margin-bottom: 22px; }
+.end-body div { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: rgba(232,226,214,.5); letter-spacing: .16em; }
+.end-body b { font-size: 20px; color: #e8e2d6; letter-spacing: 0; }
+#againBtn {
+  padding: 10px 26px; font: inherit; font-size: 13px; letter-spacing: .16em;
+  color: #14171a; background: #f0b04c; border: 0; cursor: pointer;
+}
+#againBtn:hover { background: #ffc766; }
+
+#loading {
+  position: absolute; inset: 0; z-index: 60;
+  display: flex; align-items: center; justify-content: center;
+  background: #14171a; color: #f0b04c; font-size: 13px; letter-spacing: .2em;
+  text-align: center; line-height: 1.8;
+}
+#loading.hidden { display: none; }
+
+/* 命中标记：准星上的红色 X */
+#hitmark {
+  position: absolute; width: 30px; height: 30px; margin: -15px 0 0 -15px;
+  pointer-events: none; z-index: 41; opacity: 0;
+}
+#hitmark::before, #hitmark::after {
+  content: ""; position: absolute; left: 50%; top: 50%;
+  width: 16px; height: 2px; margin: -1px 0 0 -8px;
+  background: #ff4b3a; box-shadow: 0 0 8px rgba(255, 75, 58, .9);
+}
+#hitmark::before { transform: rotate(45deg); }
+#hitmark::after { transform: rotate(-45deg); }
+#hitmark.on { opacity: 1; }
+#hitmark.kill::before, #hitmark.kill::after { background: #ffd24a; box-shadow: 0 0 10px rgba(255, 210, 74, .95); }
