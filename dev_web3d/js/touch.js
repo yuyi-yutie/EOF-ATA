@@ -15,7 +15,6 @@ const TOUCH = (function () {
   const TCFG = (typeof CFG !== 'undefined' && CFG.TOUCH) ? CFG.TOUCH : {};
   const INNER = TCFG.INNER || 0.58;
   const DEAD = TCFG.DEAD || 0.12;
-  const KNOB = TCFG.KNOB || 0.82;
 
   function blank() {
     return {
@@ -29,7 +28,7 @@ const TOUCH = (function () {
   }
 
   const state = { enabled: false, left: blank(), right: blank() };
-  const pads = {}, bases = {}, knobs = {};
+  const pads = {}, bases = {};
   const geo = {
     left: { x: 0, y: 0, r: 70 },
     right: { x: 0, y: 0, r: 70 }
@@ -48,8 +47,6 @@ const TOUCH = (function () {
     if (!root || !pads.left || !pads.right) return;
     bases.left = pads.left.querySelector('.stick-base');
     bases.right = pads.right.querySelector('.stick-base');
-    knobs.left = pads.left.querySelector('.stick-knob');
-    knobs.right = pads.right.querySelector('.stick-knob');
 
     bindPad('left');
     bindPad('right');
@@ -216,18 +213,6 @@ const TOUCH = (function () {
       }
     }
 
-    const kMax = g.r * KNOB;
-    let kx = dx, ky = dy;
-    if (dist > kMax && dist > 0) {
-      kx = ux * kMax;
-      ky = uy * kMax;
-    }
-    const knob = knobs[side];
-    if (knob) {
-      knob.style.setProperty('--tx', kx.toFixed(1) + 'px');
-      knob.style.setProperty('--ty', ky.toFixed(1) + 'px');
-    }
-
     updateClasses(side);
   }
 
@@ -256,12 +241,6 @@ const TOUCH = (function () {
       try { pad.releasePointerCapture(pid); } catch (err) { /* ignore */ }
       pad.classList.remove('is-active', 'zone-inner', 'zone-ring', 'zone-outer',
         'locked', 'firing', 'armed', 'canceled');
-    }
-
-    const knob = knobs[side];
-    if (knob) {
-      knob.style.setProperty('--tx', '0px');
-      knob.style.setProperty('--ty', '0px');
     }
 
     st.active = false;

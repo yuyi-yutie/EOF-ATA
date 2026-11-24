@@ -62,6 +62,7 @@ const G = (function () {
   const WALK = QS.get('walk') === '1';
   const MV = parseFloat(QS.get('mv'));
   const TOUCH_MODE = !!window.__touchMode;
+  const SELFTEST = QS.get('selftest') === '1';
   const TOUCH_DEAD = (CFG.TOUCH && CFG.TOUCH.DEAD) || 0.12;
   const TOUCH_AIM_LERP = (CFG.TOUCH && CFG.TOUCH.AIM_LERP) || 22;
   let touchInvSuspended = false;
@@ -78,6 +79,10 @@ const G = (function () {
     return d;
   }
   function angLerp(a, b, t) { return a + angDiff(a, b) * t; }
+  function isPortrait() {
+    if (window.matchMedia) return window.matchMedia('(orientation: portrait)').matches;
+    return window.innerWidth < window.innerHeight;
+  }
 
   /* 品质色 → 渲染器数值数组 */
   const RGB_CACHE = {};
@@ -240,6 +245,16 @@ const G = (function () {
       e.preventDefault();
     }, { passive: false });
     window.addEventListener('resize', function () { R.resize(canvas); });
+
+    /* 手机竖屏时自动暂停，避免玩家看旋转提示时被敌人打死 */
+    if (TOUCH_MODE && !SELFTEST && window.matchMedia) {
+      const portrait = window.matchMedia('(orientation: portrait)');
+      const onOrient = function () {
+        if (portrait.matches && mode === 'mission' && !paused && !ended) setPause(true);
+      };
+      if (portrait.addEventListener) portrait.addEventListener('change', onOrient);
+      else if (portrait.addListener) portrait.addListener(onOrient);
+    }
   }
 
   function setPitch(dir) {
@@ -1224,6 +1239,7 @@ const G = (function () {
       touchInvSuspended = false;
       TOUCH.reset();
       TOUCH.setAuto(!!WEAPONS[player.weapon].auto);
+      if (!SELFTEST && isPortrait()) setPause(true);
     }
     if (QS.get('die') === '1') { player.dead = true; player.deadT = 0.5; }
     flash(380);
@@ -1399,6 +1415,39 @@ const G = (function () {
         else if (act === 'loot') tryLoot();
         else if (act === 'inventory') Inventory.toggle();
         else if (act === 'pause') setPause(true);
+      });
+    }
+
+    const rotateBtn = $('rotateBtn');
+    if (rotateBtn) {
+      rotateBtn.addEventListener('click', function () {
+        const root = document.documentElement;
+        const status = $('rotateStatus');
+        const note = function (s) { if (status) status.textContent = s; };
+        const req = root.requestFullscreen || root.webkitRequestFullscreen;
+        const lock = (screen.orientation && screen.orientation.lock)
+          ? function () { return screen.orientation.lock('landscape'); }
+          : null;
+
+        try {
+          const fs = req ? req.call(root) : null;
+          if (fs && fs.then) {
+            fs.then(function () {
+              if (lock) return lock();
+            }).catch(function () {});
+          } else if (lock) {
+            const p = lock();
+            if (p && p.catch) p.catch(function () {});
+          }
+        } catch (e) { /* ignore */ }
+
+        setTimeout(function () {
+          if (window.innerWidth < window.innerHeight) {
+            note('浏览器未自动旋转，请手动把手机横过来');
+          } else {
+            note('已进入横屏');
+          }
+        }, 800);
       });
     }
   }

@@ -7,13 +7,34 @@
    ============================================================ */
 
 const Stash = (function () {
-  const CELL = 52;
-  const GAP = 6;
-  const PITCH = CELL + GAP;
+  let CELL = 52;
+  let GAP = 6;
+  let PITCH = CELL + GAP;
 
   const el = {};
   let selected = null;
   let msgTimer = 0;
+
+  /* 手机横屏用更小的格子，保证 12×8 仓库 + 右侧详情能塞进屏幕 */
+  function layout() {
+    const touch = !!window.__touchMode;
+    const tiny = touch && window.innerWidth < 700;
+    const compact = touch && (window.innerWidth < 1100 || window.innerHeight < 600);
+    const nextCell = tiny ? 27 : (compact ? 30 : 52);
+    const nextGap = tiny ? 2 : (compact ? 3 : 6);
+    if (nextCell === CELL && nextGap === GAP) return false;
+    CELL = nextCell;
+    GAP = nextGap;
+    PITCH = CELL + GAP;
+    return true;
+  }
+
+  function applyGrid() {
+    if (!el.grid) return;
+    el.grid.style.gridTemplateColumns = 'repeat(' + CFG.STASH_COLS + ', ' + CELL + 'px)';
+    el.grid.style.gridTemplateRows = 'repeat(' + CFG.STASH_ROWS + ', ' + CELL + 'px)';
+    el.grid.style.gap = GAP + 'px';
+  }
 
   function init() {
     el.root = UI.$('paneStash');
@@ -28,6 +49,9 @@ const Stash = (function () {
     el.all = UI.$('stashAll');
     el.sort = UI.$('stashSort');
     el.msg = UI.$('stashMsg');
+
+    layout();
+    applyGrid();
 
     for (let i = 0; i < CFG.STASH_COLS * CFG.STASH_ROWS; i++) {
       const d = UI.el('div', 'cell');
@@ -48,6 +72,17 @@ const Stash = (function () {
       Store.stashRepack();
       refresh();
       msg('已整理');
+    });
+
+    el.detail.addEventListener('click', function (e) {
+      const target = e.target;
+      const btn = target && target.closest ? target.closest('[data-stash-act]') : null;
+      if (!btn || !selected) return;
+      dismantle(selected);
+    });
+
+    window.addEventListener('resize', function () {
+      if (layout()) refresh();
     });
   }
 
@@ -88,8 +123,9 @@ const Stash = (function () {
   function renderDetail() {
     const list = Store.stash();
     if (!selected || list.indexOf(selected) < 0) {
-      el.detail.innerHTML =
-        '<div class="dt-empty">仓库物资会跨局保存<br><span>右键单件立即分解</span></div>';
+      el.detail.innerHTML = window.__touchMode
+        ? '<div class="dt-empty">仓库物资会跨局保存<br><span>点选物资后在下方分解</span></div>'
+        : '<div class="dt-empty">仓库物资会跨局保存<br><span>右键单件立即分解</span></div>';
       return;
     }
     const it = selected;
@@ -100,7 +136,8 @@ const Stash = (function () {
       '<div class="dt-line"><span>' + t.name + ' · 数据载体</span><b>' + it.value + ' NB</b></div>' +
       '<div class="dt-line"><span>尺寸</span><b>' + d.w + '×' + d.h + '</b></div>' +
       '<div class="dt-line"><span>分解耗时</span><b>仓库内瞬发</b></div>' +
-      '<div class="dt-hint">[右键] 立即分解为数据</div>';
+      '<div class="dt-hint">[右键] 立即分解为数据</div>' +
+      '<div class="dt-touch"><button type="button" class="dt-btn danger" data-stash-act="dismantle">分解</button></div>';
   }
 
   function dismantle(it) {
@@ -141,6 +178,7 @@ const Stash = (function () {
 
   function refresh() {
     if (!el.root) return;
+    applyGrid();
     const list = Store.stash();
     if (selected && list.indexOf(selected) < 0) selected = null;
     el.bank.textContent = UI.fmt(Store.bank());

@@ -90,6 +90,7 @@
 
       /* ---------- 5. 出击 ---------- */
       G.beginMission({ weapons: [3, 0], mags: [2, 1], data: 300, character: 1 });
+      G.setPaused(false);   // 竖屏触屏环境会自动暂停，自测里显式恢复
       const p = G.state.player;
       eq('mode mission', G.mode, 'mission');
       eq('carried 2', p.carried.length, 2);

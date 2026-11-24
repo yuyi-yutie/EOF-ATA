@@ -71,11 +71,9 @@
     <div id="touchControls" class="touch-controls">
       <div class="stick-pad stick-move" id="stickMove" role="group" aria-label="移动摇杆">
         <div class="stick-base"><i class="stick-inner"></i></div>
-        <div class="stick-knob"><i></i></div>
       </div>
       <div class="stick-pad stick-aim" id="stickAim" role="group" aria-label="射击摇杆">
         <div class="stick-base"><i class="stick-inner"></i></div>
-        <div class="stick-knob"><i></i></div>
       </div>
       <div class="touch-actions">
         <button type="button" class="touch-btn" data-touch-act="reload">换弹</button>
@@ -361,6 +359,17 @@
 
   <div class="toast" id="toast"></div>
   <div class="flash" id="flash"></div>
+
+  <!-- 竖屏遮罩：手机端只支持横屏 -->
+  <div id="rotateHint" class="rotate-hint">
+    <div class="rotate-card">
+      <div class="rotate-icon"><i></i></div>
+      <div class="rotate-title">请旋转至横屏</div>
+      <div class="rotate-sub">EOFATA 手机端目前只支持横屏</div>
+      <button type="button" id="rotateBtn" class="rotate-btn">全屏并锁定横屏</button>
+      <div id="rotateStatus" class="rotate-status">如果浏览器不支持自动旋转，请手动横握手机</div>
+    </div>
+  </div>
   <div id="loading">载入中…</div>
 </div>
 
