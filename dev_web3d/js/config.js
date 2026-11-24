@@ -28,6 +28,14 @@ const CFG = {
     LERP: 9.0         // 跟随平滑
   },
 
+  /* 触屏双摇杆：比例都相对于摇杆底座半径 */
+  TOUCH: {
+    INNER: 0.58,       // 内圆直径 / 底座直径
+    DEAD: 0.12,        // 中心死区
+    KNOB: 0.82,        // 摇杆头最大偏移
+    AIM_LERP: 22       // 上半身瞄准跟随速度
+  },
+
   PLAYER: {
     r: 0.42,
     walk: 3.4,
@@ -59,31 +67,48 @@ const CFG = {
   EXTRACT_HOLD: 6.0,
   INTERACT_R: 2.2,
 
-  LOOT_COUNT: 26
+  LOOT_COUNT: 26,
+
+  /* ----------------------------------------------------------
+     局外系统（大厅 / 仓库 / 背包 / 经济）
+     ---------------------------------------------------------- */
+  START_BANK: 300,          // 新档数据
+  CARRY_UNIT: 100,          // 出征数据的最小单位
+  CARRY_MAX_MAGS: 3,        // 每把武器可配给的初始弹夹（含枪内）
+
+  INV_COLS: 6,
+  INV_ROWS: 4,
+  STASH_COLS: 12,
+  STASH_ROWS: 8,
+
+  HEAL_COST: 50,
+  HEAL_TIME: 3.0,
+  MAG_TIME: 1.5,
+  KIT_TIME: 0.7
 };
 
 /* ------------------------------------------------------------
    五把武器：数值沿用 2D 原型
    ------------------------------------------------------------ */
 const WEAPONS = [
-  { id: 'sonic', name: '共振霰弹', tag: '声学', color: '#ffb648', accent: '#F0B04C',
-    mag: 6, maxSpare: 2, rate: 0.75, reload: 2.4, dmg: 40, dmgFar: 16,
+  { id: 'sonic', auto: false, name: '共振霰弹', tag: '声学', color: '#ffb648', accent: '#F0B04C',
+    mag: 6, maxSpare: 2, rate: 0.75, reload: 2.4, dmg: 40, dmgFar: 16, cost: 40,
     range: 26, halfAngle: 33, recoil: 0.9, kick: 1.15, noise: 760,
     desc: '扇形冲击波，随距离衰减' },
-  { id: 'laser', name: '棱镜激光', tag: '光学', color: '#9fe6ff', accent: '#8FE3F2',
-    mag: 6, maxSpare: 2, rate: 0.5, reload: 2.0, dmg: 46, dmgFar: 34,
+  { id: 'laser', auto: false, name: '棱镜激光', tag: '光学', color: '#9fe6ff', accent: '#8FE3F2',
+    mag: 6, maxSpare: 2, rate: 0.5, reload: 2.0, dmg: 46, dmgFar: 34, cost: 60,
     range: 60, bounce: 3, falloff: 0.85, recoil: 0.3, kick: 0.55, noise: 560,
     desc: '单发高伤光束' },
-  { id: 'thermal', name: '辐射投射器', tag: '热学', color: '#ff7043', accent: '#F0703C',
-    mag: 5, maxSpare: 2, rate: 0.9, reload: 2.6, dmg: 34, dmgFar: 20,
+  { id: 'thermal', auto: false, name: '辐射投射器', tag: '热学', color: '#ff7043', accent: '#F0703C',
+    mag: 5, maxSpare: 2, rate: 0.9, reload: 2.6, dmg: 34, dmgFar: 20, cost: 70,
     range: 40, speed: 24, zoneR: 3.1, zoneLife: 3.2, tickDmg: 3.5, recoil: 1.4, kick: 1.3, noise: 560,
     desc: '弹体命中后灼烧一小片区域' },
-  { id: 'kinetic', name: '轨道步枪', tag: '力学', color: '#e8e8e8', accent: '#DDE3EA',
-    mag: 12, maxSpare: 2, rate: 0.28, reload: 1.8, dmg: 34, dmgFar: 30,
+  { id: 'kinetic', auto: false, name: '轨道步枪', tag: '力学', color: '#e8e8e8', accent: '#DDE3EA',
+    mag: 12, maxSpare: 2, rate: 0.28, reload: 1.8, dmg: 34, dmgFar: 30, cost: 25,
     range: 70, speed: 60, recoil: 0.35, kick: 0.5, noise: 520,
     desc: '高速动能弹，单发高伤' },
-  { id: 'voltaic', name: '电弧枪', tag: '电学', color: '#b28cff', accent: '#B491F0',
-    mag: 8, maxSpare: 2, rate: 0.45, reload: 2.0, dmg: 22, dmgFar: 14,
+  { id: 'voltaic', auto: false, name: '电弧枪', tag: '电学', color: '#b28cff', accent: '#B491F0',
+    mag: 8, maxSpare: 2, rate: 0.45, reload: 2.0, dmg: 22, dmgFar: 14, cost: 60,
     range: 34, speed: 42, chainR: 6.0, chainMax: 3, chainMul: [0.6, 0.4, 0.25], recoil: 0.5, kick: 0.75, noise: 540,
     desc: '命中后向附近敌人放电' }
 ];

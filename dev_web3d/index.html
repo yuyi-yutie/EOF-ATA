@@ -2,19 +2,31 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
 <title>EOFATA 3D — End of Future : ATA</title>
 <link rel="icon" href="data:," />
+<script>
+  /* 触屏设备自动启用手机控件；?touch=1 强制预览，?touch=0 强制关闭 */
+  (function () {
+    var q = new URLSearchParams(location.search);
+    var mode = q.get('touch');
+    var coarse = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
+    var small = Math.min(window.innerWidth, window.innerHeight) < 820;
+    var touch = mode === '1' || (mode !== '0' &&
+      (coarse || ('ontouchstart' in window && small) || (navigator.maxTouchPoints > 0 && small)));
+    window.__touchMode = !!touch;
+    if (touch) document.documentElement.classList.add('touch-ui');
+  })();
+</script>
 <link rel="stylesheet" href="css/app.css" />
 </head>
 <body>
 <div id="app">
   <canvas id="gl"></canvas>
-  <div id="cross"></div>
   <div id="hitmark"></div>
   <div id="dmgFlash"></div>
 
-  <div id="hud">
+  <div id="hud" class="hidden">
     <div class="hud-tl">
       <div class="vbar shd"><i id="shdFill"></i><span class="lab">SHD</span><span class="num" id="shdNum">60</span></div>
       <div class="vbar hp"><i id="hpFill"></i><span class="lab">VIT</span><span class="num" id="hpNum">100</span></div>
@@ -22,10 +34,15 @@
     </div>
 
     <div class="hud-tr">
+      <div class="data-box"><span>数据</span><b id="dataNum">0</b><em>NB</em></div>
       <div class="stat"><span>KILL</span><b id="kills">0</b></div>
       <div class="stat"><span>LOOT</span><b id="loot">0</b></div>
       <div class="stat"><span>TIME</span><b id="timer">00:00</b></div>
-      <div class="cam" id="camInfo">60° · 60fps</div>
+      <div class="cam" id="camInfo">70° · 60fps</div>
+    </div>
+
+    <div class="hud-tc">
+      <div class="objective" id="objective"><i></i><span id="objText">撤离点</span></div>
     </div>
 
     <div class="hud-br">
@@ -35,28 +52,315 @@
       <div class="reload hidden" id="reloadWrap"><i id="reloadFill"></i></div>
     </div>
 
+    <div class="hud-bl">
+      <div class="slot-list" id="slots"></div>
+    </div>
+
     <div class="ex-wrap" id="extractWrap">
       <div class="ex-label">// 撤离同步中</div>
       <div class="ex-bar"><i id="exFill"></i></div>
     </div>
 
-    <div class="toast" id="toast"></div>
+    <div class="hud-bc">
+      <div class="prompt hidden" id="prompt"></div>
+    </div>
+
     <div class="dbg" id="dbg">dbg</div>
 
+    <!-- ================= 触屏双摇杆 ================= -->
+    <div id="touchControls" class="touch-controls">
+      <div class="stick-pad stick-move" id="stickMove" role="group" aria-label="移动摇杆">
+        <div class="stick-base"><i class="stick-inner"></i></div>
+        <div class="stick-knob"><i></i></div>
+      </div>
+      <div class="stick-pad stick-aim" id="stickAim" role="group" aria-label="射击摇杆">
+        <div class="stick-base"><i class="stick-inner"></i></div>
+        <div class="stick-knob"><i></i></div>
+      </div>
+      <div class="touch-actions">
+        <button type="button" class="touch-btn" data-touch-act="reload">换弹</button>
+        <button type="button" class="touch-btn" data-touch-act="loot">拾取</button>
+        <button type="button" class="touch-btn" data-touch-act="inventory">背包</button>
+        <button type="button" class="touch-btn" data-touch-act="pause">暂停</button>
+      </div>
+    </div>
+
     <div class="hint">
-      <b>WASD</b> 移动 · <b>SHIFT</b> 奔跑 · <b>左键</b> 射击 · <b>R</b> 换弹 · <b>1–5</b> 换枪
-      · <b>F</b> 拾取 · <b>[ ]</b> 俯角 · <b>滚轮</b> 远近
+      <b>WASD</b> 移动 · <b>SHIFT</b> 奔跑 · <b>左键</b> 射击 · <b>R</b> 换弹 · <b>1/2</b> 换枪
+      · <b>F</b> 拾取 · <b>TAB</b> 背包 · <b>P</b> 暂停
     </div>
   </div>
 
+  <!-- ================= 大厅 / 机库 ================= -->
+  <div id="lobby" class="hidden">
+    <div class="lobby-top">
+      <div class="lobby-brand">EOFATA<span>// 机库</span></div>
+      <div class="lobby-tabs" id="lobbyTabs"></div>
+      <div class="lobby-money">
+        <span>数据</span><b id="lobbyBank">300</b><em>NB</em>
+        <span class="lobby-best">最佳 <i id="lobbyBest">0</i></span>
+      </div>
+    </div>
+
+    <div class="lobby-main">
+      <div class="lobby-left">
+        <div class="panel-sec">
+          <div class="sec-head">选择角色 <em id="lobbyCharName">潜行者</em></div>
+          <div class="char-list" id="lobbyChars"></div>
+        </div>
+
+        <div class="panel-sec grow">
+          <div class="sec-head">携带武器 <em id="lobbyPick">0 / 2</em></div>
+          <div class="weapon-list" id="lobbyWeapons"></div>
+          <div class="weapon-tip">最多携带 2 把 · 其余武器当局锁定</div>
+        </div>
+
+        <div class="panel-sec">
+          <div class="sec-head">战术补给 <em>在补给站购买</em></div>
+          <div class="kit-line" id="lobbyKit"></div>
+        </div>
+      </div>
+
+      <div class="lobby-center">
+        <div class="launch-zone">
+          <div class="lobby-warn" id="lobbyWarn"></div>
+          <button id="lobbyStart" class="launch-btn dis">出击</button>
+          <div class="launch-hint"><b>ENTER</b> 进入设施 · 撤离才带走战利品</div>
+        </div>
+      </div>
+
+      <div class="lobby-right">
+        <div class="panel-sec">
+          <div class="sec-head">配装槽 <em>每把 0–3 个弹夹</em></div>
+          <div class="load-list" id="lobbyLoad"></div>
+        </div>
+
+        <div class="panel-sec">
+          <div class="sec-head">携带数据 <em id="lobbyCarryMax">上限 0 NB</em></div>
+          <div class="carry-row">
+            <button class="lr-btn" id="carryMinus">−</button>
+            <span class="carry-num" id="lobbyCarry">0</span>
+            <button class="lr-btn" id="carryPlus">+</button>
+            <button class="lr-all" id="carryAll">全部</button>
+          </div>
+        </div>
+
+        <div class="calc">
+          <div class="calc-row"><span>弹夹配给</span><b id="lobbyCost">0</b><em>NB</em></div>
+          <div class="calc-row"><span>携带数据</span><b id="lobbyCarryCost">0</b><em>NB</em></div>
+          <div class="calc-row total"><span>进场后账户</span><b id="lobbyRemain">300</b><em>NB</em></div>
+        </div>
+
+        <div class="stash-line">仓库 <b id="lobbyStashCount">0</b> 件 · <i id="lobbyStashValue">0</i> NB</div>
+        <div class="lobby-msg" id="lobbyMsg"></div>
+      </div>
+
+      <!-- ---------- 仓库 ---------- -->
+      <div class="tab-pane" id="paneStash">
+        <div class="pane-head">
+          <div class="pane-title">仓库<span>// STASH</span></div>
+          <div class="pane-meta">
+            <span>数据 <b id="stashBank">0</b> NB</span>
+            <span>物资 <b id="stashCount">0</b> 件 · <b id="stashValue">0</b> NB</span>
+            <span>占格 <b id="stashCells">0 / 96</b></span>
+          </div>
+        </div>
+        <div class="stash-body">
+          <div class="stash-grid" id="stashGrid">
+            <div class="stash-items" id="stashItems"></div>
+          </div>
+          <div class="stash-side">
+            <div class="detail-box" id="stashDetail">
+              <div class="dt-empty">仓库物资会跨局保存<br><span>右键单件立即分解</span></div>
+            </div>
+            <div class="sec-head">品质分布 <em>件 / 价值</em></div>
+            <div class="stash-break" id="stashBreak"></div>
+            <div class="side-actions">
+              <button class="btn" id="stashSort">整理仓库</button>
+              <button class="btn danger" id="stashAll">全部拆解</button>
+            </div>
+            <div class="pane-msg" id="stashMsg"></div>
+            <div class="pane-tip">右键单件 → 立即分解（不消耗时间）<br>左键查看详情 · 撤离成功才会入库</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ---------- 补给站 ---------- -->
+      <div class="tab-pane" id="paneShop">
+        <div class="pane-head">
+          <div class="pane-title">补给站<span>// QUARTERMASTER</span></div>
+          <div class="pane-meta"><span>数据 <b id="shopBank">0</b> NB</span></div>
+        </div>
+        <div class="shop-body">
+          <div class="shop-col">
+            <div class="sec-head">战术补给 <em>带进局内，用掉才消耗</em></div>
+            <div class="shop-list" id="shopSupplies"></div>
+            <div class="pane-tip">按件购买，撤离后未使用的补给保留；阵亡则丢失。</div>
+            <div class="shop-note">
+              <div class="sec-head">使用方式</div>
+              <div class="rule-list">
+                <div><b>打开背包</b>局内按 TAB 打开背包</div>
+                <div><b>战术道具</b>在右侧列表里点击使用</div>
+                <div><b>不耗数据</b>补给回复不消耗本局数据</div>
+              </div>
+            </div>
+          </div>
+          <div class="shop-col">
+            <div class="sec-head">永久强化 <em>全部角色生效</em></div>
+            <div class="shop-list" id="shopAugments"></div>
+            <div class="pane-tip">强化永久保留，每级效果叠加。</div>
+          </div>
+        </div>
+        <div class="pane-msg" id="shopMsg"></div>
+      </div>
+
+      <!-- ---------- 合约 ---------- -->
+      <div class="tab-pane" id="paneContracts">
+        <div class="pane-head">
+          <div class="pane-title">合约<span>// CONTRACTS</span></div>
+          <div class="pane-meta"><span>数据 <b id="contractBank">0</b> NB</span></div>
+        </div>
+        <div class="contract-body">
+          <div class="contract-list" id="contractList"></div>
+          <div class="contract-side">
+            <div class="panel-sec">
+              <div class="sec-head">合约规则</div>
+              <div class="rule-list">
+                <div><b>单局类</b>取历史最好的一次成绩</div>
+                <div><b>累计类</b>跨局持续累加</div>
+                <div><b>领取</b>奖励直接进入数据账户</div>
+              </div>
+            </div>
+            <div class="panel-sec">
+              <div class="sec-head">本轮进度 <em id="contractEpoch">ROUND 1</em></div>
+              <div class="cts-row"><span>已领取</span><b id="contractClaimed">0 / 3</b></div>
+              <div class="cts-row"><span>累计奖励</span><b id="contractReward">0 NB</b></div>
+              <div class="cts-bar"><i id="contractFill"></i></div>
+            </div>
+            <button class="btn" id="contractReroll">完成并领取全部合约后可刷新</button>
+            <div class="pane-tip">完成合约后回到机库，在本页领取数据奖励。</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ---------- 档案 ---------- -->
+      <div class="tab-pane" id="paneArchive">
+        <div class="pane-head">
+          <div class="pane-title">档案<span>// ARCHIVE</span></div>
+          <div class="pane-meta"><span>出击记录与永久成长</span></div>
+        </div>
+        <div class="archive-body">
+          <div class="archive-left">
+            <div class="arc-grid">
+              <div class="arc-stat"><span>出击</span><b id="arcRuns">0</b></div>
+              <div class="arc-stat"><span>撤离</span><b id="arcExtracts">0</b></div>
+              <div class="arc-stat"><span>失联</span><b id="arcDeaths">0</b></div>
+              <div class="arc-stat"><span>撤离率</span><b id="arcRate">0%</b></div>
+              <div class="arc-stat"><span>击杀</span><b id="arcKills">0</b></div>
+              <div class="arc-stat"><span>拾取</span><b id="arcLooted">0</b></div>
+              <div class="arc-stat"><span>分解</span><b id="arcDismantled">0</b></div>
+              <div class="arc-stat"><span>最佳带出</span><b id="arcBestHaul">0</b></div>
+              <div class="arc-stat"><span>单局最多击杀</span><b id="arcBestKills">0</b></div>
+              <div class="arc-stat"><span>总时长</span><b id="arcTime">00:00</b></div>
+            </div>
+            <div class="sec-head">永久强化</div>
+            <div class="arc-augs" id="arcAugs"></div>
+            <div class="sec-head">出击记录</div>
+            <div class="hist-head"><span>结果</span><span>击杀</span><span>物资</span><span>数据</span><span>带出</span><span>用时</span></div>
+            <div class="hist" id="arcHistory"></div>
+          </div>
+          <div class="archive-right">
+            <div class="panel-sec">
+              <div class="sec-head">当前配装</div>
+              <div class="arc-loadout" id="arcLoadout"></div>
+            </div>
+            <div class="panel-sec">
+              <div class="sec-head">战术补给 / 仓库</div>
+              <div class="arc-kit" id="arcKit"></div>
+              <div class="arc-cap-label" id="arcStashLabel">仓库 0 / 96</div>
+              <div class="arc-cap"><i id="arcStashFill"></i></div>
+            </div>
+            <div class="panel-sec">
+              <div class="sec-head">默认镜头俯角</div>
+              <div class="chip-row" id="arcCam"></div>
+              <div class="sec-head" style="margin-top:10px">存档</div>
+              <button class="btn danger" id="archiveWipe">清空存档</button>
+            </div>
+            <div class="pane-tip">清空后账户、仓库、强化、合约全部回到新档状态。</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="lobby-foot" id="lobbyFootHint">
+      <b>ENTER</b> 出击 · <b>1/2</b> 选择携带武器 · 撤离成功：数据入账、物资入库 · 阵亡：本局物资与携带数据丢失
+    </div>
+  </div>
+
+  <!-- ================= 局内背包 ================= -->
+  <div id="inventory" class="overlay hidden">
+    <div class="inv-panel">
+      <div class="inv-head">
+        <span class="inv-title">背包 / INVENTORY</span>
+        <span class="inv-cap"><em id="invCount">0</em> / <span id="invCap">24</span> 格</span>
+        <span class="inv-data">数据 <b id="invData">0</b> NB</span>
+        <button class="x-btn" id="invClose">TAB / ESC</button>
+      </div>
+      <div class="inv-body">
+        <div class="inv-grid-wrap">
+          <div class="inv-grid" id="invGrid">
+            <div class="inv-items" id="invItems"></div>
+            <div class="inv-drop" id="invDrop"></div>
+          </div>
+          <div class="inv-keys">左键拖动 · <b>R</b> 旋转 · 右键分解 · 移动会中断操作</div>
+        </div>
+        <div class="inv-side">
+          <div class="detail-box" id="invDetail">
+            <div class="dt-empty">左键拖动 · R 旋转 · 右键分解<br><span>物品尺寸固定，可自由摆放</span></div>
+          </div>
+          <div class="side-sec">
+            <div class="sec-head">弹药压装 <em>备弹上限 2 夹</em></div>
+            <div class="craft-list" id="craftList"></div>
+          </div>
+          <div class="side-sec">
+            <div class="sec-head">战术道具 <em>补给站购买</em></div>
+            <div class="kit-list" id="kitList"></div>
+          </div>
+          <div class="action-progress hidden" id="actionProg">
+            <div class="ap-label" id="apLabel">分解中</div>
+            <div class="ap-bar"><i id="apFill"></i></div>
+          </div>
+          <button class="action-btn dis" id="healBtn"></button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= 暂停 ================= -->
+  <div id="pause" class="screen hidden">
+    <div class="mini-panel">
+      <div class="mini-tag">// MISSION PAUSED</div>
+      <div class="mini-title">行动暂停</div>
+      <button class="btn primary" id="resumeBtn">继续行动</button>
+      <button class="btn" id="abandonBtn">放弃行动 · 返回机库</button>
+      <div class="mini-foot">P / ESC 继续</div>
+    </div>
+  </div>
+
+  <!-- ================= 结算 ================= -->
   <div id="endScreen" class="hidden">
     <div class="end-panel">
+      <div class="end-tag" id="endTag">// EXTRACTION</div>
       <div class="end-title" id="endTitle">撤离成功</div>
-      <div class="end-body" id="endBody"></div>
-      <button id="againBtn">再来一局</button>
+      <div class="end-grid" id="endBody"></div>
+      <div class="end-note" id="endNote"></div>
+      <div class="end-contract" id="endContracts"></div>
+      <button id="againBtn">返回机库</button>
     </div>
   </div>
 
+  <div class="toast" id="toast"></div>
+  <div class="flash" id="flash"></div>
   <div id="loading">载入中…</div>
 </div>
 
@@ -68,10 +372,22 @@
   });
 </script>
 <script src="js/config.js"></script>
+<script src="js/items.js"></script>
+<script src="js/grid.js"></script>
+<script src="js/store.js"></script>
 <script src="js/models.js"></script>
 <script src="js/world.js"></script>
+<script src="js/hangar.js"></script>
 <script src="js/gl.js"></script>
+<script src="js/ui.js"></script>
 <script src="js/hud.js"></script>
+<script src="js/inventory.js"></script>
+<script src="js/stash.js"></script>
+<script src="js/shop.js"></script>
+<script src="js/contracts.js"></script>
+<script src="js/lobby.js"></script>
+<script src="js/touch.js"></script>
 <script src="js/game.js"></script>
+<script src="js/selftest.js"></script>
 </body>
 </html>

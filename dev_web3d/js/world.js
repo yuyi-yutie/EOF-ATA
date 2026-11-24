@@ -120,12 +120,46 @@ const World = (function () {
             cr: rnd() < 0.6 ? 0.72 : 0.45
           });
         } else {
+          /* 越远的房间越容易出高品质物资 */
+          const dist = Math.hypot(c.x - spawn.x, c.z - spawn.z);
+          const luck = Math.max(0, Math.min(1, dist / (W * CELL * 0.55)));
+          const tier = ITEMS.pickTier(rnd, luck);
           loot.push({
             x: c.x, z: c.z, kind: rnd() < 0.7 ? 'case' : 'canister',
-            taken: false, tier: rnd() < 0.6 ? 'common' : (rnd() < 0.7 ? 'fine' : 'rare')
+            taken: false, tier: tier.id,
+            item: ITEMS.rollForTier(tier, rnd)
           });
         }
       }
+    }
+    /* 房间里的物资不够就补足到 LOOT_COUNT，保证每局都有可搜刮目标 */
+    let guard = 0;
+    while (loot.length < CFG.LOOT_COUNT && guard++ < 500) {
+      const r = rooms[Math.floor(rnd() * rooms.length)];
+      if (!r) break;
+      const cx = ri(r.x + 1, r.x + r.w - 2);
+      const cz = ri(r.z + 1, r.z + r.h - 2);
+      if (!isFloor(cx, cz)) continue;
+      const c = cellCenter(cx, cz);
+      if (Math.hypot(c.x - spawn.x, c.z - spawn.z) < 5) continue;
+      if (Math.hypot(c.x - pad.x, c.z - pad.z) < pad.r + 2) continue;
+      let tooClose = false;
+      for (let k = 0; k < loot.length; k++) {
+        if (Math.hypot(loot[k].x - c.x, loot[k].z - c.z) < 1.4) { tooClose = true; break; }
+      }
+      if (tooClose) continue;
+      for (let k = 0; k < props.length; k++) {
+        if (Math.hypot(props[k].x - c.x, props[k].z - c.z) < 1.2) { tooClose = true; break; }
+      }
+      if (tooClose) continue;
+      const dist = Math.hypot(c.x - spawn.x, c.z - spawn.z);
+      const luck = Math.max(0, Math.min(1, dist / (W * CELL * 0.55)));
+      const tier = ITEMS.pickTier(rnd, luck);
+      loot.push({
+        x: c.x, z: c.z, kind: rnd() < 0.7 ? 'case' : 'canister',
+        taken: false, tier: tier.id,
+        item: ITEMS.rollForTier(tier, rnd)
+      });
     }
     return api;
   }
@@ -207,6 +241,15 @@ const World = (function () {
       geo.box({
         x: pad.x + Math.cos(a) * pad.r, y: 1.86, z: pad.z + Math.sin(a) * pad.r,
         sx: 0.22, sy: 0.12, sz: 0.22, color: padC, outline: 0, emis: true
+      });
+      /* 高空光柱：隔着墙也能看到撤离点方向 */
+      geo.box({
+        x: pad.x + Math.cos(a) * pad.r, y: 6.4, z: pad.z + Math.sin(a) * pad.r,
+        sx: 0.09, sy: 8.6, sz: 0.09, color: padC, outline: 0, emis: true
+      });
+      geo.box({
+        x: pad.x + Math.cos(a) * pad.r, y: 10.7, z: pad.z + Math.sin(a) * pad.r,
+        sx: 0.26, sy: 0.26, sz: 0.26, color: padC, outline: 0, emis: true
       });
     }
     return geo;

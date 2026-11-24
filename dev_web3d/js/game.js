@@ -1,15 +1,21 @@
 'use strict';
 
 /* ============================================================
-   主循环：输入 / 镜头 / 战斗 / 敌人 AI / 特效 / 渲染
+   主循环：大厅 ⇄ 设施
+   - 大厅：3D 机库 + 配装 / 仓库 / 补给 / 合约 / 档案
+   - 设施：射击 / 敌人 AI / 搜刮 / 撤离
+   - 结算：数据入账、物资入库、合约与战绩更新
    ============================================================ */
 
 const G = (function () {
   let canvas;
   let running = false, last = 0;
   let time = 0;
+  let lobbyT = 0;
   let paused = false;
   let ended = false;
+  let mode = 'lobby';           // 'lobby' | 'mission'
+  let endReason = '';
 
   const CAM = {
     pitch: CFG.CAM.PITCH,
@@ -22,11 +28,18 @@ const G = (function () {
   };
 
   const player = {
-    x: 0, z: 0, yaw: 0, hp: CFG.PLAYER.hp, shield: CFG.PLAYER.shield,
+    x: 0, z: 0, yaw: 0, moveYaw: 0,
+    hp: CFG.PLAYER.hp, maxHp: CFG.PLAYER.hp,
+    shield: CFG.PLAYER.shield, maxShield: CFG.PLAYER.shield,
     stam: CFG.PLAYER.stam, moving: false, animT: 0, sprinting: false,
-    weapon: 0, cool: 0, reload: 0, recoil: 0,
+    weapon: 0, slot: 0, carried: [], cool: 0, reload: 0, recoil: 0,
     shieldTimer: 0, stamTimer: 0, dead: false, deadT: 0,
-    mags: [], spares: [], extractT: 0, extracted: false
+    mags: [], spares: [],
+    data: 0, inv: [], sel: null, invRows: CFG.INV_ROWS,
+    kit: { medkit: 0, battery: 0 },
+    looted: 0, dismantledValue: 0,
+    extractT: 0, extracted: false, reloadMul: 1,
+    charKey: 'scout'
   };
 
   let enemies = [];
@@ -43,9 +56,15 @@ const G = (function () {
   let aim = { x: 0, z: -1 };
   let shake = 0;
   let fovPunch = 0;
-  let kills = 0, looted = 0;
+  let kills = 0, looted = 0, spittersKilled = 0;
   let seed = 20261123;
   const AUTO = QS.get('auto') === '1';
+  const WALK = QS.get('walk') === '1';
+  const MV = parseFloat(QS.get('mv'));
+  const TOUCH_MODE = !!window.__touchMode;
+  const TOUCH_DEAD = (CFG.TOUCH && CFG.TOUCH.DEAD) || 0.12;
+  const TOUCH_AIM_LERP = (CFG.TOUCH && CFG.TOUCH.AIM_LERP) || 22;
+  let touchInvSuspended = false;
 
   const keys = {};
   const mouse = { x: 0, y: 0, down: false };
@@ -59,6 +78,13 @@ const G = (function () {
     return d;
   }
   function angLerp(a, b, t) { return a + angDiff(a, b) * t; }
+
+  /* 品质色 → 渲染器数值数组 */
+  const RGB_CACHE = {};
+  function tierRgb(id) {
+    if (!RGB_CACHE[id]) RGB_CACHE[id] = hexRgb(ITEMS.tier(id).color);
+    return RGB_CACHE[id];
+  }
 
   /* ---------- 摄像机 ---------- */
   function updateCamera(dt) {
@@ -84,6 +110,13 @@ const G = (function () {
     const fov = CAM.fov + fovPunch;
     CAM.tanHalf = Math.tan(fov * Math.PI / 360);
     R.setCamera(CAM.eye, CAM.focus, fov);
+  }
+
+  function updateLobbyCamera(dt) {
+    lobbyT += dt;
+    const cam = Hangar.camera(lobbyT);
+    CAM.tanHalf = Math.tan(cam.fov * Math.PI / 360);
+    R.setCamera(cam.eye, cam.focus, cam.fov);
   }
 
   function screenToGround(mx, my, hy) {
@@ -116,20 +149,68 @@ const G = (function () {
     return { x: CAM.eye[0] + (dx / dl) * t, z: CAM.eye[2] + (dz / dl) * t };
   }
 
+  /* 世界坐标 -> 屏幕坐标：触屏模式把命中标记放到枪口前方 */
+  function worldToScreen(px, py, pz) {
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    const fx = CAM.focus[0] - CAM.eye[0];
+    const fy = CAM.focus[1] - CAM.eye[1];
+    const fz = CAM.focus[2] - CAM.eye[2];
+    const fl = Math.hypot(fx, fy, fz) || 1;
+    const f = [fx / fl, fy / fl, fz / fl];
+
+    let rx = -f[2], rz = f[0];
+    const rl = Math.hypot(rx, rz) || 1;
+    rx /= rl; rz /= rl;
+
+    const ux = -rz * f[1];
+    const uy = rz * f[0] - rx * f[2];
+    const uz = rx * f[1];
+
+    const vx = px - CAM.eye[0];
+    const vy = py - CAM.eye[1];
+    const vz = pz - CAM.eye[2];
+    const zc = vx * f[0] + vy * f[1] + vz * f[2];
+    if (zc <= 0.05) return null;
+
+    const asp = w / h;
+    const xc = (vx * rx + vz * rz) / (zc * CAM.tanHalf * asp);
+    const yc = (vx * ux + vy * uy + vz * uz) / (zc * CAM.tanHalf);
+    return { x: (xc * 0.5 + 0.5) * w, y: (0.5 - yc * 0.5) * h };
+  }
+
   /* ---------- 输入 ---------- */
   function bindInput() {
     window.addEventListener('keydown', function (e) {
       keys[e.code] = true;
+
+      if (mode === 'lobby') return;
+
+      /* 结算界面：R / ESC 返回机库 */
+      if (ended) {
+        if (e.code === 'Escape' || e.code === 'KeyR') { e.preventDefault(); toLobby(); }
+        return;
+      }
+
+      if (e.code === 'Escape') {
+        if (Inventory.isOpen()) { Inventory.close(); e.preventDefault(); return; }
+        if (paused) { setPause(false); e.preventDefault(); return; }
+        setPause(true);
+        e.preventDefault();
+        return;
+      }
+      if (e.code === 'KeyP') { setPause(!paused); e.preventDefault(); return; }
+      if (paused) return;
+
       if (e.code === 'BracketLeft') { setPitch(-1); e.preventDefault(); }
       if (e.code === 'BracketRight') { setPitch(1); e.preventDefault(); }
-      if (e.code === 'KeyR') startReload();
-      if (e.code === 'KeyF') tryLoot();
-      if (e.code === 'Digit1') switchWeapon(0);
-      if (e.code === 'Digit2') switchWeapon(1);
-      if (e.code === 'Digit3') switchWeapon(2);
-      if (e.code === 'Digit4') switchWeapon(3);
-      if (e.code === 'Digit5') switchWeapon(4);
-      if (e.code === 'KeyP') { paused = !paused; HUD.toast(paused ? '已暂停' : '继续'); }
+      if (e.code === 'Tab') { e.preventDefault(); Inventory.toggle(); return; }
+      if (e.code === 'KeyR') {
+        if (Inventory.isOpen()) Inventory.rotate();
+        else startReload();
+      }
+      if (e.code === 'KeyF') { if (!Inventory.isOpen()) tryLoot(); }
+      if (e.code === 'Digit1') switchSlot(0);
+      if (e.code === 'Digit2') switchSlot(1);
       if (e.code === 'F3') {
         const d = $('dbg');
         if (d) d.classList.toggle('on');
@@ -138,16 +219,23 @@ const G = (function () {
     });
     window.addEventListener('keyup', function (e) { keys[e.code] = false; });
     canvas.addEventListener('mousemove', function (e) {
+      if (TOUCH_MODE) return;
       const r = canvas.getBoundingClientRect();
       mouse.x = e.clientX - r.left;
       mouse.y = e.clientY - r.top;
-      const ch = $('cross');
-      if (ch) { ch.style.left = mouse.x + 'px'; ch.style.top = mouse.y + 'px'; }
+      HUD.aimAt(mouse.x, mouse.y);
     });
-    canvas.addEventListener('mousedown', function (e) { if (e.button === 0) mouse.down = true; });
+    canvas.addEventListener('mousedown', function (e) {
+      if (TOUCH_MODE) return;
+      if (e.button === 0 && mode === 'mission' && !paused && !ended && !Inventory.isOpen()) {
+        mouse.down = true;
+      }
+    });
     window.addEventListener('mouseup', function (e) { if (e.button === 0) mouse.down = false; });
+    window.addEventListener('blur', function () { mouse.down = false; });
     canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
     canvas.addEventListener('wheel', function (e) {
+      if (mode !== 'mission') return;
       CAM.dist = clamp(CAM.dist + Math.sign(e.deltaY) * 1.2, 7, 30);
       e.preventDefault();
     }, { passive: false });
@@ -160,29 +248,52 @@ const G = (function () {
     HUD.toast('镜头俯角 ' + CAM.pitch + '°');
   }
 
-  /* ---------- 战斗 ---------- */
-  function switchWeapon(i) {
-    if (i === player.weapon || i < 0 || i >= WEAPONS.length) return;
-    player.weapon = i;
-    player.cool = Math.max(player.cool, 0.25);
-    player.reload = 0;
-    HUD.mag(i);
+  /* ---------- 暂停 ---------- */
+  function setPause(v) {
+    if (mode !== 'mission' || ended) return;
+    paused = !!v;
+    mouse.down = false;
+    if (TOUCH_MODE) TOUCH.setEnabled(!paused);
+    const box = $('pause');
+    if (box) box.classList.toggle('hidden', !paused);
+    if (paused) Inventory.close();
   }
 
+  /* ---------- 战斗 ---------- */
+  function switchSlot(s) {
+    if (s < 0 || s >= player.carried.length || s === player.slot) return;
+    player.slot = s;
+    player.weapon = player.carried[s];
+    player.cool = Math.max(player.cool, 0.25);
+    player.reload = 0;
+    HUD.mag(player.weapon);
+    HUD.updateSlots(player);
+    if (TOUCH_MODE) TOUCH.setAuto(!!WEAPONS[player.weapon].auto);
+  }
+
+  let lastDryT = -9;
   function startReload() {
     const w = WEAPONS[player.weapon];
     if (player.reload > 0) return;
     if (player.mags[player.weapon] >= w.mag) return;
-    if (player.spares[player.weapon] <= 0) return;
-    player.reload = w.reload;
+    if (player.spares[player.weapon] <= 0) {
+      if (time - lastDryT > 1.2) {
+        lastDryT = time;
+        HUD.toast('没有备弹 · 打开背包压装弹夹', 'warn');
+      }
+      return;
+    }
+    player.reload = w.reload * player.reloadMul;
   }
 
   function finishReload() {
-    const w = WEAPONS[player.weapon];
-    const need = w.mag - player.mags[player.weapon];
-    const take = Math.min(need, player.spares[player.weapon]);
-    player.mags[player.weapon] += take;
-    player.spares[player.weapon] -= take;
+    const wi = player.weapon;
+    const w = WEAPONS[wi];
+    if (player.spares[wi] <= 0) return;
+    /* 备弹按「整夹」计算：换弹丢掉当前弹夹余弹，装入一整个满夹 */
+    player.spares[wi]--;
+    player.mags[wi] = w.mag;
+    HUD.updateSlots(player);
   }
 
   /* 枪口位置：和右手持枪的位置对齐，子弹从这里出去 */
@@ -190,9 +301,9 @@ const G = (function () {
     const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
     const rx = Math.cos(player.yaw), rz = -Math.sin(player.yaw);
     return {
-      x: player.x + fx * 0.92 + rx * 0.20,
-      y: 0.95,
-      z: player.z + fz * 0.92 + rz * 0.20
+      x: player.x + fx * 0.80 + rx * 0.18,
+      y: 0.78,
+      z: player.z + fz * 0.80 + rz * 0.18
     };
   }
 
@@ -200,7 +311,17 @@ const G = (function () {
     const wi = player.weapon;
     const w = WEAPONS[wi];
     if (player.cool > 0 || player.reload > 0 || player.dead) return;
-    if (player.mags[wi] <= 0) { startReload(); return; }
+    if (player.mags[wi] <= 0) {
+      if (player.spares[wi] <= 0) {
+        if (time - lastDryT > 1.4) {
+          lastDryT = time;
+          HUD.toast('弹夹已空 · 打开背包压装弹夹', 'warn');
+        }
+      } else {
+        startReload();
+      }
+      return;
+    }
 
     player.mags[wi]--;
     player.cool = w.rate;
@@ -212,14 +333,13 @@ const G = (function () {
     const m = muzzle();
     flashes.push({ x: m.x, y: m.y, z: m.z, yaw: player.yaw, t: 0.06, s: 0.34 + w.recoil * 0.16, c: w.rgb2 });
     flashes.push({ x: m.x, y: m.y, z: m.z, yaw: player.yaw, t: 0.1, s: 0.18, c: [1, 0.97, 0.88] });
-    if (w.id !== 'sonic') {
-    }
 
     if (w.id === 'sonic') fireCone(w, m);
     else if (w.id === 'laser') fireLaser(w, m);
     else fireBullet(w, m);
 
     HUD.mag(wi);
+    HUD.updateSlots(player);
   }
 
   /* ---------- 声学：瞬时锥形冲击 ---------- */
@@ -241,8 +361,7 @@ const G = (function () {
     sparks.push({ x: m.x, y: m.y, z: m.z, t: 0.2, c: w.rgb2, s: 0.32 });
   }
 
-  /* ---------- 光学：折线激光，最多弹射 ----------------
-     返回折线顶点；同时按段判定命中 */
+  /* ---------- 光学：折线激光，最多弹射 ---------------- */
   function fireLaser(w, m) {
     const maxB = w.bounce === undefined ? 3 : w.bounce;
     const falloff = w.falloff || 0.85;
@@ -270,7 +389,6 @@ const G = (function () {
       remain -= d;
       if (remain <= 0.5 || d < 0.15) break;
 
-      /* 回退到墙外侧一点，再分别探 x / z 两个方向，判断撞的是哪面 */
       const bx = ex - dx * 0.3, bz = ez - dz * 0.3;
       const hitX = !World.isFloorAt(bx + dx * 0.45, bz);
       const hitZ = !World.isFloorAt(bx, bz + dz * 0.45);
@@ -307,13 +425,11 @@ const G = (function () {
     return Math.hypot(px - (x1 + dx * t), pz - (z1 + dz * t));
   }
 
-  /* 子弹销毁：撞墙 / 打中敌人 / 射程耗尽都走这里 */
   function bulletImpact(b) {
     sparks.push({ x: b.x, y: 1.0, z: b.z, t: 0.2, c: b.c, s: 0.24 });
     if (b.kind === 'thermal') spawnZone(b.x, b.z, b.c);
   }
 
-  /* 热学燃烧区 */
   function spawnZone(x, z, c) {
     const w = WEAPONS[2];
     zones.push({
@@ -322,7 +438,6 @@ const G = (function () {
     });
   }
 
-  /* 实体弹命中：热学留燃烧区，电学链式传导 */
   function hitBullet(b, e) {
     const w = WEAPONS[player.weapon];
     const t = clamp(b.travelled / b.range, 0, 1);
@@ -372,16 +487,14 @@ const G = (function () {
   function damageEnemy(e, dmg, ang) {
     e.hp -= dmg;
     e.hitFlash = 0.12;
-    /* 被打一定进入追击 */
     if (e.state !== 'chase' && e.state !== 'attack') {
       e.state = 'alert'; e.alertT = 0.35;
       e.lastSeenX = player.x; e.lastSeenZ = player.z;
     }
-    const nx = e.x, nz = e.z;
-    if (false) { e.x = nx; e.z = nz; }
     if (e.hp <= 0) {
       e.dead = true;
       kills++;
+      if (e.type === 'spitter') spittersKilled++;
       HUD.kills(kills);
       HUD.hit(true);
       sparks.push({ x: e.x, y: 1.0, z: e.z, t: 0.3, c: [0.85, 0.35, 0.25], s: 0.5 });
@@ -389,7 +502,7 @@ const G = (function () {
   }
 
   function damagePlayer(dmg) {
-    if (player.dead || player.extracted) return;
+    if (player.dead || player.extracted || ended || mode !== 'mission') return;
     shake = Math.min(1.6, shake + 0.5);
     HUD.damage();
     if (player.shield > 0) {
@@ -403,24 +516,29 @@ const G = (function () {
       player.hp = 0;
       player.dead = true;
       player.deadT = 0;
-      showEnd(false);
+      finishRun(false, 'death');
     }
     HUD.vitals();
   }
 
   function tryLoot() {
-    let best = null, bd = CFG.INTERACT_R;
+    if (mode !== 'mission' || ended || paused) return;
+    let best = null, bd = CFG.INTERACT_R + 0.4;
     for (const l of World.loot) {
       if (l.taken) continue;
       const d = Math.hypot(l.x - player.x, l.z - player.z);
       if (d < bd) { bd = d; best = l; }
     }
-    if (best) {
-      best.taken = true;
-      looted++;
-      HUD.toast('拾取 ' + (best.tier === 'rare' ? '稀有物资' : best.tier === 'fine' ? '优良物资' : '常见物资'));
-      HUD.loot(looted);
+    if (!best) return;
+    if (!Inventory.addItem(best.item)) {
+      HUD.toast('背包已满 · 需要先分解或丢弃', 'warn');
+      return;
     }
+    best.taken = true;
+    looted++;
+    player.looted++;
+    HUD.loot(looted);
+    HUD.toast('拾取 ' + best.item.name + ' · ' + best.item.value + ' NB', 'good');
   }
 
   /* ---------- 敌人 AI ---------- */
@@ -479,7 +597,6 @@ const G = (function () {
         e.seen = false;
       }
 
-      /* 察觉：先愣一下再扑上来 */
       if (sees && (e.state === 'idle' || e.state === 'patrol')) {
         e.state = 'alert';
         e.alertT = 0.4;
@@ -492,7 +609,6 @@ const G = (function () {
         e.yaw = angLerp(e.yaw, Math.atan2(dx, dz), 1 - Math.exp(-14 * dt));
         if (e.alertT <= 0) e.state = 'chase';
       } else if (e.state === 'chase' || e.state === 'attack') {
-        /* 追到最后看到的位置；看不见超过 5 秒就回巡逻 */
         const tx = sees ? player.x : e.lastSeenX;
         const tz = sees ? player.z : e.lastSeenZ;
         const td = Math.hypot(tx - e.x, tz - e.z);
@@ -527,7 +643,6 @@ const G = (function () {
           e.waitT = 0.4;
         }
       } else {
-        /* 巡逻 */
         if (!e.patrol) { e.patrol = pickPatrol(e); e.waitT = 0.5 + Math.random(); }
         if (e.waitT > 0) {
           e.waitT -= dt;
@@ -540,7 +655,6 @@ const G = (function () {
 
       if (e.lunge) e.lunge = Math.max(0, e.lunge - dt);
 
-      /* 互相分开 */
       for (const o of enemies) {
         if (o === e || o.dead) continue;
         const ox = e.x - o.x, oz = e.z - o.z;
@@ -555,30 +669,93 @@ const G = (function () {
     enemies = enemies.filter(function (e) { return !(e.dead && e.fade <= 0); });
   }
 
+  /* ---------- 交互提示 ---------- */
+  let promptT = 0;
+  function updatePrompt(dt) {
+    promptT -= dt;
+    if (promptT > 0) return;
+    promptT = 0.12;
+
+    const dp = Math.hypot(player.x - World.pad.x, player.z - World.pad.z);
+    if (dp < World.pad.r) HUD.objective('撤离台 · 保持站位', true);
+    else if (dp < World.pad.r + 5) HUD.objective('撤离台 · 已到达', true);
+    else HUD.objective('撤离点 · ' + Math.round(dp) + ' m', false);
+
+    let best = null, bd = CFG.INTERACT_R + 0.6;
+    for (const l of World.loot) {
+      if (l.taken) continue;
+      const d = Math.hypot(l.x - player.x, l.z - player.z);
+      if (d < bd) { bd = d; best = l; }
+    }
+    if (best) {
+      const it = best.item;
+      HUD.prompt((TOUCH_MODE ? '拾取' : '[F] 拾取') + ' <b style="color:' + ITEMS.tier(it.tierId).color + '">' +
+        ITEMS.tier(it.tierId).name + ' · ' + it.name + '</b>');
+      return;
+    }
+    if (dp < World.pad.r) HUD.prompt('保持站位 · 撤离同步中');
+    else if (dp < World.pad.r + 5) HUD.prompt('撤离台就在附近');
+    else HUD.prompt(null);
+  }
+
   /* ---------- 更新 ---------- */
   function update(dt) {
-    time += dt;
+    if (mode !== 'mission' || ended) return;
     if (paused) return;
+    time += dt;
 
-    const gp = screenToGround(mouse.x, mouse.y, 0.9);
-    if (gp) aim = gp;
+    const invOpen = Inventory.isOpen();
+    if (TOUCH_MODE) {
+      if (invOpen && !touchInvSuspended) {
+        touchInvSuspended = true;
+        TOUCH.setEnabled(false);
+      } else if (!invOpen && touchInvSuspended) {
+        touchInvSuspended = false;
+        TOUCH.setEnabled(true);
+      }
+    }
+    Inventory.update(dt);
 
-    const adx = aim.x - player.x, adz = aim.z - player.z;
-    if (Math.hypot(adx, adz) > 0.3) {
-      player.yaw = angLerp(player.yaw, Math.atan2(adx, adz), 1 - Math.exp(-18 * dt));
+    /* 鼠标位置 → 地面瞄准点：角色与枪械朝向始终跟随鼠标 */
+    if (TOUCH_MODE) {
+      const tr = TOUCH.right;
+      if (tr.active && tr.aimActive) {
+        player.yaw = angLerp(player.yaw, tr.aimYaw, 1 - Math.exp(-TOUCH_AIM_LERP * dt));
+      }
+    } else {
+      const gp = screenToGround(mouse.x, mouse.y, 0.9);
+      if (gp) aim = gp;
+
+      const adx = aim.x - player.x, adz = aim.z - player.z;
+      if (Math.hypot(adx, adz) > 0.3) {
+        player.yaw = angLerp(player.yaw, Math.atan2(adx, adz), 1 - Math.exp(-18 * dt));
+      }
     }
 
-    let ix = 0, iz = 0;
-    if (keys.KeyW) iz -= 1;
-    if (keys.KeyS) iz += 1;
-    if (keys.KeyA) ix -= 1;
-    if (keys.KeyD) ix += 1;
+    let ix = 0, iz = 0, touchRun = false;
+    const tl = TOUCH.left;
+    if (TOUCH_MODE && tl.active && tl.mag > TOUCH_DEAD) {
+      ix = tl.x;
+      iz = tl.y;
+      touchRun = tl.zone !== 'inner';
+    } else {
+      if (keys.KeyW) iz -= 1;
+      if (keys.KeyS) iz += 1;
+      if (keys.KeyA) ix -= 1;
+      if (keys.KeyD) ix += 1;
+    }
     const mag = Math.hypot(ix, iz);
-    player.moving = mag > 0 && !player.dead;
-    player.sprinting = !!(keys.ShiftLeft || keys.ShiftRight) && player.stam > 1 && player.moving;
+    player.moving = (mag > 0 || WALK) && !player.dead;
+    if (mag > 0) player.moveYaw = Math.atan2(ix, iz);
+    if (!isNaN(MV)) player.moveYaw = player.yaw + MV * Math.PI / 180;
+    const wantSprint = (TOUCH_MODE && tl.active && tl.mag > TOUCH_DEAD)
+      ? touchRun
+      : !!(keys.ShiftLeft || keys.ShiftRight);
+    player.sprinting = wantSprint && player.stam > 1 && player.moving;
 
     let speed = player.sprinting ? CFG.PLAYER.run : CFG.PLAYER.walk;
     if (player.dead) speed = 0;
+    if (invOpen) speed *= 0.55;
     if (mag > 0) { ix /= mag; iz /= mag; }
 
     if (player.sprinting) {
@@ -598,17 +775,34 @@ const G = (function () {
     if (!player.moving) player.animT = 0;
 
     player.shieldTimer = Math.max(0, player.shieldTimer - dt);
-    if (player.shieldTimer <= 0 && player.shield < CFG.PLAYER.shield && !player.dead) {
-      player.shield = Math.min(CFG.PLAYER.shield, player.shield + CFG.PLAYER.shieldRate * dt);
+    if (player.shieldTimer <= 0 && player.shield < player.maxShield && !player.dead) {
+      player.shield = Math.min(player.maxShield, player.shield + CFG.PLAYER.shieldRate * dt);
     }
 
     player.cool = Math.max(0, player.cool - dt);
     player.recoil = Math.max(0, player.recoil - dt * 6);
     if (player.reload > 0) {
       player.reload -= dt;
-      if (player.reload <= 0) { player.reload = 0; finishReload(); HUD.mag(player.weapon); }
+      if (player.reload <= 0) {
+        player.reload = 0;
+        finishReload();
+        HUD.mag(player.weapon);
+      }
     }
-    if (mouse.down || AUTO) fire();
+    const curW = WEAPONS[player.weapon];
+    if (TOUCH_MODE) {
+      if (!invOpen) {
+        if (curW.auto) {
+          if (TOUCH.right.firing) fire();
+        } else if (TOUCH.takeSemiShot()) {
+          const tr = TOUCH.right;
+          if (tr.aimActive) player.yaw = tr.aimYaw;
+          fire();
+        }
+      }
+    } else if ((mouse.down || AUTO) && !invOpen) {
+      fire();
+    }
 
     updateEnemies(dt);
 
@@ -628,7 +822,6 @@ const G = (function () {
     }
     projectiles = projectiles.filter(function (p) { return p.life > 0; });
 
-    /* 玩家子弹：小步推进，避免穿墙 */
     for (const b of bullets) {
       if (b.dead) continue;
       const dist = Math.hypot(b.vx, b.vz) * dt;
@@ -651,7 +844,6 @@ const G = (function () {
     }
     bullets = bullets.filter(function (b) { return !b.dead; });
 
-    /* 燃烧区 */
     for (const z of zones) {
       z.life -= dt;
       z.tick -= dt;
@@ -667,7 +859,6 @@ const G = (function () {
     }
     zones = zones.filter(function (z) { return z.life > 0; });
 
-    /* 特效 */
     for (const t of tracers) t.t -= dt;
     tracers = tracers.filter(function (t) { return t.t > 0; });
     for (const f of flashes) f.t -= dt;
@@ -690,7 +881,7 @@ const G = (function () {
       HUD.extract(player.extractT / CFG.EXTRACT_HOLD);
       if (player.extractT >= CFG.EXTRACT_HOLD) {
         player.extracted = true;
-        showEnd(true);
+        finishRun(true, 'extract');
       }
     } else if (player.extractT > 0) {
       player.extractT = Math.max(0, player.extractT - dt * 2);
@@ -698,35 +889,61 @@ const G = (function () {
     }
 
     if (player.dead) player.deadT += dt;
+    updatePrompt(dt);
     HUD.vitals();
+    HUD.data(player.data);
   }
 
   /* ---------- 渲染 ---------- */
+  function drawLoot(geo) {
+    for (const l of World.loot) {
+      if (l.taken) continue;
+      const col = tierRgb(l.item ? l.item.tierId : 'common');
+      const bob = Math.sin(time + l.x * 0.7) * 0.03;
+      if (l.kind === 'case') {
+        geo.box({ x: l.x, y: 0.24 + bob, z: l.z, sx: 0.62, sy: 0.46, sz: 0.5, yaw: 0.4, color: PAL.teal, outline: 0.016, shadow: true });
+        geo.box({ x: l.x, y: 0.50 + bob, z: l.z, sx: 0.44, sy: 0.05, sz: 0.3, yaw: 0.4, color: col, outline: 0, emis: true });
+      } else {
+        geo.box({ x: l.x, y: 0.3 + bob, z: l.z, sx: 0.36, sy: 0.6, sz: 0.36, yaw: 0.2, color: PAL.gunL, outline: 0.014, shadow: true });
+        geo.box({ x: l.x, y: 0.62 + bob, z: l.z, sx: 0.30, sy: 0.06, sz: 0.30, yaw: 0.2, color: col, outline: 0, emis: true });
+      }
+    }
+  }
+
   function render() {
     R.begin();
     const geo = R.dyn;
 
-    MODELS.drawUnit(geo, 'scout', {
+    MODELS.drawUnit(geo, player.charKey, {
       x: player.x, y: 0, z: player.z, yaw: player.yaw,
-      moving: player.moving, animT: player.animT
+      moving: player.moving, animT: player.animT,
+      moveYaw: player.moveYaw,
+      deadT: player.dead ? player.deadT : 0
     });
 
-    const gy = 0.92 - player.recoil * 0.03;
+    const gy = 0.74 - player.recoil * 0.03;
     const gx = player.x + Math.sin(player.yaw + Math.PI / 2) * 0.20;
     const gz = player.z + Math.cos(player.yaw + Math.PI / 2) * 0.20;
-    MODELS.drawGun(geo, player.weapon, {
-      x: gx + Math.sin(player.yaw) * 0.32,
-      y: gy,
-      z: gz + Math.cos(player.yaw) * 0.32,
-      yaw: player.yaw, scale: 1.15
-    });
+    if (!player.dead) {
+      MODELS.drawGun(geo, player.weapon, {
+        x: gx + Math.sin(player.yaw) * 0.32,
+        y: gy,
+        z: gz + Math.cos(player.yaw) * 0.32,
+        yaw: player.yaw, scale: 1.15
+      });
+    }
 
-    /* 敌人 + 状态指示 */
     for (const e of enemies) {
-      if (e.dead) continue;
+      if (e.dead) {
+        MODELS.drawUnit(geo, e.type, {
+          x: e.x, y: 0, z: e.z, yaw: e.yaw,
+          animT: e.animT, deadT: Math.max(0, 1.1 - e.fade)
+        });
+        continue;
+      }
       MODELS.drawUnit(geo, e.type, {
         x: e.x, y: 0, z: e.z, yaw: e.yaw,
-        moving: e.moving, animT: e.animT
+        moving: e.moving, animT: e.animT, lunge: e.lunge, moveYaw: e.yaw
       });
       if (e.hitFlash > 0) {
         const hf = e.hitFlash / 0.12;
@@ -747,25 +964,12 @@ const G = (function () {
       }
     }
 
-    /* 战利品 */
-    for (const l of World.loot) {
-      if (l.taken) continue;
-      const col = l.tier === 'rare' ? [0.73, 0.42, 1.0] : (l.tier === 'fine' ? [0.36, 0.83, 0.42] : [0.62, 0.66, 0.70]);
-      if (l.kind === 'case') {
-        geo.box({ x: l.x, y: 0.24, z: l.z, sx: 0.62, sy: 0.46, sz: 0.5, yaw: 0.4, color: PAL.teal, outline: 0.016, shadow: true });
-        geo.box({ x: l.x, y: 0.50, z: l.z, sx: 0.44, sy: 0.05, sz: 0.3, yaw: 0.4, color: col, outline: 0, emis: true });
-      } else {
-        geo.box({ x: l.x, y: 0.3, z: l.z, sx: 0.36, sy: 0.6, sz: 0.36, yaw: 0.2, color: PAL.gunL, outline: 0.014, shadow: true });
-        geo.box({ x: l.x, y: 0.62, z: l.z, sx: 0.30, sy: 0.06, sz: 0.30, yaw: 0.2, color: col, outline: 0, emis: true });
-      }
-    }
+    drawLoot(geo);
 
-    /* 弹体 */
     for (const p of projectiles) {
       geo.box({ x: p.x, y: p.y, z: p.z, sx: 0.16, sy: 0.16, sz: 0.16, color: [0.73, 0.55, 1.0], outline: 0, emis: true });
     }
 
-    /* 曳光 */
     for (const s of tracers) {
       const dx = s.x1 - s.x0, dz = s.z1 - s.z0;
       const len = Math.hypot(dx, dz);
@@ -778,7 +982,6 @@ const G = (function () {
       });
     }
 
-    /* 枪口火光：十字 + 亮芯 + 地面冲击环 */
     for (const f of flashes) {
       const k = clamp(f.t / 0.07, 0, 1);
       const c = f.c || [1.0, 0.82, 0.42];
@@ -796,7 +999,6 @@ const G = (function () {
       });
     }
 
-    /* 玩家子弹：亮芯 + 拖尾 */
     for (const b of bullets) {
       const yaw = Math.atan2(b.vx, b.vz);
       geo.box({ x: b.x, y: b.y, z: b.z, sx: 0.14, sy: 0.14, sz: 0.26, yaw: yaw, color: b.c, outline: 0, emis: true });
@@ -809,7 +1011,6 @@ const G = (function () {
       });
     }
 
-    /* 激光折线 */
     for (const bm of beams) {
       for (let i = 1; i < bm.pts.length; i++) {
         const p0 = bm.pts[i - 1], p1 = bm.pts[i];
@@ -829,7 +1030,6 @@ const G = (function () {
       }
     }
 
-    /* 电弧链 */
     for (const bo of bolts) {
       const dx = bo.x1 - bo.x0, dz = bo.z1 - bo.z0;
       const len = Math.hypot(dx, dz);
@@ -846,7 +1046,6 @@ const G = (function () {
       }
     }
 
-    /* 声学冲击：整片扇形（面判定，不是线） */
     for (const c of cones) {
       const k = clamp(c.t / 0.26, 0, 1);
       const a0 = c.ang - c.half, a1 = c.ang + c.half;
@@ -860,7 +1059,6 @@ const G = (function () {
         geo.tri(c.x, c.z, x0, z0, x1, z1, 0.05, c.c, true);
         geo.tri(c.x, c.z, x1, z1, x0, z0, 0.05, c.c, true);
       }
-      /* 外层亮边：一圈薄扇形，标出实际范围 */
       const R2 = Math.min(c.range, R + 1.2);
       for (let i = 0; i < seg; i++) {
         const t0 = a0 + (a1 - a0) * (i / seg);
@@ -876,7 +1074,6 @@ const G = (function () {
       geo.box({ x: c.x, y: 0.18, z: c.z, sx: core, sy: 0.36, sz: core, yaw: c.ang, color: c.c, outline: 0, emis: true });
     }
 
-    /* 燃烧区：方框边界 + 中心火种 */
     for (const z of zones) {
       const k = clamp(z.life / 0.6, 0, 1);
       const r2 = z.r * 2;
@@ -889,7 +1086,6 @@ const G = (function () {
       geo.box({ x: z.x, y: 0.12, z: z.z, sx: pulse * k, sy: 0.3, sz: pulse * k, yaw: time * 2, color: z.c, outline: 0, emis: true });
     }
 
-    /* 火花 */
     for (const s of sparks) {
       const k = Math.max(0.12, s.t / 0.18);
       geo.box({
@@ -902,19 +1098,240 @@ const G = (function () {
     R.end();
   }
 
-  /* ---------- 结束 / 重开 ---------- */
-  function showEnd(win) {
-    if (ended) return;
-    ended = true;
-    HUD.end(win, { kills: kills, loot: looted, time: time });
+  function renderLobby() {
+    R.begin();
+    const geo = R.dyn;
+    const sway = Math.sin(lobbyT * 0.45) * 0.28;
+    const charKey = Store.char() === 1 ? 'assault' : 'scout';
+    MODELS.drawUnit(geo, charKey, {
+      x: 0, y: 0.06, z: 0, yaw: 0.35 + sway,
+      moving: false, animT: lobbyT, moveYaw: 0
+    });
+    Hangar.drawDynamic(geo, lobbyT);
+    R.end();
   }
 
-  function restart() {
+  /* ---------- 出击 / 结算 / 回大厅 ---------- */
+  function beginMission(cfg) {
+    if (mode === 'mission') return;
+    cfg = cfg || {};
+    const weapons = (cfg.weapons && cfg.weapons.length === 2) ? cfg.weapons.slice() : Store.loadout().weapons.slice();
+    const magCfg = cfg.mags || Store.loadout().mags;
+
+    seed = (Math.random() * 1e9) | 0;
+    World.gen(seed);
+    R.buildStatic(function (geo) { World.buildStatic(geo); });
+
+    const aug = Store.augments();
+    player.maxHp = Store.maxHp();
+    player.maxShield = Store.maxShield();
+    player.hp = player.maxHp;
+    player.shield = player.maxShield;
+    player.stam = CFG.PLAYER.stam;
+    player.dead = false;
+    player.deadT = 0;
+    player.extracted = false;
+    player.extractT = 0;
+    player.reloadMul = Store.reloadMul();
+    player.invRows = Store.invRows();
+    player.charKey = (cfg.character !== undefined ? cfg.character : Store.char()) === 1 ? 'assault' : 'scout';
+
+    player.carried = weapons.slice();
+    player.slot = 0;
+    player.weapon = player.carried[0];
+    player.mags = WEAPONS.map(function () { return 0; });
+    player.spares = WEAPONS.map(function () { return 0; });
+    for (let s = 0; s < 2; s++) {
+      const wi = player.carried[s];
+      const w = WEAPONS[wi];
+      const n = clamp(magCfg[s] | 0, 0, CFG.CARRY_MAX_MAGS);
+      if (n > 0) {
+        player.mags[wi] = w.mag;
+        player.spares[wi] = Math.min(w.maxSpare, n - 1);
+      }
+    }
+    player.data = cfg.data || 0;
+    player.inv = [];
+    player.sel = null;
+    player.looted = 0;
+    player.dismantledValue = 0;
+    player.kit = { medkit: Store.kit().medkit, battery: Store.kit().battery };
+
+    player.x = World.spawn.x;
+    player.z = World.spawn.z;
+    player.yaw = TOUCH_MODE ? Math.PI : 0;
+    player.moveYaw = player.yaw;
+    player.cool = 0;
+    player.reload = 0;
+    player.recoil = 0;
+    player.shieldTimer = 0;
+    player.stamTimer = 0;
+
+    /* 鼠标默认停在屏幕中心，开局面向设施深处 */
+    if (canvas && canvas.clientWidth) {
+      mouse.x = canvas.clientWidth * 0.5;
+      mouse.y = canvas.clientHeight * 0.5;
+      HUD.aimAt(mouse.x, mouse.y);
+    }
+
+    kills = 0; looted = 0; spittersKilled = 0; time = 0;
+    tracers = []; flashes = []; sparks = []; projectiles = [];
+    bullets = []; zones = []; beams = []; bolts = []; cones = []; rings = [];
+    CAM.pitch = (Q_PITCH >= 30 && Q_PITCH <= 85)
+      ? Q_PITCH
+      : clamp(Store.raw().settings.pitch || CFG.CAM.PITCH, 30, 85);
+    CAM.focus = [player.x, CFG.CAM.HEIGHT_OFF, player.z];
+    CAM.eye = [player.x, player.maxShield + 12, player.z + 12];
+
+    enemies = [];
+    const types = ['zombie', 'zombie', 'zombie', 'gaunt', 'spitter'];
+    for (let i = 0; i < CFG.ENEMY_COUNT; i++) {
+      const c = i < CFG.NEAR_SPAWN ? spawnNear(player.x, player.z, 7, 15)
+        : World.randomFloorPoint({ x: player.x, z: player.z }, CFG.SPAWN_MIN);
+      const t = types[i % types.length];
+      const ecfg = CFG.ENEMY[t];
+      enemies.push({
+        x: c.x, z: c.z, home: { x: c.x, z: c.z }, type: t,
+        hp: ecfg.hp, maxHp: ecfg.hp, r: ecfg.r, speed: ecfg.speed, dmg: ecfg.dmg,
+        cd: 0, cdMax: ecfg.cd, yaw: Math.random() * 6.28, animT: 0,
+        moving: false, dead: false, fade: 1.1, hitFlash: 0, lunge: 0,
+        state: 'idle', alertT: 0, lostT: 0, waitT: 0, patrol: null,
+        lastSeenX: c.x, lastSeenZ: c.z, seen: false, seed: Math.random() * 10,
+        viewR: t === 'spitter' ? 20 : (t === 'gaunt' ? 15 : 16),
+        viewHalf: t === 'spitter' ? 1.15 : 0.95
+      });
+    }
+
+    mode = 'mission';
+    ended = false;
+    endReason = '';
+    paused = false;
+    mouse.down = false;
+    Inventory.beginRun();
+    Inventory.reset();
+    Lobby.hide();
+    HUD.reset();
+    HUD.buildSlots(player);
+    HUD.setCombatMode(true);
+    HUD.hideEnd();
+    HUD.data(player.data);
+    HUD.prompt(null);
+    const d0 = Math.hypot(World.spawn.x - World.pad.x, World.spawn.z - World.pad.z);
+    HUD.objective('撤离点 · ' + Math.round(d0) + ' m', false);
+    HUD.toast('进入设施 · 搜刮物资并寻找撤离台', 'good');
+    setPause(false);
+    if (TOUCH_MODE) {
+      touchInvSuspended = false;
+      TOUCH.reset();
+      TOUCH.setAuto(!!WEAPONS[player.weapon].auto);
+    }
+    if (QS.get('die') === '1') { player.dead = true; player.deadT = 0.5; }
+    flash(380);
+  }
+
+  function finishRun(win, reason) {
+    if (ended || mode !== 'mission') return;
+    setPause(false);
+    ended = true;
+    endReason = reason || (win ? 'extract' : 'death');
+    paused = false;
+    mouse.down = false;
+    if (TOUCH_MODE) TOUCH.setEnabled(false);
+    const pauseBox = $('pause');
+    if (pauseBox) pauseBox.classList.add('hidden');
+    Inventory.close();
+    HUD.setCombatMode(true);
+
+    const haul = player.inv.reduce(function (s, it) { return s + (it.value || 0); }, 0);
+    const itemCount = player.inv.length;
+    const t = time;
+    let stored = 0, overflow = 0, overflowValue = 0;
+
+    if (win) {
+      const r = Store.stashAddMany(player.inv);
+      stored = r.stored;
+      overflow = r.overflowCount;
+      overflowValue = r.overflowValue;
+      Store.addBank(player.data);
+      Store.setKit(player.kit);
+    } else {
+      Store.setKit({ medkit: 0, battery: 0 });
+    }
+
+    const before = Store.contracts().map(function (c) { return c.progress; });
+    Contracts.applyRun({
+      win: win,
+      kills: kills,
+      loot: looted,
+      data: player.data,
+      haul: haul,
+      spitters: spittersKilled,
+      dismantled: player.dismantledValue
+    });
+    const after = Store.contracts();
+    const done = [];
+    for (let i = 0; i < after.length; i++) {
+      if (!after[i].claimed && after[i].progress >= after[i].target && before[i] < after[i].target) {
+        done.push(after[i].title);
+      }
+    }
+
+    Store.recordRun({
+      win: win, kills: kills, loot: looted,
+      data: win ? player.data : 0,
+      haul: win ? haul : 0,
+      time: t
+    });
+    Store.save();
+
+    HUD.end(win, {
+      reason: endReason,
+      kills: kills,
+      loot: looted,
+      time: t,
+      data: win ? player.data : 0,
+      haul: win ? haul : 0,
+      itemCount: itemCount,
+      stored: stored,
+      overflow: overflow,
+      overflowValue: overflowValue,
+      dismantled: player.dismantledValue,
+      contracts: done,
+      best: Store.best()
+    });
+  }
+
+  function toLobby() {
+    if (mode === 'lobby') return;
+    mode = 'lobby';
     ended = false;
     paused = false;
-    seed = (Math.random() * 1e9) | 0;
-    start(seed);
+    mouse.down = false;
+    endReason = '';
+    if (TOUCH_MODE) TOUCH.setEnabled(false);
+    Inventory.reset();
+    HUD.setCombatMode(false);
     HUD.hideEnd();
+    const pauseBox = $('pause');
+    if (pauseBox) pauseBox.classList.add('hidden');
+    R.buildStatic(function (geo) { Hangar.buildStatic(geo); });
+    CAM.pitch = 23;
+    Lobby.show();
+    Lobby.refreshBank();
+  }
+
+  let flashTimer = 0;
+  function flash(ms) {
+    if (QS.get('go')) return;              // 调试截图不做闪屏
+    const f = $('flash');
+    if (!f) return;
+    clearTimeout(flashTimer);
+    f.style.display = 'block';
+    f.classList.add('on');
+    flashTimer = setTimeout(function () {
+      f.classList.remove('on');
+      f.style.display = 'none';
+    }, ms || 300);
   }
 
   /* 在玩家周围环形刷几只，开局就有压迫感 */
@@ -931,60 +1348,27 @@ const G = (function () {
     return World.randomFloorPoint({ x: px, z: pz }, minD);
   }
 
-  function start(s) {
-    World.gen(s);
-    R.buildStatic(function (geo) { World.buildStatic(geo); });
-
-    player.x = World.spawn.x;
-    player.z = World.spawn.z;
-    player.yaw = 0;
-    player.hp = CFG.PLAYER.hp;
-    player.shield = CFG.PLAYER.shield;
-    player.stam = CFG.PLAYER.stam;
-    player.dead = false;
-    player.extracted = false;
-    player.extractT = 0;
-    player.mags = WEAPONS.map(function (w) { return w.mag; });
-    player.spares = WEAPONS.map(function (w) { return w.maxSpare; });
-    player.weapon = clamp(parseInt(QS.get('w'), 10) || 0, 0, WEAPONS.length - 1);
-    player.reload = 0;
-    player.cool = 0;
-
-    kills = 0; looted = 0; time = 0;
-    tracers = []; flashes = []; sparks = []; projectiles = [];
-    bullets = []; zones = []; beams = []; bolts = []; cones = []; rings = [];
-    CAM.focus = [player.x, CFG.CAM.HEIGHT_OFF, player.z];
-
-    enemies = [];
-    const types = ['zombie', 'zombie', 'zombie', 'gaunt', 'spitter'];
-    for (let i = 0; i < CFG.ENEMY_COUNT; i++) {
-      const c = i < CFG.NEAR_SPAWN ? spawnNear(player.x, player.z, 7, 15)
-        : World.randomFloorPoint({ x: player.x, z: player.z }, CFG.SPAWN_MIN);
-      const t = types[i % types.length];
-      const cfg = CFG.ENEMY[t];
-      enemies.push({
-        x: c.x, z: c.z, home: { x: c.x, z: c.z }, type: t,
-        hp: cfg.hp, maxHp: cfg.hp, r: cfg.r, speed: cfg.speed, dmg: cfg.dmg,
-        cd: 0, cdMax: cfg.cd, yaw: Math.random() * 6.28, animT: 0,
-        moving: false, dead: false, fade: 0.6, hitFlash: 0, lunge: 0,
-        state: 'idle', alertT: 0, lostT: 0, waitT: 0, patrol: null,
-        lastSeenX: c.x, lastSeenZ: c.z, seen: false, seed: Math.random() * 10,
-        viewR: t === 'spitter' ? 20 : (t === 'gaunt' ? 15 : 16),
-        viewHalf: t === 'spitter' ? 1.15 : 0.95
-      });
-    }
-    HUD.reset();
-  }
-
+  /* ---------- 主循环 ---------- */
   function frame(ts) {
     if (!running) return;
     try {
       const now = ts / 1000;
       const dt = Math.min(0.05, now - last);
       last = now;
-      if (!ended) update(dt);
-      updateCamera(dt);
-      render();
+      if (mode === 'lobby') {
+        updateLobbyCamera(dt);
+        renderLobby();
+      } else {
+        update(dt);
+        updateCamera(dt);
+        if (TOUCH_MODE) {
+          const ax = player.x + Math.sin(player.yaw) * 2.4;
+          const az = player.z + Math.cos(player.yaw) * 2.4;
+          const sp = worldToScreen(ax, 0.9, az);
+          if (sp) HUD.aimAt(sp.x, sp.y);
+        }
+        render();
+      }
       HUD.tick(dt);
     } catch (err) {
       running = false;
@@ -1000,20 +1384,56 @@ const G = (function () {
     requestAnimationFrame(frame);
   }
 
+  function bindUi() {
+    $('againBtn').addEventListener('click', toLobby);
+    $('resumeBtn').addEventListener('click', function () { setPause(false); });
+    $('abandonBtn').addEventListener('click', function () { finishRun(false, 'abandon'); });
+
+    const actions = document.querySelectorAll('[data-touch-act]');
+    for (let i = 0; i < actions.length; i++) {
+      const btn = actions[i];
+      btn.addEventListener('click', function () {
+        if (mode !== 'mission' || ended || paused || player.dead) return;
+        const act = btn.getAttribute('data-touch-act');
+        if (act === 'reload') startReload();
+        else if (act === 'loot') tryLoot();
+        else if (act === 'inventory') Inventory.toggle();
+        else if (act === 'pause') setPause(true);
+      });
+    }
+  }
+
   function boot() {
     canvas = $('gl');
+    Store.load();
     try {
       R.init(canvas);
       R.resize(canvas);
-      R.setFog(30, 78);
-      R.setSky([0.26, 0.29, 0.33]);
+      R.setFog(34, 92);
+      R.setSky([0.11, 0.13, 0.15]);
+
+      Inventory.init();
+      Stash.init();
+      Shop.init();
+      Contracts.init();
+      Lobby.init();
+      HUD.setCombatMode(false);
+      TOUCH.init();
+
       bindInput();
-      $('againBtn').addEventListener('click', restart);
-      start(seed);
+      bindUi();
+
+      R.buildStatic(function (geo) { Hangar.buildStatic(geo); });
+      player.charKey = Store.char() === 1 ? 'assault' : 'scout';
+      mode = 'lobby';
+      CAM.pitch = 23;
+
       running = true;
       last = performance.now() / 1000;
       requestAnimationFrame(frame);
       $('loading').classList.add('hidden');
+
+      devBoot();
     } catch (err) {
       const el = $('loading');
       if (el) {
@@ -1024,11 +1444,76 @@ const G = (function () {
     }
   }
 
+  /* ---------- 调试入口（截图 / 自测用） ---------- */
+  function devBoot() {
+    if (QS.get('demo') === '1') {
+      Store.demo();
+      Lobby.reloadFromSave();
+      Lobby.refreshBank();
+    }
+    const tab = QS.get('tab');
+    if (tab) Lobby.setTab(tab);
+
+    const go = QS.get('go');
+    if (!go) return;
+    setTimeout(function () {
+      try {
+        devGo(go);
+      } catch (e) {
+        console.error(e);
+        document.title = 'DEVGO-ERR: ' + (e && e.message);
+      }
+    }, 60);
+  }
+
+  function devGo(kind) {
+    if (kind === 'lobby') return;
+    const lo = Store.loadout();
+    beginMission({
+      weapons: lo.weapons, mags: lo.mags,
+      data: 500, character: Store.char()
+    });
+    if (QS.get('safe') === '1') enemies.length = 0;
+    if (kind === 'pause') { setPause(true); return; }
+    if (kind === 'mission') return;
+
+    for (let i = 0; i < 6; i++) Inventory.addItem(ITEMS.roll(null, null, 0.4));
+    if (kind === 'inventory') { Inventory.open(); return; }
+    if (kind === 'end') { finishRun(true, 'extract'); return; }
+    if (kind === 'death') { finishRun(false, 'death'); return; }
+    if (kind === 'extract') { finishRun(true, 'extract'); return; }
+  }
+
   window.addEventListener('DOMContentLoaded', boot);
 
   return {
-    restart: restart,
-    setPaused: function (v) { paused = v; },
-    state: { player: player, cam: CAM, get enemies() { return enemies; }, get time() { return time; } }
+    get mode() { return mode; },
+    get ended() { return ended; },
+    beginMission: beginMission,
+    finishRun: finishRun,
+    toLobby: toLobby,
+    switchSlot: switchSlot,
+    setPaused: setPause,
+    togglePause: function () { setPause(!paused); },
+    startReload: startReload,
+    tryLoot: tryLoot,
+    toggleInventory: function () { Inventory.toggle(); },
+    devGo: devGo,
+    debug: {
+      tick: function (dt) { if (mode === 'mission' && !paused) update(dt); },
+      pickup: tryLoot,
+      teleport: function (x, z) { player.x = x; player.z = z; },
+      clearEnemies: function () { enemies.length = 0; },
+      reload: startReload,
+      finishReload: finishReload
+    },
+    state: {
+      player: player,
+      cam: CAM,
+      get enemies() { return enemies; },
+      get time() { return time; },
+      get kills() { return kills; },
+      get looted() { return looted; }
+    }
   };
 })();

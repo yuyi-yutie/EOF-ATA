@@ -31,7 +31,7 @@ const MODELS = (function () {
     parts.push(part(0.10, 1.42, 0.245, 0.07, 0.05, 0.02, P.ink, { outline: 0 }));
     parts.push(part(0, 1.30, 0.245, 0.10, 0.022, 0.02, P.ink, { outline: 0 }));
     parts.push(part(0, 0.30, 0, 0.52, 0.60, 0.52, P.ink, { castOnly: true }));
-    return { parts: parts, height: 1.71, eye: 1.42 };
+    return { parts: parts, height: 1.71, eye: 1.42, style: { cadence: 9.8, swing: 0.58, bob: 0.042, lean: 0.05 } };
   }
 
   /* ---------------- 人类：突击手 ---------------- */
@@ -52,7 +52,7 @@ const MODELS = (function () {
     parts.push(part(0.105, 1.41, 0.235, 0.08, 0.05, 0.02, P.ink, { outline: 0 }));
     parts.push(part(0, 1.29, 0.235, 0.11, 0.022, 0.02, P.ink, { outline: 0 }));
     parts.push(part(0, 0.30, 0, 0.58, 0.60, 0.58, P.ink, { castOnly: true }));
-    return { parts: parts, height: 1.73, eye: 1.41 };
+    return { parts: parts, height: 1.73, eye: 1.41, style: { cadence: 9.0, swing: 0.52, bob: 0.05, lean: 0.07 } };
   }
 
   /* ---------------- 僵尸 ---------------- */
@@ -70,7 +70,7 @@ const MODELS = (function () {
     parts.push(part(0.005, 1.295, 0.278, 0.045, 0.055, 0.02, [0.89, 0.86, 0.76], { outline: 0 }));
     parts.push(part(0.085, 1.295, 0.278, 0.045, 0.055, 0.02, [0.89, 0.86, 0.76], { outline: 0 }));
     parts.push(part(0, 0.30, 0, 0.56, 0.60, 0.46, P.ink, { castOnly: true }));
-    return { parts: parts, height: 1.70, eye: 1.46 };
+    return { parts: parts, height: 1.70, eye: 1.46, style: { cadence: 6.4, swing: 0.44, bob: 0.055, lean: 0.16 } };
   }
 
   /* ---------------- 喷吐僵尸 ---------------- */
@@ -85,7 +85,7 @@ const MODELS = (function () {
     parts.push(part(-0.105, 1.62, 0.235, 0.085, 0.06, 0.02, P.violet, { outline: 0, emis: true }));
     parts.push(part(0.105, 1.62, 0.235, 0.085, 0.06, 0.02, P.violet, { outline: 0, emis: true }));
     parts.push(part(0, 0.32, 0, 0.48, 0.62, 0.40, P.ink, { castOnly: true }));
-    return { parts: parts, height: 1.80, eye: 1.62 };
+    return { parts: parts, height: 1.80, eye: 1.62, style: { cadence: 5.6, swing: 0.34, bob: 0.038, lean: 0.1 } };
   }
 
   /* ---------------- 干尸 ---------------- */
@@ -106,15 +106,42 @@ const MODELS = (function () {
     parts.push(part(-0.005, 1.325, 0.232, 0.042, 0.06, 0.02, [0.87, 0.84, 0.75], { outline: 0 }));
     parts.push(part(0.075, 1.325, 0.232, 0.042, 0.06, 0.02, [0.87, 0.84, 0.75], { outline: 0 }));
     parts.push(part(0, 0.31, 0, 0.44, 0.62, 0.40, P.ink, { castOnly: true }));
-    return { parts: parts, height: 1.79, eye: 1.60 };
+    return { parts: parts, height: 1.79, eye: 1.60, style: { cadence: 12.5, swing: 0.72, bob: 0.062, lean: 0.22 } };
+  }
+
+  /* 动作风格：cadence 步频、swing 摆腿幅度、bob 起伏、lean 前倾 */
+  const DEF_STYLE = { cadence: 9.5, swing: 0.55, bob: 0.045, lean: 0.06 };
+
+  /* 死亡散落：头 / 身 / 左腿 / 右腿 的方向与距离（相对角色朝向） */
+  const GI_ANG = [0.35, -2.6, 2.5, -0.5];
+  const GI_DIST = [0.62, 0.18, 0.55, 0.55];
+
+  /* 整体压矮：只压 Y，保持方块头的分量 -> 矮壮版 */
+  const YS = 0.78;
+
+  function squash(model) {
+    for (let i = 0; i < model.parts.length; i++) {
+      const p = model.parts[i];
+      /* 死亡散落按 4 块分组：头 / 身 / 左腿 / 右腿 */
+      if (p.castOnly) p.grp = null;
+      else if (p.leg) p.grp = p.leg === 'L' ? 'legL' : 'legR';
+      else p.grp = p.y > 1.05 ? 'head' : 'body';
+      p.hips = (!p.leg && !p.castOnly && p.y > 0.55 && p.y < 0.68);
+      p.y *= YS;
+      p.sy *= YS;
+    }
+    model.height *= YS;
+    model.eye *= YS;
+    model.hips = 0.60 * YS;
+    return model;
   }
 
   const UNITS = {
-    scout: scout(),
-    assault: assault(),
-    zombie: zombie(),
-    spitter: spitter(),
-    gaunt: gaunt()
+    scout: squash(scout()),
+    assault: squash(assault()),
+    zombie: squash(zombie()),
+    spitter: squash(spitter()),
+    gaunt: squash(gaunt())
   };
 
   /* ---------------- 武器 ---------------- */
@@ -185,30 +212,79 @@ const MODELS = (function () {
 
   const GUNS = [sonic(), laser(), thermal(), kinetic(), voltaic()];
 
-  /* ---------------- 绘制 ---------------- */
+  /* ---------------- 绘制 ----------------
+     o: { x,y,z, yaw, moving, animT, scale, deadT, lunge }
+     - 腿绕髋关节前后摆（不是平移）
+     - 躯干/头随步伐上下起伏，并按 lean 前倾
+     - deadT > 0 时整体绕脚底翻倒
+  */
   function drawUnit(geo, key, o) {
     const model = UNITS[key];
     if (!model) return;
-    const cy = Math.cos(o.yaw), sy = Math.sin(o.yaw);
+    const st = model.style || DEF_STYLE;
     const sc = o.scale || 1;
-    const moving = o.moving ? 1 : 0;
     const t = o.animT || 0;
+    const moving = o.moving ? 1 : 0;
+    const ph = t * st.cadence;
+    const lunge = o.lunge || 0;
+    const deadT = o.deadT || 0;
+    const hipsY = (model.hips || 0.6) * sc;
+
+    /* 下半身（腿 + 腰带）完全按移动方向计算朝向，与身体朝向无关 */
+    const legYaw = (moving && o.moveYaw !== undefined && o.moveYaw !== null) ? o.moveYaw : o.yaw;
+
+    const bob = (moving ? Math.abs(Math.cos(ph)) * st.bob : Math.sin(t * 1.7) * 0.007) * sc;
+    const lean = (moving ? st.lean : 0) + lunge * 0.42;
+
     for (let i = 0; i < model.parts.length; i++) {
       const p = model.parts[i];
-      let lx = p.x * sc, ly = p.y * sc, lz = p.z * sc;
-      let dy = 0;
-      if (p.leg && moving) {
-        const ph = t * 9.5 + (p.leg === 'L' ? 0 : Math.PI);
-        lz += Math.sin(ph) * 0.16;
-        dy = Math.max(0, Math.sin(ph)) * 0.05;
+      let lx = p.x * sc;
+      let ly = p.y * sc;
+      let lz = p.z * sc;
+      let rotX = 0, pvx = 0, pvy = 0, pvz = 0;
+      let yaw = o.yaw;
+      let deadX = 0, deadZ = 0;
+
+      if (p.castOnly) {
+        /* 影子代理：不参与动作 */
+      } else if (deadT > 0) {
+        /* 死亡：四个部分当砖块直接散开、落地，不做旋转 */
+        const gi = p.grp === 'head' ? 0 : p.grp === 'body' ? 1 : p.grp === 'legL' ? 2 : 3;
+        const ang = o.yaw + GI_ANG[gi];
+        const dist = GI_DIST[gi];
+        const k = Math.min(1, deadT / 0.32);
+        const e = 1 - (1 - k) * (1 - k);
+        deadX = Math.cos(ang) * dist * e;
+        deadZ = Math.sin(ang) * dist * e;
+        const restY = p.sy * sc * 0.5 + 0.015;
+        ly = ly * (1 - e) + restY * e;
+      } else if (p.leg) {
+        const ph2 = ph + (p.leg === 'L' ? 0 : Math.PI);
+        rotX = Math.sin(ph2) * st.swing * (moving ? 1 : 0);
+        pvy = p.sy * 0.5 * sc;
+        ly += Math.max(0, Math.sin(ph2)) * 0.028 * sc * moving;
+        yaw = legYaw;
+      } else {
+        if (p.hips) yaw = legYaw;
+        ly += bob * (p.y > 1.05 * YS ? 1.0 : 0.75);
+        if (p.y > 1.05 * YS) {
+          rotX = lean * 0.55;
+          pvy = hipsY + 0.25 * sc - ly;
+        } else {
+          rotX = lean;
+          pvy = hipsY - ly;
+        }
       }
-      const wx = o.x + cy * lx + sy * lz;
-      const wz = o.z - sy * lx + cy * lz;
-      const wy = o.y + ly + dy;
+
+      const wx = o.x + Math.cos(yaw) * lx + Math.sin(yaw) * lz + deadX;
+      const wz = o.z - Math.sin(yaw) * lx + Math.cos(yaw) * lz + deadZ;
+      const wy = o.y + ly;
       geo.box({
         x: wx, y: wy, z: wz,
         sx: p.sx * sc, sy: p.sy * sc, sz: p.sz * sc,
-        yaw: o.yaw,
+        yaw: yaw,
+        rotX: rotX,
+        px: pvx, py: pvy, pz: pvz,
         color: p.color,
         outline: p.outline === undefined ? 0.032 : p.outline,
         emis: p.emis,
