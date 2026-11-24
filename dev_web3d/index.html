@@ -3,6 +3,13 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="theme-color" content="#14171a" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="EOFATA" />
+<link rel="manifest" href="manifest.json" />
+<link rel="apple-touch-icon" href="icon-192.png" />
 <title>EOFATA 3D — End of Future : ATA</title>
 <link rel="icon" href="data:," />
 <script>
@@ -16,9 +23,14 @@
       (coarse || ('ontouchstart' in window && small) || (navigator.maxTouchPoints > 0 && small)));
     window.__touchMode = !!touch;
     if (touch) document.documentElement.classList.add('touch-ui');
+    var standalone = (window.matchMedia &&
+      (window.matchMedia('(display-mode: standalone)').matches ||
+       window.matchMedia('(display-mode: fullscreen)').matches)) ||
+      window.navigator.standalone === true;
+    if (standalone) document.documentElement.classList.add('standalone');
   })();
 </script>
-<link rel="stylesheet" href="css/app.css" />
+<link rel="stylesheet" href="css/app.css?v=20261124b" />
 </head>
 <body>
 <div id="app">
@@ -27,10 +39,15 @@
   <div id="dmgFlash"></div>
 
   <div id="hud" class="hidden">
+    <div class="dmg-layer" id="dmgLayer"></div>
     <div class="hud-tl">
       <div class="vbar shd"><i id="shdFill"></i><span class="lab">SHD</span><span class="num" id="shdNum">60</span></div>
       <div class="vbar hp"><i id="hpFill"></i><span class="lab">VIT</span><span class="num" id="hpNum">100</span></div>
       <div class="vbar sta"><i id="staFill"></i></div>
+    </div>
+
+    <div class="minimap" id="minimapWrap">
+      <canvas id="minimap"></canvas>
     </div>
 
     <div class="hud-tr">
@@ -59,6 +76,11 @@
     <div class="ex-wrap" id="extractWrap">
       <div class="ex-label">// 撤离同步中</div>
       <div class="ex-bar"><i id="exFill"></i></div>
+    </div>
+
+    <div class="ex-wrap respawn-wrap" id="respawnWrap">
+      <div class="ex-label">// 刷新敌人</div>
+      <div class="ex-bar"><i id="respawnFill"></i></div>
     </div>
 
     <div class="hud-bc">
@@ -98,6 +120,7 @@
         <span>数据</span><b id="lobbyBank">300</b><em>NB</em>
         <span class="lobby-best">最佳 <i id="lobbyBest">0</i></span>
       </div>
+      <button type="button" class="fs-btn" data-fullscreen>全屏</button>
     </div>
 
     <div class="lobby-main">
@@ -151,6 +174,8 @@
 
         <div class="stash-line">仓库 <b id="lobbyStashCount">0</b> 件 · <i id="lobbyStashValue">0</i> NB</div>
         <div class="lobby-msg" id="lobbyMsg"></div>
+        <button class="btn test-entry" id="testMapBtn">进入测试场 · 全武器</button>
+        <div class="test-hint">固定点 / 1 秒刷新敌人 / 随机物资</div>
       </div>
 
       <!-- ---------- 仓库 ---------- -->
@@ -167,6 +192,7 @@
           <div class="stash-grid" id="stashGrid">
             <div class="stash-items" id="stashItems"></div>
           </div>
+          <div class="stash-list-mobile" id="stashListMobile"></div>
           <div class="stash-side">
             <div class="detail-box" id="stashDetail">
               <div class="dt-empty">仓库物资会跨局保存<br><span>右键单件立即分解</span></div>
@@ -291,8 +317,7 @@
     </div>
 
     <div class="lobby-foot" id="lobbyFootHint">
-      <b>ENTER</b> 出击 · <b>1/2</b> 选择携带武器 · 撤离成功：数据入账、物资入库 · 阵亡：本局物资与携带数据丢失
-    </div>
+      <b>ENTER</b> 出击 · <b>1/2</b> 选择携带武器 · 撤离成功：数据入账、物资入库 · 阵亡：本局物资与携带数据丢失    </div>
   </div>
 
   <!-- ================= 局内背包 ================= -->
@@ -313,6 +338,25 @@
           <div class="inv-keys">左键拖动 · <b>R</b> 旋转 · 右键分解 · 移动会中断操作</div>
         </div>
         <div class="inv-side">
+          <div class="chest-panel hidden" id="chestPanel">
+            <div class="chest-head">
+              <span class="chest-title">物资箱 / CONTAINER</span>
+              <span class="chest-cap"><em id="chestCount">0</em> / <span id="chestCap">16</span> 格</span>
+            </div>
+            <div class="chest-status-row">
+              <span id="chestStatus">搜索中 0 / 0</span>
+              <span class="chest-status-hint">从上到下 · 从左到右</span>
+            </div>
+            <div class="inv-grid chest-grid" id="chestGrid">
+              <div class="inv-items" id="chestItems"></div>
+            </div>
+            <div class="chest-actions">
+              <button type="button" class="dt-btn" id="chestTakeAll">全部拿走</button>
+              <button type="button" class="dt-btn" id="chestStoreAll">全部存入</button>
+              <button type="button" class="dt-btn danger" id="chestClose">关闭</button>
+            </div>
+            <div class="chest-hint">拖拽或点击箱子物品 → 背包 · 拖拽背包物品 → 箱子</div>
+          </div>
           <div class="detail-box" id="invDetail">
             <div class="dt-empty">左键拖动 · R 旋转 · 右键分解<br><span>物品尺寸固定，可自由摆放</span></div>
           </div>
@@ -340,6 +384,7 @@
       <div class="mini-tag">// MISSION PAUSED</div>
       <div class="mini-title">行动暂停</div>
       <button class="btn primary" id="resumeBtn">继续行动</button>
+      <button class="btn touch-only fs-only" data-fullscreen>全屏切换</button>
       <button class="btn" id="abandonBtn">放弃行动 · 返回机库</button>
       <div class="mini-foot">P / ESC 继续</div>
     </div>
@@ -354,6 +399,16 @@
       <div class="end-note" id="endNote"></div>
       <div class="end-contract" id="endContracts"></div>
       <button id="againBtn">返回机库</button>
+    </div>
+  </div>
+
+  <!-- 全屏 / 添加到主屏幕说明 -->
+  <div id="fsHelp" class="hint-modal hidden">
+    <div class="hint-card">
+      <div class="mini-tag">// FULLSCREEN</div>
+      <div class="mini-title">全屏运行</div>
+      <div class="hint-copy" id="fsHelpText"></div>
+      <button type="button" class="btn primary" id="fsHelpClose">知道了</button>
     </div>
   </div>
 
@@ -380,23 +435,26 @@
     document.title = 'ERR: ' + window.__errs.join(' | ').slice(0, 400);
   });
 </script>
-<script src="js/config.js"></script>
-<script src="js/items.js"></script>
-<script src="js/grid.js"></script>
-<script src="js/store.js"></script>
-<script src="js/models.js"></script>
-<script src="js/world.js"></script>
-<script src="js/hangar.js"></script>
-<script src="js/gl.js"></script>
-<script src="js/ui.js"></script>
-<script src="js/hud.js"></script>
-<script src="js/inventory.js"></script>
-<script src="js/stash.js"></script>
-<script src="js/shop.js"></script>
-<script src="js/contracts.js"></script>
-<script src="js/lobby.js"></script>
-<script src="js/touch.js"></script>
-<script src="js/game.js"></script>
-<script src="js/selftest.js"></script>
+<script src="js/config.js?v=20261124b"></script>
+<script src="js/items.js?v=20261124b"></script>
+<script src="js/grid.js?v=20261124b"></script>
+<script src="js/store.js?v=20261124b"></script>
+<script src="js/models.js?v=20261124b"></script>
+<script src="js/world.js?v=20261124b"></script>
+<script src="js/hangar.js?v=20261124b"></script>
+<script src="js/gl.js?v=20261124b"></script>
+<script src="js/asset.js?v=20261124b"></script>
+<script src="js/ui.js?v=20261124b"></script>
+<script src="js/mobile.js?v=20261124b"></script>
+<script src="js/minimap.js?v=20261124b"></script>
+<script src="js/hud.js?v=20261124b"></script>
+<script src="js/inventory.js?v=20261124b"></script>
+<script src="js/stash.js?v=20261124b"></script>
+<script src="js/shop.js?v=20261124b"></script>
+<script src="js/contracts.js?v=20261124b"></script>
+<script src="js/lobby.js?v=20261124b"></script>
+<script src="js/touch.js?v=20261124b"></script>
+<script src="js/game.js?v=20261124b"></script>
+<script src="js/selftest.js?v=20261124b"></script>
 </body>
 </html>

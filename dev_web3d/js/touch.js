@@ -13,15 +13,16 @@
 const TOUCH = (function () {
   const IS_TOUCH = !!window.__touchMode;
   const TCFG = (typeof CFG !== 'undefined' && CFG.TOUCH) ? CFG.TOUCH : {};
-  const INNER = TCFG.INNER || 0.58;
-  const DEAD = TCFG.DEAD || 0.12;
+  const INNER = TCFG.INNER || 0.55;
+  const DEAD = TCFG.DEAD || 0.13;
 
   function blank() {
     return {
       active: false, pointerId: null,
       x: 0, y: 0, mag: 0, zone: 'idle',
       aimActive: false, aimYaw: 0,
-      locked: false, lockYaw: 0,
+      locked: false,
+      autoMove: false, autoX: 0, autoY: 0,
       startZone: 'idle', semiMode: '', semiArmed: false, entryFired: false,
       firing: false, auto: false
     };
@@ -100,6 +101,7 @@ const TOUCH = (function () {
 
     e.preventDefault();
     measureSide(side);
+    if (side === 'left') cancelAuto();
 
     st.active = true;
     st.pointerId = e.pointerId;
@@ -147,6 +149,10 @@ const TOUCH = (function () {
       setStick(side, e.clientX, e.clientY);
     }
 
+    /* 左摇杆：圈外松手 -> 固定松手方向，持续奔跑；再摸左摇杆取消 */
+    const autoDir = side === 'left' && !canceled && st.zone === 'outer' && st.aimActive;
+    const ax = st.x, ay = st.y;
+
     /* 非全自动 B：在同心圆外松手 -> 开火一次；回内圆则已取消 */
     if (!canceled && side === 'right' && !st.auto &&
         st.semiMode === 'B' && st.semiArmed && st.zone !== 'inner') {
@@ -154,6 +160,13 @@ const TOUCH = (function () {
     }
 
     resetStick(side);
+
+    if (autoDir) {
+      st.autoMove = true;
+      st.autoX = ax;
+      st.autoY = ay;
+      updateClasses(side);
+    }
   }
 
   function setStick(side, clientX, clientY) {
@@ -176,19 +189,10 @@ const TOUCH = (function () {
     if (st.aimActive) st.aimYaw = Math.atan2(ux, uy);
 
     if (side === 'left') {
-      if (st.locked) {
-        /* 越过外圆后方向锁死；回到外圆内才解锁 */
-        st.x = Math.sin(st.lockYaw);
-        st.y = Math.cos(st.lockYaw);
-        if (zone !== 'outer') st.locked = false;
-      } else {
-        st.x = ux;
-        st.y = uy;
-        if (zone === 'outer') {
-          st.locked = true;
-          st.lockYaw = st.aimYaw;
-        }
-      }
+      /* 圈外按住时方向仍跟随摇杆角度；松手时才固定方向持续移动 */
+      st.x = ux;
+      st.y = uy;
+      st.locked = zone === 'outer';
       if (mag <= DEAD) { st.x = 0; st.y = 0; }
     } else {
       if (st.auto) {
@@ -225,6 +229,7 @@ const TOUCH = (function () {
     pad.classList.toggle('zone-ring', st.active && st.zone === 'ring');
     pad.classList.toggle('zone-outer', st.active && st.zone === 'outer');
     pad.classList.toggle('locked', st.active && st.locked);
+    pad.classList.toggle('auto', st.autoMove);
     pad.classList.toggle('firing', st.active && st.firing);
 
     const semiB = side === 'right' && !st.auto && st.active && st.semiMode === 'B';
@@ -239,8 +244,10 @@ const TOUCH = (function () {
 
     if (pad && pid !== null) {
       try { pad.releasePointerCapture(pid); } catch (err) { /* ignore */ }
+    }
+    if (pad) {
       pad.classList.remove('is-active', 'zone-inner', 'zone-ring', 'zone-outer',
-        'locked', 'firing', 'armed', 'canceled');
+        'locked', 'auto', 'firing', 'armed', 'canceled');
     }
 
     st.active = false;
@@ -251,11 +258,23 @@ const TOUCH = (function () {
     st.zone = 'idle';
     st.aimActive = false;
     st.locked = false;
+    st.autoMove = false;
+    st.autoX = 0;
+    st.autoY = 0;
     st.startZone = 'idle';
     st.semiMode = '';
     st.semiArmed = false;
     st.entryFired = false;
     st.firing = false;
+  }
+
+  function cancelAuto() {
+    const l = state.left;
+    if (!l.autoMove) return;
+    l.autoMove = false;
+    l.autoX = 0;
+    l.autoY = 0;
+    updateClasses('left');
   }
 
   function reset() {
@@ -309,6 +328,7 @@ const TOUCH = (function () {
     setEnabled: setEnabled,
     setAuto: setAuto,
     takeSemiShot: takeSemiShot,
+    cancelAuto: cancelAuto,
     reset: reset,
     get isTouch() { return IS_TOUCH; },
     get enabled() { return state.enabled; },

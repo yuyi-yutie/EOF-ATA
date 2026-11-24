@@ -16,6 +16,7 @@ const G = (function () {
   let ended = false;
   let mode = 'lobby';           // 'lobby' | 'mission'
   let endReason = '';
+  let testMap = false;
 
   const CAM = {
     pitch: CFG.CAM.PITCH,
@@ -39,6 +40,7 @@ const G = (function () {
     kit: { medkit: 0, battery: 0 },
     looted: 0, dismantledValue: 0,
     extractT: 0, extracted: false, reloadMul: 1,
+    respawnT: 0, respawnDone: false,
     charKey: 'scout'
   };
 
@@ -50,8 +52,9 @@ const G = (function () {
   let bullets = [];       // 玩家的实弹（热学/力学/电学）
   let zones = [];         // 热学燃烧区
   let beams = [];         // 激光折线
+  let lidDebris = [];     // 撬飞的箱盖
   let bolts = [];         // 电弧链
-  let cones = [];         // 声学冲击锥
+  let sonicWaves = [];         // 声学冲击锥
   let rings = [];         // 开场冲击环
   let aim = { x: 0, z: -1 };
   let shake = 0;
@@ -216,6 +219,9 @@ const G = (function () {
       if (e.code === 'KeyF') { if (!Inventory.isOpen()) tryLoot(); }
       if (e.code === 'Digit1') switchSlot(0);
       if (e.code === 'Digit2') switchSlot(1);
+      if (e.code === 'Digit3') switchSlot(2);
+      if (e.code === 'Digit4') switchSlot(3);
+      if (e.code === 'Digit5') switchSlot(4);
       if (e.code === 'F3') {
         const d = $('dbg');
         if (d) d.classList.toggle('on');
@@ -360,7 +366,10 @@ const G = (function () {
   /* ---------- 声学：瞬时锥形冲击 ---------- */
   function fireCone(w, m) {
     const half = (w.halfAngle || 33) * Math.PI / 180;
-    cones.push({ x: m.x, z: m.z, ang: player.yaw, half: half, range: w.range, t: 0.26, c: w.rgb2 });
+    sonicWaves.push({
+      x: m.x, z: m.z, ang: player.yaw, half: half, range: w.range,
+      t: 0, life: 0.72, c: w.rgb2, seed: Math.random() * 10
+    });
     for (const e of enemies) {
       if (e.dead) continue;
       const dx = e.x - m.x, dz = e.z - m.z;
@@ -368,52 +377,82 @@ const G = (function () {
       if (d > w.range + e.r) continue;
       const a = Math.atan2(dx, dz);
       if (Math.abs(angDiff(a, player.yaw)) > half + Math.atan2(e.r, Math.max(d, 1))) continue;
-      if (!World.los(m.x, m.z, e.x, e.z)) continue;
+      /* 声学伤害穿墙：不检查 World.los */
       const t = clamp(d / w.range, 0, 1);
-      damageEnemy(e, lerp(w.dmg, w.dmgFar, t), a);
+      damageEnemy(e, lerp(w.dmg, w.dmgFar, t), a, w.rgb2);
       HUD.hit();
     }
-    sparks.push({ x: m.x, y: m.y, z: m.z, t: 0.2, c: w.rgb2, s: 0.32 });
+    sparks.push({ x: m.x, y: m.y, z: m.z, t: 0.22, c: w.rgb2, s: 0.42 });
   }
 
   /* ---------- 光学：折线激光，最多弹射 ---------------- */
   function fireLaser(w, m) {
     const maxB = w.bounce === undefined ? 3 : w.bounce;
     const falloff = w.falloff || 0.85;
-    const pts = [{ x: m.x, z: m.z }];
-    let px = m.x, pz = m.z, a = player.yaw;
+    /* 枪口偶尔会探进墙里（贴墙射击时）：把起点收回到玩家方向的地板格 */
+    let ox = m.x, oz = m.z;
+    if (!World.isFloorAt(ox, oz)) {
+      ox = player.x; oz = player.z;
+      for (let k = 1; k <= 10; k++) {
+        const t = k / 10;
+        const tx = m.x + (player.x - m.x) * t;
+        const tz = m.z + (player.z - m.z) * t;
+        if (World.isFloorAt(tx, tz)) { ox = tx; oz = tz; break; }
+      }
+    }
+    const pts = [{ x: ox, z: oz }];
+    let px = ox, pz = oz, a = player.yaw;
     let remain = w.range;
 
     for (let b = 0; b <= maxB; b++) {
-      let dx = Math.sin(a), dz = Math.cos(a);
-      const d = Math.min(remain, World.rayWall(px, pz, dx, dz, remain, 0.1));
+      const dx = Math.sin(a), dz = Math.cos(a);
+      const hit = World.rayWallHit(px, pz, dx, dz, remain);
+      const d = hit.d;
       const ex = px + dx * d, ez = pz + dz * d;
       pts.push({ x: ex, z: ez });
 
-      let hitAny = false;
+      /* 光学武器穿透敌人：命中的敌人逐个受伤，但光束继续前进，照常撞墙反射 */
       for (const e of enemies) {
         if (e.dead) continue;
         if (segDist(e.x, e.z, px, pz, ex, ez) > e.r + 0.16) continue;
-        damageEnemy(e, w.dmg * Math.pow(falloff, b), Math.atan2(e.x - px, e.z - pz));
+        damageEnemy(e, w.dmg * Math.pow(falloff, b), Math.atan2(e.x - px, e.z - pz), w.rgb2);
         HUD.hit();
-        sparks.push({ x: e.x, y: 1.05, z: e.z, t: 0.16, c: w.rgb2, s: 0.22 });
-        hitAny = true;
+        sparks.push({ x: e.x, y: 1.05, z: e.z, t: 0.22, c: w.rgb2, s: 0.32 });
+        sparks.push({ x: e.x, y: 1.08, z: e.z, t: 0.12, c: [1, 1, 1], s: 0.16 });
       }
-      if (hitAny) break;
+
+      /* 撞墙火花 */
+      if (hit.axis) {
+        sparks.push({ x: ex, y: 1.0, z: ez, t: 0.22, c: w.rgb2, s: 0.34 });
+        sparks.push({ x: ex, y: 1.06, z: ez, t: 0.12, c: [1, 1, 1], s: 0.16 });
+      }
 
       remain -= d;
-      if (remain <= 0.5 || d < 0.15) break;
+      if (remain <= 0.05 || !hit.axis) break;
 
-      const bx = ex - dx * 0.3, bz = ez - dz * 0.3;
-      const hitX = !World.isFloorAt(bx + dx * 0.45, bz);
-      const hitZ = !World.isFloorAt(bx, bz + dz * 0.45);
-      if (!hitX && !hitZ) break;
-      if (hitX) dx = -dx;
-      if (hitZ) dz = -dz;
-      a = Math.atan2(dx, dz);
-      px = bx + dx * 0.12;
-      pz = bz + dz * 0.12;
-      sparks.push({ x: ex, y: 1.0, z: ez, t: 0.16, c: w.rgb2, s: 0.26 });
+      /* 反射重写：
+         1) 按 DDA 给出的格子轴翻转方向；
+         2) 起点沿撞墙面的外法线推出 1.2cm，保证任何入射角都落回地板格；
+         3) 万一落在墙角缝隙里，再沿入射方向退回上一格；
+         4) 在撞点放一个明显的棱镜闪光，垂直入射时也能看出确实弹了。 */
+      let nx = dx, nz = dz;
+      if (hit.axis === 'x' || hit.axis === 'both') nx = -nx;
+      if (hit.axis === 'z' || hit.axis === 'both') nz = -nz;
+      let ox = ex, oz = ez;
+      if (hit.axis === 'x' || hit.axis === 'both') ox = ex - Math.sign(dx) * 0.012;
+      if (hit.axis === 'z' || hit.axis === 'both') oz = ez - Math.sign(dz) * 0.012;
+      if (!World.isFloorAt(ox, oz)) {
+        const back = Math.min(0.06, d);
+        ox = ex - dx * back;
+        oz = ez - dz * back;
+      }
+      if (!World.isFloorAt(ox, oz)) break;
+      a = Math.atan2(nx, nz);
+      px = ox;
+      pz = oz;
+      const fyaw = hit.axis === 'x' ? 0 : (hit.axis === 'z' ? Math.PI / 2 : Math.atan2(dx, dz));
+      flashes.push({ x: ex, y: 1.05, z: ez, yaw: fyaw, t: 0.3, s: 0.66, c: w.rgb2 });
+      flashes.push({ x: ex, y: 1.05, z: ez, yaw: fyaw, t: 0.14, s: 0.3, c: [1, 1, 1] });
     }
     beams.push({ pts: pts, t: 0.24, c: w.rgb2 });
   }
@@ -441,15 +480,36 @@ const G = (function () {
   }
 
   function bulletImpact(b) {
-    sparks.push({ x: b.x, y: 1.0, z: b.z, t: 0.2, c: b.c, s: 0.24 });
-    if (b.kind === 'thermal') spawnZone(b.x, b.z, b.c);
+    sparks.push({ x: b.x, y: 1.0, z: b.z, t: 0.2, c: b.c, s: 0.28 });
+    if (b.kind === 'thermal') {
+      for (let i = 0; i < 4; i++) {
+        sparks.push({
+          x: b.x + (Math.random() - 0.5) * 0.5, y: 0.65 + Math.random() * 0.7,
+          z: b.z + (Math.random() - 0.5) * 0.5, t: 0.2 + Math.random() * 0.1,
+          c: i % 2 ? [1, 0.48, 0.18] : [1, 0.76, 0.3], s: 0.2 + Math.random() * 0.16
+        });
+      }
+      spawnZone(b.x, b.z, b.c);
+    } else if (b.kind === 'voltaic') {
+      for (let i = 0; i < 3; i++) {
+        sparks.push({
+          x: b.x + (Math.random() - 0.5) * 0.4, y: 0.9 + Math.random() * 0.35,
+          z: b.z + (Math.random() - 0.5) * 0.4, t: 0.16 + Math.random() * 0.08,
+          c: i === 0 ? [0.95, 0.85, 1] : b.c, s: 0.16 + Math.random() * 0.12
+        });
+      }
+    } else {
+      sparks.push({ x: b.x, y: 1.02, z: b.z, t: 0.14, c: [1, 1, 1], s: 0.16 });
+      sparks.push({ x: b.x + 0.14, y: 0.9, z: b.z - 0.08, t: 0.18, c: b.c, s: 0.18 });
+    }
   }
 
   function spawnZone(x, z, c) {
     const w = WEAPONS[2];
     zones.push({
       x: x, z: z, r: w.zoneR || 3.1, life: w.zoneLife || 3.2,
-      tick: 0, dps: (w.tickDmg || 3.5) * 4, c: c || w.rgb2
+      tick: 0, dps: (w.tickDmg || 3.5) * 4, c: c || w.rgb2,
+      seed: Math.random() * 10
     });
   }
 
@@ -458,12 +518,20 @@ const G = (function () {
     const t = clamp(b.travelled / b.range, 0, 1);
     const dmg = lerp(b.dmg, b.dmgFar, t);
     const a = Math.atan2(e.x - b.x, e.z - b.z);
-    damageEnemy(e, dmg, a);
+    damageEnemy(e, dmg, a, b.c);
     HUD.hit();
     b.dead = true;
-    sparks.push({ x: b.x, y: 1.02, z: b.z, t: 0.2, c: b.c, s: 0.26 });
+    sparks.push({ x: b.x, y: 1.02, z: b.z, t: 0.2, c: b.c, s: 0.3 });
+    sparks.push({ x: b.x, y: 1.05, z: b.z, t: 0.12, c: [1, 1, 1], s: 0.16 });
 
     if (b.kind === 'thermal') {
+      for (let i = 0; i < 3; i++) {
+        sparks.push({
+          x: e.x + (Math.random() - 0.5) * 0.45, y: 0.7 + Math.random() * 0.5,
+          z: e.z + (Math.random() - 0.5) * 0.45, t: 0.18 + Math.random() * 0.1,
+          c: i % 2 ? [1, 0.46, 0.16] : [1, 0.75, 0.28], s: 0.18 + Math.random() * 0.12
+        });
+      }
       spawnZone(e.x, e.z, b.c);
     } else if (b.kind === 'voltaic') {
       const mul = w.chainMul || [0.6, 0.4, 0.25];
@@ -478,8 +546,15 @@ const G = (function () {
           if (d < bd) { bd = d; best = o; }
         }
         if (!best) break;
-        bolts.push({ x0: src.x, z0: src.z, x1: best.x, z1: best.z, t: 0.16, c: b.c });
-        damageEnemy(best, dmg * mul[i], Math.atan2(best.x - src.x, best.z - src.z));
+        sparks.push({
+          x: best.x, y: 1.08, z: best.z, t: 0.2,
+          c: i === 0 ? [0.95, 0.85, 1] : b.c, s: 0.24
+        });
+        bolts.push({
+          x0: src.x, z0: src.z, x1: best.x, z1: best.z,
+          t: 0.18, c: b.c, seed: Math.random() * 10
+        });
+        damageEnemy(best, dmg * mul[i], Math.atan2(best.x - src.x, best.z - src.z), b.c);
         used.push(best);
         src = best;
       }
@@ -499,9 +574,10 @@ const G = (function () {
     }
   }
 
-  function damageEnemy(e, dmg, ang) {
+  function damageEnemy(e, dmg, ang, col, silent) {
     e.hp -= dmg;
     e.hitFlash = 0.12;
+    if (!silent) HUD.damageNumber(e.x, 1.22, e.z, dmg, col);
     if (e.state !== 'chase' && e.state !== 'attack') {
       e.state = 'alert'; e.alertT = 0.35;
       e.lastSeenX = player.x; e.lastSeenZ = player.z;
@@ -536,8 +612,110 @@ const G = (function () {
     HUD.vitals();
   }
 
+  function nearestChest() {
+    let best = null, bd = CFG.INTERACT_R + 0.9;
+    for (let i = 0; i < World.chests.length; i++) {
+      const c = World.chests[i];
+      const d = Math.hypot(c.x - player.x, c.z - player.z) - (c.cr || 0);
+      if (d < bd) { bd = d; best = c; }
+    }
+    return best;
+  }
+
+  function startPry(c) {
+    if (!c || c.prying || c.pried) return;
+    c.prying = true;
+    c.pryT = 0;
+    HUD.toast('撬开物资箱 · 保持站位', 'good');
+  }
+
+  function cancelPry(c, msg) {
+    c.prying = false;
+    c.pryT = 0;
+    if (msg) HUD.toast(msg, 'warn');
+  }
+
+  function finishPry(c) {
+    c.prying = false;
+    c.pried = true;
+    c.pryT = 0;
+    c.pryBurst = 0.45;
+    c.openDelay = CFG.CHEST_OPEN_DELAY;
+    c.autoSearch = true;
+    spawnLid(c);
+    HUD.toast('箱盖被撬飞了 · 正在搜索', 'good');
+  }
+
+  function spawnLid(c) {
+    const A = (typeof ASSETS !== 'undefined') ? ASSETS.chest : null;
+    const lc = (A && A.lidCenter) ? A.lidCenter : [0, 0.74, 0];
+    const cy = Math.cos(c.yaw), sy = Math.sin(c.yaw);
+    const wx = c.x + cy * lc[0] + sy * lc[2];
+    const wz = c.z - sy * lc[0] + cy * lc[2];
+    const away = Math.atan2(c.x - player.x, c.z - player.z);
+    const a = away + (Math.random() - 0.5) * 2.4;
+    const sp = 1.6 + Math.random() * 2.8;
+    lidDebris.push({
+      x: wx, y: lc[1], z: wz,
+      vx: Math.sin(a) * sp,
+      vy: 5.5 + Math.random() * 3.0,
+      vz: Math.cos(a) * sp,
+      yaw: c.yaw,
+      pitch: (Math.random() - 0.5) * 0.6,
+      vyaw: (Math.random() - 0.5) * 9,
+      vpitch: (Math.random() - 0.5) * 8,
+      t: 0, landT: -1, dead: false
+    });
+  }
+
+  function updateLidDebris(dt) {
+    for (let i = 0; i < lidDebris.length; i++) {
+      const d = lidDebris[i];
+      d.t += dt;
+      d.vy -= 17 * dt;
+      d.x += d.vx * dt;
+      d.y += d.vy * dt;
+      d.z += d.vz * dt;
+      d.yaw += d.vyaw * dt;
+      d.pitch += d.vpitch * dt;
+      const floor = 0.1;
+      if (d.y < floor) {
+        d.y = floor;
+        if (d.landT < 0) d.landT = 0;
+        if (d.vy < -1.2) d.vy = -d.vy * 0.32;
+        else d.vy = 0;
+        d.vx *= 0.72; d.vz *= 0.72;
+        d.vyaw *= 0.78; d.vpitch *= 0.78;
+      }
+      if (d.landT >= 0) {
+        d.landT += dt;
+        if (d.landT >= 3) d.dead = true;
+      }
+    }
+    if (lidDebris.length) lidDebris = lidDebris.filter(function (d) { return !d.dead; });
+  }
+
+  function noteLoot(n) {
+    n = n || 1;
+    looted += n;
+    player.looted += n;
+    HUD.loot(looted);
+  }
+
   function tryLoot() {
     if (mode !== 'mission' || ended || paused) return;
+    const chest = nearestChest();
+    if (chest) {
+      if (chest.prying) return;
+      if (!chest.pried) {
+        startPry(chest);
+        return;
+      }
+      chest.autoSearch = false;
+      chest.openDelay = 0;
+      Inventory.openChest(chest);
+      return;
+    }
     let best = null, bd = CFG.INTERACT_R + 0.4;
     for (const l of World.loot) {
       if (l.taken) continue;
@@ -581,10 +759,9 @@ const G = (function () {
     const d = Math.hypot(dx, dz);
     if (d < 0.05) return true;
     const ux = dx / d, uz = dz / d;
-    const nx = e.x + ux * speed * dt;
-    const nz = e.z + uz * speed * dt;
-    if (!World.blocked(nx, e.z, e.r)) e.x = nx;
-    if (!World.blocked(e.x, nz, e.r)) e.z = nz;
+    const mv = World.moveCircle(e.x, e.z, ux * speed * dt, uz * speed * dt, e.r);
+    e.x = mv.x;
+    e.z = mv.z;
     e.yaw = angLerp(e.yaw, Math.atan2(ux, uz), 1 - Math.exp(-9 * dt));
     e.moving = true;
     e.animT += dt;
@@ -677,7 +854,9 @@ const G = (function () {
         const mn = e.r + o.r;
         if (od > 0.0001 && od < mn) {
           const push = (mn - od) * 0.5;
-          e.x += ox / od * push; e.z += oz / od * push;
+          const nx = e.x + ox / od * push;
+          const nz = e.z + oz / od * push;
+          if (!World.blocked(nx, nz, e.r)) { e.x = nx; e.z = nz; }
         }
       }
     }
@@ -690,6 +869,29 @@ const G = (function () {
     promptT -= dt;
     if (promptT > 0) return;
     promptT = 0.12;
+
+    const nearChest = nearestChest();
+    if (nearChest) {
+      if (nearChest.prying) HUD.prompt('撬开中 · 保持站位');
+      else if (!nearChest.pried) HUD.prompt((TOUCH_MODE ? '撬开' : '[F] 撬开') + ' 物资箱');
+      else HUD.prompt((TOUCH_MODE ? '搜索' : '[F] 搜索') + ' 物资箱');
+      return;
+    }
+
+    if (testMap && World.test && World.test.respawn) {
+      const rp = World.test.respawn;
+      const dr = Math.hypot(player.x - rp.x, player.z - rp.z);
+      if (dr < rp.r) {
+        HUD.objective(player.respawnDone ? '刷新点 · 已刷新' : '刷新点 · 站定 1 秒', true);
+        HUD.prompt(player.respawnDone ? '离开刷新点后可再次刷新敌人' : '站定 1 秒刷新所有敌人');
+        return;
+      }
+      if (dr < rp.r + 5) {
+        HUD.objective('刷新点 · 已到达', true);
+        HUD.prompt('站上蓝色刷新点');
+        return;
+      }
+    }
 
     const dp = Math.hypot(player.x - World.pad.x, player.z - World.pad.z);
     if (dp < World.pad.r) HUD.objective('撤离台 · 保持站位', true);
@@ -719,6 +921,31 @@ const G = (function () {
     if (paused) return;
     time += dt;
 
+    /* 物资箱：撬箱进度 / 撬飞箱盖 / 延迟进入搜索 */
+    for (let i = 0; i < World.chests.length; i++) {
+      const c = World.chests[i];
+      if (c.prying) {
+        const d = Math.hypot(c.x - player.x, c.z - player.z) - (c.cr || 0);
+        if (d > CFG.INTERACT_R + 1.2) {
+          cancelPry(c, '离得太远 · 撬箱中断');
+        } else {
+          c.pryT += dt / CFG.CHEST_PRY_TIME;
+          if (c.pryT >= 1) finishPry(c);
+        }
+      }
+      if (c.pryBurst > 0) c.pryBurst = Math.max(0, c.pryBurst - dt);
+      if (c.openDelay > 0) c.openDelay = Math.max(0, c.openDelay - dt);
+      /* 撬开后自动进入搜索；若当时不在附近或正在查看其它箱子，等条件满足时再自动打开 */
+      if (c.autoSearch && c.openDelay <= 0 && !Inventory.isOpen()) {
+        const d = Math.hypot(c.x - player.x, c.z - player.z) - (c.cr || 0);
+        if (d <= CFG.INTERACT_R + 1.2) {
+          c.autoSearch = false;
+          Inventory.openChest(c);
+        }
+      }
+    }
+    updateLidDebris(dt);
+
     const invOpen = Inventory.isOpen();
     if (TOUCH_MODE) {
       if (invOpen && !touchInvSuspended) {
@@ -747,30 +974,42 @@ const G = (function () {
       }
     }
 
-    let ix = 0, iz = 0, touchRun = false;
     const tl = TOUCH.left;
-    if (TOUCH_MODE && tl.active && tl.mag > TOUCH_DEAD) {
+    if (TOUCH_MODE && tl.autoMove &&
+        (keys.KeyW || keys.KeyS || keys.KeyA || keys.KeyD)) {
+      TOUCH.cancelAuto();
+    }
+
+    let ix = 0, iz = 0, touchRun = false;
+    const touchActive = TOUCH_MODE && tl.active && tl.mag > TOUCH_DEAD;
+    if (touchActive) {
       ix = tl.x;
       iz = tl.y;
       touchRun = tl.zone !== 'inner';
+    } else if (TOUCH_MODE && tl.autoMove) {
+      /* 圈外松手后：保持松手瞬间的方向持续奔跑，直到再次触摸左摇杆 */
+      ix = tl.autoX;
+      iz = tl.autoY;
+      touchRun = true;
     } else {
       if (keys.KeyW) iz -= 1;
       if (keys.KeyS) iz += 1;
       if (keys.KeyA) ix -= 1;
       if (keys.KeyD) ix += 1;
     }
+    /* 打开转移界面时锁住角色移动（世界照常运行） */
+    if (invOpen) { ix = 0; iz = 0; touchRun = false; }
     const mag = Math.hypot(ix, iz);
     player.moving = (mag > 0 || WALK) && !player.dead;
     if (mag > 0) player.moveYaw = Math.atan2(ix, iz);
     if (!isNaN(MV)) player.moveYaw = player.yaw + MV * Math.PI / 180;
-    const wantSprint = (TOUCH_MODE && tl.active && tl.mag > TOUCH_DEAD)
+    const wantSprint = touchActive
       ? touchRun
-      : !!(keys.ShiftLeft || keys.ShiftRight);
+      : ((TOUCH_MODE && tl.autoMove) ? true : !!(keys.ShiftLeft || keys.ShiftRight));
     player.sprinting = wantSprint && player.stam > 1 && player.moving;
 
     let speed = player.sprinting ? CFG.PLAYER.run : CFG.PLAYER.walk;
     if (player.dead) speed = 0;
-    if (invOpen) speed *= 0.55;
     if (mag > 0) { ix /= mag; iz /= mag; }
 
     if (player.sprinting) {
@@ -780,11 +1019,15 @@ const G = (function () {
       player.stamTimer = Math.max(0, player.stamTimer - dt);
       if (player.stamTimer <= 0) player.stam = Math.min(CFG.PLAYER.stam, player.stam + CFG.PLAYER.stamRegen * dt);
     }
+    /* 测试场：无限体力，方便持续测试武器与走位 */
+    if (testMap) {
+      player.stam = CFG.PLAYER.stam;
+      player.stamTimer = 0;
+    }
 
-    const nx = player.x + ix * speed * dt;
-    const nz = player.z + iz * speed * dt;
-    if (!World.blocked(nx, player.z, CFG.PLAYER.r)) player.x = nx;
-    if (!World.blocked(player.x, nz, CFG.PLAYER.r)) player.z = nz;
+    const mv = World.moveCircle(player.x, player.z, ix * speed * dt, iz * speed * dt, CFG.PLAYER.r);
+    player.x = mv.x;
+    player.z = mv.z;
 
     player.animT += dt * (player.sprinting ? 1.35 : 1);
     if (!player.moving) player.animT = 0;
@@ -867,7 +1110,7 @@ const G = (function () {
         for (const e of enemies) {
           if (e.dead) continue;
           if (Math.hypot(e.x - z.x, e.z - z.z) < z.r) {
-            damageEnemy(e, z.dps * 0.25, Math.atan2(e.x - z.x, e.z - z.z));
+            damageEnemy(e, z.dps * 0.25, Math.atan2(e.x - z.x, e.z - z.z), z.c, true);
           }
         }
       }
@@ -884,23 +1127,54 @@ const G = (function () {
     beams = beams.filter(function (b) { return b.t > 0; });
     for (const b of bolts) b.t -= dt;
     bolts = bolts.filter(function (b) { return b.t > 0; });
-    for (const c of cones) c.t -= dt;
-    cones = cones.filter(function (c) { return c.t > 0; });
+    for (const w of sonicWaves) w.t += dt;
+    sonicWaves = sonicWaves.filter(function (w) { return w.t < w.life; });
     for (const r of rings) r.t -= dt;
     rings = rings.filter(function (r) { return r.t > 0; });
 
     /* 撤离 */
+    const exHold = (testMap && World.test && World.test.extractHold) ? World.test.extractHold : CFG.EXTRACT_HOLD;
     const dp = Math.hypot(player.x - World.pad.x, player.z - World.pad.z);
     if (dp < World.pad.r && !player.dead) {
       player.extractT += dt;
-      HUD.extract(player.extractT / CFG.EXTRACT_HOLD);
-      if (player.extractT >= CFG.EXTRACT_HOLD) {
+      HUD.extract(player.extractT / exHold);
+      if (player.extractT >= exHold) {
         player.extracted = true;
         finishRun(true, 'extract');
       }
     } else if (player.extractT > 0) {
       player.extractT = Math.max(0, player.extractT - dt * 2);
-      HUD.extract(player.extractT / CFG.EXTRACT_HOLD);
+      HUD.extract(player.extractT / exHold);
+    }
+
+    /* 测试场刷新点：站定 1 秒刷新所有测试敌人 */
+    if (testMap && World.test && World.test.respawn) {
+      const rp = World.test.respawn;
+      const dr = Math.hypot(player.x - rp.x, player.z - rp.z);
+      if (dr < rp.r && !player.dead) {
+        if (!player.respawnDone) {
+          player.respawnT += dt;
+          HUD.respawn(player.respawnT);
+          if (player.respawnT >= 1) {
+            player.respawnT = 0;
+            player.respawnDone = true;
+            respawnTestEnemies();
+            HUD.respawn(0);
+          }
+        } else {
+          HUD.respawn(0);
+        }
+      } else {
+        player.respawnDone = false;
+        if (player.respawnT > 0) {
+          player.respawnT = Math.max(0, player.respawnT - dt * 2);
+          HUD.respawn(player.respawnT);
+        } else {
+          HUD.respawn(0);
+        }
+      }
+    } else if (testMap) {
+      HUD.respawn(0);
     }
 
     if (player.dead) player.deadT += dt;
@@ -911,16 +1185,136 @@ const G = (function () {
 
   /* ---------- 渲染 ---------- */
   function drawLoot(geo) {
+    const mask = R.mask;
+    function put(o) {
+      geo.box(o);
+      if (mask) {
+        const m = {};
+        for (const k in o) m[k] = o[k];
+        m.shadow = false;
+        m.castOnly = false;
+        mask.box(m);
+      }
+    }
     for (const l of World.loot) {
       if (l.taken) continue;
       const col = tierRgb(l.item ? l.item.tierId : 'common');
       const bob = Math.sin(time + l.x * 0.7) * 0.03;
       if (l.kind === 'case') {
-        geo.box({ x: l.x, y: 0.24 + bob, z: l.z, sx: 0.62, sy: 0.46, sz: 0.5, yaw: 0.4, color: PAL.teal, outline: 0.016, shadow: true });
-        geo.box({ x: l.x, y: 0.50 + bob, z: l.z, sx: 0.44, sy: 0.05, sz: 0.3, yaw: 0.4, color: col, outline: 0, emis: true });
+        put({ x: l.x, y: 0.24 + bob, z: l.z, sx: 0.62, sy: 0.46, sz: 0.5, yaw: 0.4, color: PAL.teal, outline: 0.016, shadow: true });
+        put({ x: l.x, y: 0.50 + bob, z: l.z, sx: 0.44, sy: 0.05, sz: 0.3, yaw: 0.4, color: col, outline: 0, emis: true });
       } else {
-        geo.box({ x: l.x, y: 0.3 + bob, z: l.z, sx: 0.36, sy: 0.6, sz: 0.36, yaw: 0.2, color: PAL.gunL, outline: 0.014, shadow: true });
-        geo.box({ x: l.x, y: 0.62 + bob, z: l.z, sx: 0.30, sy: 0.06, sz: 0.30, yaw: 0.2, color: col, outline: 0, emis: true });
+        put({ x: l.x, y: 0.3 + bob, z: l.z, sx: 0.36, sy: 0.6, sz: 0.36, yaw: 0.2, color: PAL.gunL, outline: 0.014, shadow: true });
+        put({ x: l.x, y: 0.62 + bob, z: l.z, sx: 0.30, sy: 0.06, sz: 0.30, yaw: 0.2, color: col, outline: 0, emis: true });
+      }
+    }
+  }
+
+  function drawChests(geo) {
+    const list = World.chests;
+    if (!list || !list.length) return;
+    const A = (typeof ASSETS !== 'undefined') ? ASSETS.chest : null;
+    const mask = R.mask;
+    function maskBox(o) {
+      if (!mask) return;
+      const m = {};
+      for (const k in o) m[k] = o[k];
+      m.shadow = false;
+      m.castOnly = false;
+      mask.box(m);
+    }
+    for (let i = 0; i < list.length; i++) {
+      const c = list[i];
+      const bx = c.x, bz = c.z;
+      /* 简易落地阴影 */
+      geo.box({
+        x: bx, y: 0.03, z: bz, sx: 1.24, sy: 0.05, sz: 0.90, yaw: c.yaw,
+        color: [0.335, 0.295, 0.285], outline: 0, castOnly: true, shadow: true
+      });
+      if (A && A.ready) {
+        geo.mesh(A.body, { x: bx, y: 0, z: bz, yaw: c.yaw });
+        if (mask) mask.mesh(A.body, { x: bx, y: 0, z: bz, yaw: c.yaw });
+        if (!c.pried) {
+          geo.mesh(A.lid, { x: bx, y: 0, z: bz, yaw: c.yaw });
+          if (mask) mask.mesh(A.lid, { x: bx, y: 0, z: bz, yaw: c.yaw });
+        }
+      } else {
+        const bodyBox = { x: bx, y: 0.315, z: bz, sx: 1.1, sy: 0.5, sz: 0.74, yaw: c.yaw, color: [0.16, 0.20, 0.23], shadow: false };
+        const plinthBox = { x: bx, y: 0.035, z: bz, sx: 1.2, sy: 0.07, sz: 0.84, yaw: c.yaw, color: [0.46, 0.50, 0.54], shadow: false };
+        const rimBox = { x: bx, y: 0.59, z: bz, sx: 1.16, sy: 0.05, sz: 0.80, yaw: c.yaw, color: [0.46, 0.50, 0.54], shadow: false };
+        geo.box(plinthBox); maskBox(plinthBox);
+        geo.box(bodyBox); maskBox(bodyBox);
+        geo.box(rimBox); maskBox(rimBox);
+        if (!c.pried) {
+          const lidBox = {
+            x: bx, y: 0.70, z: bz, sx: 1.16, sy: 0.17, sz: 0.80, yaw: c.yaw,
+            color: [0.16, 0.20, 0.23], shadow: false
+          };
+          geo.box(lidBox); maskBox(lidBox);
+        }
+        geo.box({
+          x: bx + Math.sin(c.yaw) * 0.39, y: 0.42, z: bz + Math.cos(c.yaw) * 0.39,
+          sx: 0.07, sy: 0.05, sz: 0.04, yaw: c.yaw, color: [1, 0.78, 0.34], outline: 0, emis: true
+        });
+      }
+      /* 撬开后露出黑色内腔和里面剩余的物资 */
+      if (c.pried) {
+        geo.box({
+          x: bx, y: 0.622, z: bz, sx: 1.0, sy: 0.02, sz: 0.64,
+          yaw: c.yaw, color: [0.035, 0.045, 0.055], outline: 0
+        });
+        geo.box({
+          x: bx, y: 0.618, z: bz, sx: 1.02, sy: 0.008, sz: 0.66,
+          yaw: c.yaw, color: [0.9, 0.55, 0.20], outline: 0, emis: true
+        });
+        const n = Math.min(3, c.inv.length);
+        for (let k = 0; k < n; k++) {
+          const it = c.inv[k];
+          const col = it ? tierRgb(it.tierId) : [0.6, 0.6, 0.6];
+          const lx = (k - (n - 1) / 2) * 0.28;
+          const lz = 0.05;
+          const wx = bx + Math.cos(c.yaw) * lx + Math.sin(c.yaw) * lz;
+          const wz = bz - Math.sin(c.yaw) * lx + Math.cos(c.yaw) * lz;
+          geo.box({
+            x: wx, y: 0.64, z: wz, sx: 0.16, sy: 0.10, sz: 0.16,
+            yaw: c.yaw, color: col, outline: 0, emis: true
+          });
+        }
+      }
+      /* 撬箱：底部环形进度 + 完成时向外散去的环 */
+      if (c.prying) {
+        const t = Math.max(0, Math.min(1, c.pryT || 0));
+        const a0 = -Math.PI / 2;
+        geo.arc(c.x, c.z, 0.82, 0.90, 0, Math.PI * 2, 0.055, [0.12, 0.07, 0.03], 56);
+        if (t > 0) {
+          geo.arc(c.x, c.z, 0.82, 0.90, a0, a0 + t * Math.PI * 2, 0.066,
+            [1.0, 0.62, 0.22], Math.max(8, Math.ceil(t * 56)));
+        }
+      }
+      if (c.pryBurst > 0) {
+        const k = Math.max(0, Math.min(1, c.pryBurst / 0.45));
+        const r = 0.90 + (1 - k) * 0.95;
+        geo.arc(c.x, c.z, r, r + 0.07, 0, Math.PI * 2, 0.07,
+          [k, k * 0.55, k * 0.18], 56);
+      }
+    }
+
+    /* 撬飞的箱盖：绕自身中心翻滚 */
+    if (!lidDebris.length) return;
+    const lc = (A && A.lidCenter) ? A.lidCenter : [0, 0.74, 0];
+    for (let i = 0; i < lidDebris.length; i++) {
+      const d = lidDebris[i];
+      if (A && A.ready) {
+        geo.mesh(A.lid, {
+          x: d.x - lc[0], y: d.y - lc[1], z: d.z - lc[2],
+          yaw: d.yaw, rotX: d.pitch,
+          px: lc[0], py: lc[1], pz: lc[2]
+        });
+      } else {
+        geo.box({
+          x: d.x, y: d.y, z: d.z, sx: 1.16, sy: 0.17, sz: 0.80,
+          yaw: d.yaw, rotX: d.pitch, color: [0.16, 0.20, 0.23], shadow: false
+        });
       }
     }
   }
@@ -928,6 +1322,7 @@ const G = (function () {
   function render() {
     R.begin();
     const geo = R.dyn;
+    const xray = R.xray;
 
     MODELS.drawUnit(geo, player.charKey, {
       x: player.x, y: 0, z: player.z, yaw: player.yaw,
@@ -973,13 +1368,14 @@ const G = (function () {
         const bob = Math.sin(time * 7 + e.seed) * 0.05;
         geo.box({
           x: e.x, y: MODELS.height(e.type) + 0.30 + bob, z: e.z,
-          sx: 0.13, sy: 0.13, sz: 0.13, yaw: time * 3,
+          sx: 0.13, sy: 0.13, sz: 0.13, yaw: 0.5,
           color: c, outline: 0, emis: true
         });
       }
     }
 
     drawLoot(geo);
+    drawChests(geo);
 
     for (const p of projectiles) {
       geo.box({ x: p.x, y: p.y, z: p.z, sx: 0.16, sy: 0.16, sz: 0.16, color: [0.73, 0.55, 1.0], outline: 0, emis: true });
@@ -1016,32 +1412,85 @@ const G = (function () {
 
     for (const b of bullets) {
       const yaw = Math.atan2(b.vx, b.vz);
-      geo.box({ x: b.x, y: b.y, z: b.z, sx: 0.14, sy: 0.14, sz: 0.26, yaw: yaw, color: b.c, outline: 0, emis: true });
-      const sp = Math.hypot(b.vx, b.vz);
-      const tl = b.kind === 'kinetic' ? 1.5 : 0.9;
-      geo.box({
-        x: b.x - b.vx / sp * tl * 0.5, y: b.y, z: b.z - b.vz / sp * tl * 0.5,
-        sx: b.kind === 'thermal' ? 0.22 : 0.09, sy: b.kind === 'thermal' ? 0.22 : 0.09, sz: tl,
-        yaw: yaw, color: b.c, outline: 0, emis: true
-      });
+      const sp = Math.hypot(b.vx, b.vz) || 1;
+      const ux = b.vx / sp, uz = b.vz / sp;
+      if (b.kind === 'thermal') {
+        geo.box({ x: b.x, y: b.y, z: b.z, sx: 0.30, sy: 0.30, sz: 0.44, yaw: yaw, color: b.c, outline: 0, emis: true });
+        geo.box({ x: b.x, y: b.y, z: b.z, sx: 0.14, sy: 0.14, sz: 0.30, yaw: yaw, color: [1, 0.86, 0.56], outline: 0, emis: true });
+        const tl = 1.6;
+        geo.box({
+          x: b.x - ux * tl * 0.5, y: b.y, z: b.z - uz * tl * 0.5,
+          sx: 0.22, sy: 0.22, sz: tl, yaw: yaw, color: b.c, outline: 0, emis: true
+        });
+        for (let i = 0; i < 3; i++) {
+          const f = 0.25 + i * 0.22;
+          const side = Math.sin(time * 30 + i * 2.1) * 0.18;
+          geo.box({
+            x: b.x - ux * tl * f + Math.cos(yaw) * side,
+            y: b.y + Math.sin(time * 20 + i) * 0.12,
+            z: b.z - uz * tl * f - Math.sin(yaw) * side,
+            sx: 0.12, sy: 0.12, sz: 0.16, yaw: yaw,
+            color: i % 2 ? [1, 0.5, 0.18] : [1, 0.75, 0.3], outline: 0, emis: true
+          });
+        }
+      } else if (b.kind === 'kinetic') {
+        const tl = 2.4;
+        geo.box({
+          x: b.x - ux * tl * 0.5, y: b.y, z: b.z - uz * tl * 0.5,
+          sx: 0.055, sy: 0.055, sz: tl, yaw: yaw, color: b.c, outline: 0, emis: true
+        });
+        geo.box({ x: b.x, y: b.y, z: b.z, sx: 0.16, sy: 0.16, sz: 0.44, yaw: yaw, color: b.c, outline: 0, emis: true });
+        geo.box({ x: b.x, y: b.y, z: b.z, sx: 0.08, sy: 0.08, sz: 0.26, yaw: yaw, color: [1, 1, 1], outline: 0, emis: true });
+      } else {
+        const tl = 1.1;
+        geo.box({
+          x: b.x - ux * tl * 0.5, y: b.y, z: b.z - uz * tl * 0.5,
+          sx: 0.13, sy: 0.13, sz: tl, yaw: yaw, color: b.c, outline: 0, emis: true
+        });
+        geo.box({ x: b.x, y: b.y, z: b.z, sx: 0.26, sy: 0.26, sz: 0.30, yaw: yaw, color: b.c, outline: 0, emis: true });
+        geo.box({ x: b.x, y: b.y, z: b.z, sx: 0.12, sy: 0.12, sz: 0.22, yaw: yaw, color: [1, 1, 1], outline: 0, emis: true });
+        for (let i = 0; i < 3; i++) {
+          const a = yaw + Math.PI / 2 + (i - 1) * 0.9;
+          const rr = 0.22 + (i % 2) * 0.08;
+          geo.box({
+            x: b.x + Math.cos(a) * rr,
+            y: b.y + Math.sin(time * 31 + i) * 0.16,
+            z: b.z - Math.sin(a) * rr,
+            sx: 0.08, sy: 0.08, sz: 0.08, yaw: a,
+            color: i === 0 ? [0.95, 0.85, 1] : b.c, outline: 0, emis: true
+          });
+        }
+      }
     }
 
     for (const bm of beams) {
+      const bk = clamp(bm.t / 0.24, 0, 1);
+      const pulse = Math.sin((1 - bk) * Math.PI);
+      const outer = 0.14 + pulse * 0.06;
+      const inner = 0.04 + pulse * 0.03;
       for (let i = 1; i < bm.pts.length; i++) {
         const p0 = bm.pts[i - 1], p1 = bm.pts[i];
         const dx = p1.x - p0.x, dz = p1.z - p0.z;
         const len = Math.hypot(dx, dz);
         if (len < 0.05) continue;
+        const yaw = Math.atan2(dx, dz);
         geo.box({
           x: (p0.x + p1.x) / 2, y: 1.02, z: (p0.z + p1.z) / 2,
-          sx: 0.16, sy: 0.16, sz: len, yaw: Math.atan2(dx, dz),
+          sx: outer, sy: outer, sz: len, yaw: yaw,
           color: bm.c, outline: 0, emis: true
         });
         geo.box({
           x: (p0.x + p1.x) / 2, y: 1.02, z: (p0.z + p1.z) / 2,
-          sx: 0.05, sy: 0.05, sz: len, yaw: Math.atan2(dx, dz),
+          sx: inner, sy: inner, sz: len, yaw: yaw,
           color: [1, 1, 1], outline: 0, emis: true
         });
+        if (i > 1) {
+          geo.box({
+            x: p0.x, y: 1.08, z: p0.z,
+            sx: 0.22 + pulse * 0.1, sy: 0.04, sz: 0.22 + pulse * 0.1,
+            yaw: yaw + Math.PI / 4, color: [1, 1, 1], outline: 0, emis: true
+          });
+        }
       }
     }
 
@@ -1050,55 +1499,111 @@ const G = (function () {
       const len = Math.hypot(dx, dz);
       if (len < 0.05) continue;
       const yaw = Math.atan2(dx, dz);
-      for (let k = 0; k < 3; k++) {
-        const f = k / 3;
-        const jx = (Math.random() - 0.5) * 0.28, jz = (Math.random() - 0.5) * 0.28;
+      const segs = 6;
+      for (let k = 0; k < segs; k++) {
+        const f = k / segs;
+        const jx = Math.sin(bo.seed + k * 2.1 + time * 25) * 0.15;
+        const jz = Math.cos(bo.seed * 1.7 + k * 1.7 + time * 23) * 0.15;
+        const y = 1.05 + Math.sin(bo.seed + k * 3.3 + time * 28) * 0.12;
         geo.box({
-          x: bo.x0 + dx * f + dx * 0.16 + jx, y: 1.04 + (Math.random() - 0.5) * 0.2, z: bo.z0 + dz * f + dz * 0.16 + jz,
-          sx: 0.055, sy: 0.055, sz: len / 3,
+          x: bo.x0 + dx * f + jx, y: y, z: bo.z0 + dz * f + jz,
+          sx: 0.09, sy: 0.09, sz: len / segs * 1.2,
           yaw: yaw, color: bo.c, outline: 0, emis: true
         });
+        geo.box({
+          x: bo.x0 + dx * f + jx, y: y, z: bo.z0 + dz * f + jz,
+          sx: 0.035, sy: 0.035, sz: len / segs * 1.2,
+          yaw: yaw, color: [1, 1, 1], outline: 0, emis: true
+        });
       }
+      geo.box({ x: bo.x0, y: 1.12, z: bo.z0, sx: 0.14, sy: 0.14, sz: 0.14, yaw: yaw, color: bo.c, outline: 0, emis: true });
+      geo.box({ x: bo.x1, y: 1.12, z: bo.z1, sx: 0.2, sy: 0.2, sz: 0.2, yaw: yaw, color: [0.95, 0.85, 1], outline: 0, emis: true });
     }
 
-    for (const c of cones) {
-      const k = clamp(c.t / 0.26, 0, 1);
-      const a0 = c.ang - c.half, a1 = c.ang + c.half;
-      const seg = 20;
-      const R = c.range * (0.5 + 0.5 * (1 - k));
-      for (let i = 0; i < seg; i++) {
-        const t0 = a0 + (a1 - a0) * (i / seg);
-        const t1 = a0 + (a1 - a0) * ((i + 1) / seg);
-        const x0 = c.x + Math.sin(t0) * R, z0 = c.z + Math.cos(t0) * R;
-        const x1 = c.x + Math.sin(t1) * R, z1 = c.z + Math.cos(t1) * R;
-        geo.tri(c.x, c.z, x0, z0, x1, z1, 0.05, c.c, true);
-        geo.tri(c.x, c.z, x1, z1, x0, z0, 0.05, c.c, true);
+    for (const w of sonicWaves) {
+      /* xray 层：声波穿墙可见。三条错开的波面，每段都断开成
+         独立能量块，避免连成一条弧线（近场也不再画同心弧）。 */
+      for (let b = 0; b < 3; b++) {
+        const bt = w.t - b * 0.075;
+        if (bt <= 0 || bt >= 0.52) continue;
+        const pb = clamp(bt / 0.52, 0, 1);
+        const ease = 1 - (1 - pb) * (1 - pb);
+        const r = 0.55 + ease * (w.range - 0.55);
+        const fade = 1 - pb;
+        const near = 1 - r / w.range;
+        const amp = (0.1 + 0.75 * fade) * (0.35 + near * 0.65);
+        const seg = 18;
+        const a0 = w.ang - w.half;
+        const a1 = w.ang + w.half;
+        const step = (a1 - a0) / seg;
+        for (let i = 0; i < seg; i++) {
+          /* 隔段留空：波面是碎片状的，而不是一条连续弧 */
+          if ((i + b * 2) % 3 === 2) continue;
+          const t0 = a0 + step * i;
+          const mid = t0 + step * 0.5;
+          const edge = Math.cos((mid - w.ang) / w.half * Math.PI * 0.5);
+          if (edge < 0.12) continue;
+          const phase = i * 0.9 + w.seed + b * 1.7 + pb * 6;
+          const wave = Math.sin(phase);
+          const h = 0.14 + amp * (0.5 + 0.5 * wave) * edge;
+          if (h < 0.1) continue;
+          const x = w.x + Math.sin(mid) * r;
+          const z = w.z + Math.cos(mid) * r;
+          const bright = wave > 0.25 ? [1, 0.94, 0.78] : w.c;
+          xray.box({
+            x: x,
+            y: 0.16 + h * 0.5 + Math.sin(phase * 0.7) * 0.04 * near,
+            z: z,
+            sx: 0.10 + near * 0.05,
+            sy: h,
+            sz: Math.max(0.14, r * step * 0.72),
+            yaw: mid + Math.PI / 2,
+            color: bright, outline: 0, emis: true
+          });
+        }
       }
-      const R2 = Math.min(c.range, R + 1.2);
-      for (let i = 0; i < seg; i++) {
-        const t0 = a0 + (a1 - a0) * (i / seg);
-        const t1 = a0 + (a1 - a0) * ((i + 1) / seg);
-        const ax = c.x + Math.sin(t0) * R, az = c.z + Math.cos(t0) * R;
-        const bx = c.x + Math.sin(t1) * R, bz = c.z + Math.cos(t1) * R;
-        const cx2 = c.x + Math.sin(t1) * R2, cz2 = c.z + Math.cos(t1) * R2;
-        const dx2 = c.x + Math.sin(t0) * R2, dz2 = c.z + Math.cos(t0) * R2;
-        geo.tri(ax, az, bx, bz, cx2, cz2, 0.055, [1, 0.95, 0.8], true);
-        geo.tri(ax, az, cx2, cz2, dx2, dz2, 0.055, [1, 0.95, 0.8], true);
-      }
-      const core = 0.5 * (1 - k) + 0.2;
-      geo.box({ x: c.x, y: 0.18, z: c.z, sx: core, sy: 0.36, sz: core, yaw: c.ang, color: c.c, outline: 0, emis: true });
     }
 
     for (const z of zones) {
       const k = clamp(z.life / 0.6, 0, 1);
-      const r2 = z.r * 2;
-      const th = 0.16;
-      geo.box({ x: z.x, y: 0.05, z: z.z - z.r, sx: r2, sy: 0.02, sz: th, color: z.c, outline: 0, emis: true });
-      geo.box({ x: z.x, y: 0.05, z: z.z + z.r, sx: r2, sy: 0.02, sz: th, color: z.c, outline: 0, emis: true });
-      geo.box({ x: z.x - z.r, y: 0.05, z: z.z, sx: th, sy: 0.02, sz: r2, color: z.c, outline: 0, emis: true });
-      geo.box({ x: z.x + z.r, y: 0.05, z: z.z, sx: th, sy: 0.02, sz: r2, color: z.c, outline: 0, emis: true });
-      const pulse = 0.35 + Math.sin(time * 9) * 0.12;
-      geo.box({ x: z.x, y: 0.12, z: z.z, sx: pulse * k, sy: 0.3, sz: pulse * k, yaw: time * 2, color: z.c, outline: 0, emis: true });
+      /* 不画地面范围线：用满半径的火舌和边缘余烬表达燃烧范围 */
+      for (let i = 0; i < 12; i++) {
+        const a = z.seed + i * 2.399;
+        const rr = z.r * (0.2 + 0.78 * ((i * 0.37) % 1));
+        const flick = 0.5 + 0.5 * Math.abs(Math.sin(time * 7 + i * 1.7 + z.seed));
+        const h = (0.2 + 0.55 * flick) * Math.max(0.18, k);
+        const col = i % 2 ? [1, 0.44, 0.16] : [1, 0.72, 0.28];
+        geo.box({
+          x: z.x + Math.sin(a) * rr,
+          y: 0.04 + h * 0.5,
+          z: z.z + Math.cos(a) * rr,
+          sx: 0.16 + 0.08 * flick,
+          sy: h,
+          sz: 0.16 + 0.08 * flick,
+          yaw: a,
+          color: col, outline: 0, emis: true
+        });
+      }
+      /* 边缘余烬：断续的小火点，替代原来的一圈指示线 */
+      for (let i = 0; i < 8; i++) {
+        const a = z.seed + i * (Math.PI * 2 / 8);
+        const rr = z.r * (0.9 + 0.05 * Math.sin(time * 3 + i));
+        const h = 0.08 + 0.1 * Math.abs(Math.sin(time * 9 + i));
+        geo.box({
+          x: z.x + Math.sin(a) * rr,
+          y: 0.04 + h * 0.5,
+          z: z.z + Math.cos(a) * rr,
+          sx: 0.14, sy: h, sz: 0.14, yaw: a,
+          color: i % 2 ? [1, 0.5, 0.18] : z.c,
+          outline: 0, emis: true
+        });
+      }
+      const pulse = 0.35 + Math.sin(time * 9 + z.seed) * 0.12;
+      geo.box({
+        x: z.x, y: 0.12, z: z.z,
+        sx: pulse * Math.max(0.35, k), sy: 0.3, sz: pulse * Math.max(0.35, k),
+        yaw: z.seed, color: [1, 0.72, 0.3], outline: 0, emis: true
+      });
     }
 
     for (const s of sparks) {
@@ -1130,12 +1635,19 @@ const G = (function () {
   function beginMission(cfg) {
     if (mode === 'mission') return;
     cfg = cfg || {};
-    const weapons = (cfg.weapons && cfg.weapons.length === 2) ? cfg.weapons.slice() : Store.loadout().weapons.slice();
+    const isTest = !!cfg.testMap;
+    testMap = isTest;
+    document.body.classList.toggle('test-map', isTest);
+    const weapons = isTest
+      ? [0, 1, 2, 3, 4]
+      : ((cfg.weapons && cfg.weapons.length === 2) ? cfg.weapons.slice() : Store.loadout().weapons.slice());
     const magCfg = cfg.mags || Store.loadout().mags;
 
     seed = (Math.random() * 1e9) | 0;
-    World.gen(seed);
+    if (isTest) World.genTest(seed);
+    else World.gen(seed);
     R.buildStatic(function (geo) { World.buildStatic(geo); });
+    if (typeof MINIMAP !== 'undefined') MINIMAP.build();
 
     const aug = Store.augments();
     player.maxHp = Store.maxHp();
@@ -1147,6 +1659,8 @@ const G = (function () {
     player.deadT = 0;
     player.extracted = false;
     player.extractT = 0;
+    player.respawnT = 0;
+    player.respawnDone = false;
     player.reloadMul = Store.reloadMul();
     player.invRows = Store.invRows();
     player.charKey = (cfg.character !== undefined ? cfg.character : Store.char()) === 1 ? 'assault' : 'scout';
@@ -1156,21 +1670,30 @@ const G = (function () {
     player.weapon = player.carried[0];
     player.mags = WEAPONS.map(function () { return 0; });
     player.spares = WEAPONS.map(function () { return 0; });
-    for (let s = 0; s < 2; s++) {
-      const wi = player.carried[s];
-      const w = WEAPONS[wi];
-      const n = clamp(magCfg[s] | 0, 0, CFG.CARRY_MAX_MAGS);
-      if (n > 0) {
-        player.mags[wi] = w.mag;
-        player.spares[wi] = Math.min(w.maxSpare, n - 1);
+    if (isTest) {
+      for (let i = 0; i < WEAPONS.length; i++) {
+        player.mags[i] = WEAPONS[i].mag;
+        player.spares[i] = 9;
+      }
+    } else {
+      for (let s = 0; s < 2; s++) {
+        const wi = player.carried[s];
+        const w = WEAPONS[wi];
+        const n = clamp(magCfg[s] | 0, 0, CFG.CARRY_MAX_MAGS);
+        if (n > 0) {
+          player.mags[wi] = w.mag;
+          player.spares[wi] = Math.min(w.maxSpare, n - 1);
+        }
       }
     }
-    player.data = cfg.data || 0;
+    player.data = isTest ? 3000 : (cfg.data || 0);
     player.inv = [];
     player.sel = null;
     player.looted = 0;
     player.dismantledValue = 0;
-    player.kit = { medkit: Store.kit().medkit, battery: Store.kit().battery };
+    player.kit = isTest ? { medkit: 6, battery: 9 } : {
+      medkit: Store.kit().medkit, battery: Store.kit().battery
+    };
 
     player.x = World.spawn.x;
     player.z = World.spawn.z;
@@ -1191,7 +1714,8 @@ const G = (function () {
 
     kills = 0; looted = 0; spittersKilled = 0; time = 0;
     tracers = []; flashes = []; sparks = []; projectiles = [];
-    bullets = []; zones = []; beams = []; bolts = []; cones = []; rings = [];
+    bullets = []; zones = []; beams = []; bolts = []; sonicWaves = []; rings = [];
+    lidDebris = [];
     CAM.pitch = (Q_PITCH >= 30 && Q_PITCH <= 85)
       ? Q_PITCH
       : clamp(Store.raw().settings.pitch || CFG.CAM.PITCH, 30, 85);
@@ -1199,22 +1723,26 @@ const G = (function () {
     CAM.eye = [player.x, player.maxShield + 12, player.z + 12];
 
     enemies = [];
-    const types = ['zombie', 'zombie', 'zombie', 'gaunt', 'spitter'];
-    for (let i = 0; i < CFG.ENEMY_COUNT; i++) {
-      const c = i < CFG.NEAR_SPAWN ? spawnNear(player.x, player.z, 7, 15)
-        : World.randomFloorPoint({ x: player.x, z: player.z }, CFG.SPAWN_MIN);
-      const t = types[i % types.length];
-      const ecfg = CFG.ENEMY[t];
-      enemies.push({
-        x: c.x, z: c.z, home: { x: c.x, z: c.z }, type: t,
-        hp: ecfg.hp, maxHp: ecfg.hp, r: ecfg.r, speed: ecfg.speed, dmg: ecfg.dmg,
-        cd: 0, cdMax: ecfg.cd, yaw: Math.random() * 6.28, animT: 0,
-        moving: false, dead: false, fade: 1.1, hitFlash: 0, lunge: 0,
-        state: 'idle', alertT: 0, lostT: 0, waitT: 0, patrol: null,
-        lastSeenX: c.x, lastSeenZ: c.z, seen: false, seed: Math.random() * 10,
-        viewR: t === 'spitter' ? 20 : (t === 'gaunt' ? 15 : 16),
-        viewHalf: t === 'spitter' ? 1.15 : 0.95
-      });
+    if (isTest) {
+      spawnTestEnemies();
+    } else {
+      const types = ['zombie', 'zombie', 'zombie', 'gaunt', 'spitter'];
+      for (let i = 0; i < CFG.ENEMY_COUNT; i++) {
+        const c = i < CFG.NEAR_SPAWN ? spawnNear(player.x, player.z, 7, 15)
+          : World.randomFloorPoint({ x: player.x, z: player.z }, CFG.SPAWN_MIN);
+        const t = types[i % types.length];
+        const ecfg = CFG.ENEMY[t];
+        enemies.push({
+          x: c.x, z: c.z, home: { x: c.x, z: c.z }, type: t,
+          hp: ecfg.hp, maxHp: ecfg.hp, r: ecfg.r, speed: ecfg.speed, dmg: ecfg.dmg,
+          cd: 0, cdMax: ecfg.cd, yaw: Math.random() * 6.28, animT: 0,
+          moving: false, dead: false, fade: 1.1, hitFlash: 0, lunge: 0,
+          state: 'idle', alertT: 0, lostT: 0, waitT: 0, patrol: null,
+          lastSeenX: c.x, lastSeenZ: c.z, seen: false, seed: Math.random() * 10,
+          viewR: t === 'spitter' ? 20 : (t === 'gaunt' ? 15 : 16),
+          viewHalf: t === 'spitter' ? 1.15 : 0.95
+        });
+      }
     }
 
     mode = 'mission';
@@ -1233,7 +1761,12 @@ const G = (function () {
     HUD.prompt(null);
     const d0 = Math.hypot(World.spawn.x - World.pad.x, World.spawn.z - World.pad.z);
     HUD.objective('撤离点 · ' + Math.round(d0) + ' m', false);
-    HUD.toast('进入设施 · 搜刮物资并寻找撤离台', 'good');
+    if (isTest) {
+      HUD.objective('测试场 · 撤离台 ' + Math.round(d0) + ' m', false);
+      HUD.toast('测试场 · 1-5 切换武器 · 蓝色刷新点站 1 秒', 'good');
+    } else {
+      HUD.toast('进入设施 · 搜刮物资并寻找撤离台', 'good');
+    }
     setPause(false);
     if (TOUCH_MODE) {
       touchInvSuspended = false;
@@ -1247,6 +1780,23 @@ const G = (function () {
 
   function finishRun(win, reason) {
     if (ended || mode !== 'mission') return;
+    for (let i = 0; i < World.chests.length; i++) {
+      World.chests[i].prying = false;
+      World.chests[i].pryT = 0;
+      World.chests[i].autoSearch = false;
+      World.chests[i].openDelay = 0;
+    }
+    if (testMap) {
+      setPause(false);
+      ended = true;
+      paused = false;
+      mouse.down = false;
+      if (TOUCH_MODE) TOUCH.setEnabled(false);
+      Inventory.close();
+      toLobby();
+      HUD.toast('测试场结束 · 返回机库', 'good');
+      return;
+    }
     setPause(false);
     ended = true;
     endReason = reason || (win ? 'extract' : 'death');
@@ -1324,7 +1874,10 @@ const G = (function () {
     paused = false;
     mouse.down = false;
     endReason = '';
+    testMap = false;
+    document.body.classList.remove('test-map');
     if (TOUCH_MODE) TOUCH.setEnabled(false);
+    HUD.respawn(0);
     Inventory.reset();
     HUD.setCombatMode(false);
     HUD.hideEnd();
@@ -1348,6 +1901,30 @@ const G = (function () {
       f.classList.remove('on');
       f.style.display = 'none';
     }, ms || 300);
+  }
+
+  /* 测试场固定靶：不移动、不攻击，血量较高，站在刷新点可整体重置 */
+  function spawnTestEnemies() {
+    enemies = [];
+    if (!World.test || !World.test.spawns) return;
+    for (let i = 0; i < World.test.spawns.length; i++) {
+      const s = World.test.spawns[i];
+      const ecfg = CFG.ENEMY[s.type] || CFG.ENEMY.zombie;
+      enemies.push({
+        x: s.x, z: s.z, home: { x: s.x, z: s.z }, type: s.type,
+        hp: 400, maxHp: 400, r: ecfg.r, speed: 0, dmg: 0,
+        cd: 0, cdMax: 999, yaw: Math.random() * 6.28, animT: 0,
+        moving: false, dead: false, fade: 1.1, hitFlash: 0, lunge: 0,
+        state: 'idle', alertT: 0, lostT: 0, waitT: 0, patrol: null,
+        lastSeenX: s.x, lastSeenZ: s.z, seen: false, seed: Math.random() * 10,
+        viewR: 0, viewHalf: 0, testGroup: s.group
+      });
+    }
+  }
+
+  function respawnTestEnemies() {
+    spawnTestEnemies();
+    HUD.toast('测试场 · 所有敌人已刷新', 'good');
   }
 
   /* 在玩家周围环形刷几只，开局就有压迫感 */
@@ -1421,33 +1998,18 @@ const G = (function () {
     const rotateBtn = $('rotateBtn');
     if (rotateBtn) {
       rotateBtn.addEventListener('click', function () {
-        const root = document.documentElement;
         const status = $('rotateStatus');
         const note = function (s) { if (status) status.textContent = s; };
-        const req = root.requestFullscreen || root.webkitRequestFullscreen;
-        const lock = (screen.orientation && screen.orientation.lock)
-          ? function () { return screen.orientation.lock('landscape'); }
-          : null;
-
-        try {
-          const fs = req ? req.call(root) : null;
-          if (fs && fs.then) {
-            fs.then(function () {
-              if (lock) return lock();
-            }).catch(function () {});
-          } else if (lock) {
-            const p = lock();
-            if (p && p.catch) p.catch(function () {});
-          }
-        } catch (e) { /* ignore */ }
-
-        setTimeout(function () {
-          if (window.innerWidth < window.innerHeight) {
-            note('浏览器未自动旋转，请手动把手机横过来');
-          } else {
-            note('已进入横屏');
-          }
-        }, 800);
+        if (typeof MOBILE === 'undefined') return;
+        MOBILE.enterGame().then(function (ok) {
+          setTimeout(function () {
+            if (window.innerWidth < window.innerHeight) {
+              note('浏览器未自动旋转，请手动把手机横过来');
+            } else {
+              note(ok ? '已进入横屏' : '请手动把手机横过来');
+            }
+          }, 800);
+        });
       });
     }
   }
@@ -1468,6 +2030,7 @@ const G = (function () {
       Lobby.init();
       HUD.setCombatMode(false);
       TOUCH.init();
+      if (typeof MOBILE !== 'undefined') MOBILE.init();
 
       bindInput();
       bindUi();
@@ -1517,6 +2080,10 @@ const G = (function () {
 
   function devGo(kind) {
     if (kind === 'lobby') return;
+    if (kind === 'test') {
+      beginMission({ testMap: true, character: Store.char() });
+      return;
+    }
     const lo = Store.loadout();
     beginMission({
       weapons: lo.weapons, mags: lo.mags,
@@ -1539,6 +2106,7 @@ const G = (function () {
     get mode() { return mode; },
     get ended() { return ended; },
     beginMission: beginMission,
+    beginTestMap: function () { beginMission({ testMap: true, character: Store.char() }); },
     finishRun: finishRun,
     toLobby: toLobby,
     switchSlot: switchSlot,
@@ -1546,7 +2114,9 @@ const G = (function () {
     togglePause: function () { setPause(!paused); },
     startReload: startReload,
     tryLoot: tryLoot,
+    noteLoot: noteLoot,
     toggleInventory: function () { Inventory.toggle(); },
+    worldToScreen: worldToScreen,
     devGo: devGo,
     debug: {
       tick: function (dt) { if (mode === 'mission' && !paused) update(dt); },
@@ -1560,6 +2130,8 @@ const G = (function () {
       player: player,
       cam: CAM,
       get enemies() { return enemies; },
+      get beams() { return beams; },
+      get lidDebris() { return lidDebris; },
       get time() { return time; },
       get kills() { return kills; },
       get looted() { return looted; }

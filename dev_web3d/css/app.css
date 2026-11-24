@@ -89,6 +89,40 @@ body.combat #gl { cursor: none; }
 .stat b { color: #e8e2d6; font-size: 14px; margin-left: 8px; letter-spacing: 0; }
 .cam { margin-top: 10px; font-size: 11px; color: #f0b04c; opacity: .8; letter-spacing: .1em; font-family: var(--mono); }
 
+/* 小地图 / 雷达 */
+.minimap {
+  --mm: clamp(124px, 18vmin, 176px);
+  position: absolute; left: 26px; top: 88px;
+  width: var(--mm); height: var(--mm);
+  background: rgba(6, 9, 11, .58);
+  border: 1px solid rgba(240, 236, 226, .16);
+  border-top: 2px solid rgba(240, 176, 76, .55);
+  box-shadow: inset 0 0 34px rgba(0, 0, 0, .55);
+  pointer-events: none;
+  overflow: hidden;
+}
+.minimap canvas { display: block; width: 100%; height: 100%; }
+
+/* 伤害跳字 */
+.dmg-layer {
+  position: absolute; inset: 0;
+  overflow: hidden; pointer-events: none;
+}
+.dmgnum {
+  position: absolute; left: 0; top: 0;
+  font-family: var(--mono);
+  font-size: 14px; font-weight: 700; line-height: 1;
+  color: #ffe6b0;
+  text-shadow: 0 0 7px rgba(0, 0, 0, .85), 0 1px 0 #000, 0 0 2px #000;
+  transform: translate(-50%, -50%);
+  will-change: transform, opacity;
+  white-space: nowrap;
+  -webkit-user-select: none; user-select: none;
+}
+.dmgnum.big { font-size: 18px; }
+html.touch-ui .dmgnum { font-size: 12px; }
+html.touch-ui .dmgnum.big { font-size: 15px; }
+
 .hud-br {
   position: absolute; right: 26px; bottom: 26px; min-width: 210px;
   text-align: right; padding: 12px 14px;
@@ -145,6 +179,8 @@ body.combat #gl { cursor: none; }
 .ex-label { font-size: 11px; letter-spacing: .3em; color: #f0b04c; margin-bottom: 6px; font-family: var(--mono); }
 .ex-bar { height: 5px; background: rgba(255,255,255,.14); }
 .ex-bar i { display: block; height: 100%; width: 0; background: #f0b04c; box-shadow: 0 0 12px rgba(240,176,76,.8); }
+.respawn-wrap .ex-label { color: #6fd8ef; }
+.respawn-wrap .ex-bar i { background: #6fd8ef; box-shadow: 0 0 12px rgba(111,216,239,.8); }
 
 /* 交互提示 */
 .hud-bc { position: absolute; left: 50%; bottom: 62px; transform: translateX(-50%); text-align: center; }
@@ -414,6 +450,15 @@ body.combat #gl { cursor: none; }
 }
 .stash-line b { color: #e9e2d5; }
 .stash-line i { font-style: normal; color: var(--dim); }
+.test-entry {
+  width: 100%; margin-top: 6px;
+  color: var(--ice); border-color: rgba(111, 216, 239, .5);
+}
+.test-entry:hover { border-color: var(--ice); color: #d9fbff; background: rgba(111, 216, 239, .08); }
+.test-hint {
+  margin-top: 5px; text-align: center;
+  font-family: var(--mono); font-size: 9px; letter-spacing: .04em; color: var(--dim2);
+}
 .lobby-msg { min-height: 14px; font-family: var(--mono); font-size: 10px; color: var(--red); text-align: center; }
 
 .lobby-foot {
@@ -470,6 +515,36 @@ body.combat #gl { cursor: none; }
 .stash-item.sel { border-color: var(--amber); box-shadow: 0 0 0 1px rgba(240, 176, 76, .45) inset; }
 .stash-side { flex: 1 1 auto; min-width: 280px; max-width: 430px; display: flex; flex-direction: column; gap: 8px; }
 .side-actions { display: flex; gap: 8px; }
+
+/* 手机仓库列表（桌面隐藏，横屏手机替代 12×8 小格子） */
+.stash-list-mobile { display: none; }
+.stash-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; border: 1px solid var(--line);
+  border-left: 2px solid var(--qc, #888);
+  background: rgba(9, 12, 15, .74);
+  font-size: 11px;
+}
+.stash-row.sel {
+  border-color: var(--amber);
+  background: rgba(240, 176, 76, .07);
+}
+.stash-row.empty {
+  justify-content: center; color: var(--dim2);
+  border-left-color: transparent;
+}
+.sr-dot { width: 8px; height: 8px; flex: 0 0 auto; transform: rotate(45deg); background: var(--qc); }
+.sr-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #e8e2d6; }
+.sr-tier { font-family: var(--mono); font-size: 8px; color: var(--dim2); }
+.sr-size { font-family: var(--mono); font-size: 8px; color: var(--dim2); }
+.sr-val { width: 46px; text-align: right; font-family: var(--mono); font-size: 10px; color: var(--amber); }
+.sr-btn {
+  flex: 0 0 auto; padding: 5px 7px;
+  font: inherit; font-size: 9px; color: #d9a29b;
+  background: rgba(20, 25, 30, .7);
+  border: 1px solid rgba(226, 96, 79, .45);
+}
+.sr-btn:active { border-color: var(--red); color: #ff8f80; }
 .side-actions .btn { flex: 1; }
 
 /* 仓库品质分布 */
@@ -643,6 +718,94 @@ body.combat #gl { cursor: none; }
 .inv-keys b { color: var(--amber); }
 
 .inv-side { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+
+/* 可开启物资箱 */
+.chest-panel { display: flex; flex-direction: column; gap: 10px; }
+.chest-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.chest-title { font-family: var(--mono); font-size: 11px; letter-spacing: .18em; color: var(--amber); }
+.chest-cap { font-family: var(--mono); font-size: 10px; color: var(--dim); }
+.chest-cap em { color: #fff; font-style: normal; }
+.chest-grid { align-self: flex-start; }
+.chest-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.chest-actions .dt-btn { flex: 1; min-width: 76px; }
+.chest-hint { font-family: var(--mono); font-size: 9px; line-height: 1.5; color: var(--dim2); }
+.chest-status-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-family: var(--mono); font-size: 9px; color: var(--dim); }
+.chest-status-hint { font-size: 8px; color: var(--dim2); }
+.chest-grid { position: relative; }
+.chest-grid.drop-over {
+  box-shadow: inset 0 0 0 2px rgba(90, 212, 106, .7), inset 0 0 28px rgba(90, 212, 106, .10);
+}
+.chest-grid.drop-over.bad {
+  box-shadow: inset 0 0 0 2px rgba(255, 90, 77, .75), inset 0 0 28px rgba(255, 90, 77, .10);
+}
+.chest-grid.searching::after {
+  content: '';
+  position: absolute; left: 0; right: 0; height: 22px; top: 0;
+  background: linear-gradient(180deg, rgba(240,176,76,0), rgba(240,176,76,.18), rgba(240,176,76,0));
+  animation: chestScan 1.6s linear infinite;
+  pointer-events: none; z-index: 1;
+}
+.chest-grid.searching .cell {
+  border-color: rgba(240,236,226,.035);
+  background: rgba(4,6,8,.35);
+}
+@keyframes chestScan { 0% { top: 0; } 100% { top: calc(100% - 22px); } }
+.chest-item.unknown {
+  background: rgba(8, 10, 12, .55);
+  border: 1px dashed rgba(240, 236, 226, .28);
+  box-shadow: inset 0 0 18px rgba(0,0,0,.6);
+}
+.chest-item.unknown .gem,
+.chest-item.unknown .nm,
+.chest-item.unknown .val,
+.chest-item.unknown .sz { display: none; }
+.chest-item.scanning {
+  border-color: #f0b04c;
+  box-shadow: 0 0 0 1px rgba(240,176,76,.5), inset 0 0 24px rgba(240,176,76,.13);
+}
+.chest-item.pop { animation: chestPop .42s ease-out; }
+@keyframes chestPop {
+  0% { transform: scale(.82); filter: brightness(2.2); }
+  55% { transform: scale(1.06); filter: brightness(1.35); }
+  100% { transform: scale(1); filter: none; }
+}
+.chest-lens {
+  position: absolute; width: 24px; height: 24px; border-radius: 50%;
+  border: 2px solid #f0b04c;
+  background: radial-gradient(circle, rgba(240,176,76,.34), rgba(240,176,76,.04) 65%, transparent 70%);
+  box-shadow: 0 0 14px rgba(240,176,76,.8), inset 0 0 8px rgba(240,176,76,.45);
+  transform: translate(-50%, -50%);
+  z-index: 6; pointer-events: none;
+}
+.chest-lens::before {
+  content: ''; position: absolute; left: 50%; top: 50%;
+  width: 36px; height: 36px; margin: -18px 0 0 -18px;
+  border: 1px dashed rgba(240,176,76,.7); border-radius: 50%;
+  animation: lensSpin 1.2s linear infinite;
+}
+.chest-lens::after {
+  content: ''; position: absolute; right: -7px; bottom: -7px;
+  width: 11px; height: 3px; border-radius: 2px; background: #f0b04c;
+  transform: rotate(45deg); box-shadow: 0 0 6px rgba(240,176,76,.9);
+}
+@keyframes lensSpin { to { transform: rotate(360deg); } }
+.chest-lens.hidden { display: none; }
+.chest-burst {
+  position: absolute; z-index: 7; pointer-events: none;
+  background: radial-gradient(circle, rgba(255,240,200,.95), rgba(240,176,76,.45) 35%, transparent 70%);
+  animation: chestBurst .5s ease-out forwards;
+}
+@keyframes chestBurst {
+  0% { opacity: 1; transform: scale(.55); filter: brightness(2); }
+  100% { opacity: 0; transform: scale(1.25); filter: brightness(1); }
+}
+.inv-item.chest-item { cursor: pointer; }
+.inv-item.chest-item:hover { border-color: #f0b04c; box-shadow: inset 0 0 22px rgba(240, 176, 76, .12); }
+#inventory.chest-open .inv-side > .detail-box,
+#inventory.chest-open .inv-side > .side-sec,
+#inventory.chest-open .inv-side > .action-progress,
+#inventory.chest-open .inv-side > #healBtn { display: none; }
+#inventory.chest-open #chestPanel { display: flex; }
 .side-sec { display: flex; flex-direction: column; gap: 6px; }
 .craft-list, .kit-list { display: flex; flex-direction: column; gap: 5px; }
 .craft-row {
@@ -767,7 +930,7 @@ body.combat #gl { cursor: none; }
    - 左琥珀、右冰蓝/红，靠颜色区分分区
    ============================================================ */
 html.touch-ui {
-  --stick-base: 176px;
+  --stick-base: 208px;
   --stick-bottom: 18px;
 }
 
@@ -777,6 +940,72 @@ html.touch-ui body {
 }
 html.touch-ui body.combat #gl { cursor: default; }
 html.touch-ui #loading { z-index: 230; }
+
+/* 浏览器地址栏会占高度：全屏 / 独立模式 + dvh 一起用 */
+@supports (height: 100dvh) {
+  html.touch-ui,
+  html.touch-ui body { height: 100dvh; }
+  html.touch-ui #app,
+  html.touch-ui #lobby,
+  html.touch-ui #rotateHint,
+  html.touch-ui .hint-modal,
+  html.touch-ui .overlay,
+  html.touch-ui #pause,
+  html.touch-ui #endScreen { height: 100dvh; }
+}
+
+/* 仅触屏显示的元素 */
+html:not(.touch-ui) .touch-only { display: none !important; }
+html.touch-ui .touch-only { display: block; }
+html.standalone .fs-only { display: none !important; }
+
+/* 大厅顶栏的全屏按钮 */
+.fs-btn { display: none; }
+html.touch-ui .fs-btn {
+  display: inline-flex;
+  align-items: center; justify-content: center;
+  flex: 0 0 auto;
+  height: 30px;
+  margin-left: 6px;
+  padding: 0 10px;
+  font: inherit; font-size: 10px; letter-spacing: .08em;
+  color: var(--amber);
+  background: rgba(9, 12, 15, .72);
+  border: 1px solid var(--amber-dim);
+  cursor: pointer;
+  white-space: nowrap;
+  touch-action: manipulation;
+}
+html.touch-ui .fs-btn:active {
+  background: rgba(240, 176, 76, .16);
+  border-color: var(--amber);
+}
+html.standalone .fs-btn { display: none !important; }
+
+/* 全屏 / 添加到主屏幕说明弹窗 */
+.hint-modal {
+  position: fixed; inset: 0; z-index: 210;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+  background: rgba(4, 6, 8, .72);
+  backdrop-filter: blur(3px);
+}
+.hint-card {
+  width: min(440px, 92vw);
+  padding: 24px 24px 20px;
+  text-align: center;
+  background: linear-gradient(180deg, rgba(15, 19, 23, .99), rgba(7, 9, 11, .995));
+  border: 1px solid var(--line2);
+  clip-path: polygon(0 18px, 18px 0, 100% 0, 100% calc(100% - 18px), calc(100% - 18px) 100%, 0 100%);
+  box-shadow: 0 30px 90px rgba(0, 0, 0, .72);
+}
+.hint-copy {
+  margin-top: 12px;
+  font-size: 12px; line-height: 1.95;
+  color: var(--dim);
+}
+.hint-copy b { color: var(--amber); }
+.hint-card .btn { display: block; width: 100%; margin-top: 18px; }
 html.touch-ui #gl,
 html.touch-ui .stick-pad,
 html.touch-ui .touch-btn,
@@ -825,18 +1054,18 @@ html.touch-ui .touch-controls.off { opacity: .22; }
   width: var(--stick-base); height: var(--stick-base);
   transform: translate(-50%, -50%);
   border-radius: 50%;
-  border: 1px solid rgba(240, 236, 226, .30);
+  border: 2px solid rgba(240, 236, 226, .28);
   background: transparent;
   box-shadow: none;
   transition: border-color .1s, box-shadow .12s;
 }
 .stick-inner {
   position: absolute; left: 50%; top: 50%;
-  width: calc(var(--stick-base) * .58);
-  height: calc(var(--stick-base) * .58);
+  width: calc(var(--stick-base) * .55);
+  height: calc(var(--stick-base) * .55);
   transform: translate(-50%, -50%);
   border-radius: 50%;
-  border: 1px dashed rgba(240, 236, 226, .34);
+  border: 2px dashed rgba(240, 236, 226, .34);
   transition: border-color .1s, box-shadow .12s;
 }
 /* 内圆：行走 / 瞄准 */
@@ -868,6 +1097,18 @@ html.touch-ui .touch-controls.off { opacity: .22; }
 @keyframes stickLockPulse {
   0%, 100% { box-shadow: inset 0 0 34px rgba(0, 0, 0, .32), 0 0 12px var(--lock-soft); }
   50% { box-shadow: inset 0 0 34px rgba(0, 0, 0, .32), 0 0 30px var(--lock-soft); }
+}
+
+/* 左摇杆：圈外松手后的持续移动 */
+.stick-move.auto .stick-base {
+  border-color: var(--lock);
+  border-style: dashed;
+  animation: stickAutoPulse 1.35s ease-in-out infinite;
+}
+.stick-move.auto .stick-inner { border-color: rgba(240, 176, 76, .55); }
+@keyframes stickAutoPulse {
+  0%, 100% { box-shadow: inset 0 0 34px rgba(0, 0, 0, .32), 0 0 12px var(--lock-soft); }
+  50% { box-shadow: inset 0 0 34px rgba(0, 0, 0, .32), 0 0 28px var(--lock-soft); }
 }
 
 /* 右摇杆半自动：环外松手待发 / 回内圆取消 */
@@ -929,6 +1170,15 @@ html.touch-ui .hud-tl {
 html.touch-ui .vbar { height: 14px; margin-bottom: 5px; }
 html.touch-ui .vbar.sta { height: 5px; }
 
+/* 手机端小地图移到顶部中间，避开左上血条与左下武器槽 */
+html.touch-ui .minimap {
+  --mm: clamp(84px, 26vmin, 112px);
+  left: 50%; top: calc(38px + env(safe-area-inset-top));
+  transform: translateX(-50%);
+  border-top-width: 1px;
+  background: rgba(6, 9, 11, .66);
+}
+
 html.touch-ui .hud-tr {
   right: calc(14px + env(safe-area-inset-right));
   top: calc(12px + env(safe-area-inset-top));
@@ -949,34 +1199,34 @@ html.touch-ui .hud-bl {
   gap: 6px;
 }
 html.touch-ui .slot-list { display: flex; gap: 6px; }
-html.touch-ui .slot { width: 92px; padding: 5px 7px; }
-html.touch-ui .slot .s-name { font-size: 10px; margin: 2px 0 1px; }
+html.touch-ui .slot { width: 84px; padding: 4px 6px; }
+html.touch-ui .slot .s-name { font-size: 9.5px; margin: 2px 0 1px; }
 html.touch-ui .slot .s-tag { display: none; }
-html.touch-ui .slot .s-ammo { font-size: 9px; }
-html.touch-ui .slot .s-ammo b { font-size: 13px; }
+html.touch-ui .slot .s-ammo { font-size: 8.5px; }
+html.touch-ui .slot .s-ammo b { font-size: 12px; }
 
 html.touch-ui .hud-br {
   left: 50%; right: auto;
-  bottom: calc(14px + env(safe-area-inset-bottom));
+  bottom: calc(12px + env(safe-area-inset-bottom));
   transform: translateX(-50%);
-  min-width: 190px;
+  min-width: 150px;
   text-align: center;
-  padding: 7px 12px 8px;
+  padding: 5px 10px 6px;
   background: linear-gradient(0deg, rgba(14, 16, 19, .66), rgba(14, 16, 19, 0));
   border-right: 0;
   border-bottom: 2px solid rgba(240, 176, 76, .55);
 }
-html.touch-ui .wtag { font-size: 9px; }
-html.touch-ui .wname { font-size: 15px; margin: 1px 0 3px; }
-html.touch-ui .wammo { font-size: 12px; }
-html.touch-ui .wammo b { font-size: 24px; }
-html.touch-ui .reload { margin-top: 5px; }
+html.touch-ui .wtag { display: none; }
+html.touch-ui .wname { font-size: 12px; margin: 0 0 2px; }
+html.touch-ui .wammo { font-size: 10px; }
+html.touch-ui .wammo b { font-size: 20px; }
+html.touch-ui .reload { margin-top: 3px; }
 
-html.touch-ui .hud-bc { bottom: calc(92px + env(safe-area-inset-bottom)); }
-html.touch-ui .prompt { font-size: 11px; padding: 6px 12px; }
+html.touch-ui .hud-bc { bottom: calc(78px + env(safe-area-inset-bottom)); }
+html.touch-ui .prompt { font-size: 10px; padding: 5px 10px; }
 html.touch-ui .ex-wrap {
-  bottom: calc(136px + env(safe-area-inset-bottom));
-  width: min(260px, 54vw);
+  bottom: calc(120px + env(safe-area-inset-bottom));
+  width: min(240px, 54vw);
   margin-left: 0;
   transform: translateX(-50%);
 }
@@ -994,6 +1244,7 @@ html.touch-ui .ex-wrap {
 /* 竖屏：底部中间让给双摇杆，弹药改由左侧武器槽显示 */
 @media (orientation: portrait) and (max-width: 560px) {
   html.touch-ui .hud-br { display: none; }
+  html.touch-ui .minimap { display: none; }
   html.touch-ui .hud-tc { top: 72px; }
   html.touch-ui .hud-bc { top: 122px; bottom: auto; }
   html.touch-ui .prompt { max-width: 84vw; white-space: normal; }
@@ -1011,7 +1262,7 @@ html.touch-ui .ex-wrap {
 
 /* 矮屏（横屏手机）：整体缩小，保证 UI 不互相压住 */
 @media (max-height: 480px) {
-  html.touch-ui { --stick-base: 150px; --stick-bottom: 14px; }
+  html.touch-ui { --stick-base: 176px; --stick-bottom: 14px; }
   html.touch-ui .hud-tl {
     width: 160px;
     top: calc(10px + env(safe-area-inset-top));
@@ -1023,12 +1274,35 @@ html.touch-ui .ex-wrap {
   }
   html.touch-ui .data-box b { font-size: 18px; }
   html.touch-ui .hud-bl { gap: 5px; }
-  html.touch-ui .slot { width: 84px; padding: 4px 6px; }
+  html.touch-ui .slot { width: 78px; padding: 4px 5px; }
   html.touch-ui .touch-btn { width: 40px; height: 40px; font-size: 9px; }
-  html.touch-ui .hud-br { min-width: 170px; padding: 5px 10px 6px; }
-  html.touch-ui .wname { font-size: 13px; }
-  html.touch-ui .hud-bc { bottom: calc(84px + env(safe-area-inset-bottom)); }
-  html.touch-ui .ex-wrap { bottom: calc(122px + env(safe-area-inset-bottom)); }
+  html.touch-ui .hud-br { min-width: 138px; padding: 4px 8px 5px; }
+  html.touch-ui .wname { font-size: 11px; }
+  html.touch-ui .wammo b { font-size: 18px; }
+  html.touch-ui .hud-bc { bottom: calc(72px + env(safe-area-inset-bottom)); }
+  html.touch-ui .ex-wrap { bottom: calc(108px + env(safe-area-inset-bottom)); }
+}
+
+/* 极矮横屏（320px 左右）：略微缩小，避免顶部 HUD 与动作条打架 */
+@media (max-height: 340px) {
+  html.touch-ui { --stick-base: 156px; --stick-bottom: 12px; }
+  html.touch-ui .hud-tl { width: 140px; }
+  html.touch-ui .hud-tr .stat:nth-child(2),
+  html.touch-ui .hud-tr .stat:nth-child(3) { display: none; }
+  html.touch-ui .hud-tr { min-width: 100px; }
+  html.touch-ui .touch-btn { width: 36px; height: 36px; font-size: 8px; }
+  html.touch-ui .slot { width: 72px; }
+  html.touch-ui .hud-br { min-width: 124px; }
+}
+
+/* 测试场：5 把武器同时携带，槽位收窄避免压到右侧动作键 */
+html.touch-ui body.test-map .slot-list { flex-wrap: wrap; gap: 4px; max-width: 360px; }
+html.touch-ui body.test-map .slot { width: 64px; padding: 3px 5px; }
+html.touch-ui body.test-map .slot .s-name { font-size: 9px; margin: 1px 0; }
+html.touch-ui body.test-map .slot .s-ammo { font-size: 8px; }
+html.touch-ui body.test-map .slot .s-ammo b { font-size: 11px; }
+@media (max-width: 560px) and (orientation: landscape) {
+  html.touch-ui body.test-map .slot-list { max-width: 220px; }
 }
 
 /* ---------- 竖屏遮罩：手机端强制横屏 ---------- */
@@ -1093,8 +1367,9 @@ html.touch-ui .ex-wrap {
 /* ---------- 横屏手机 / 小平板：大厅与内页压缩布局 ---------- */
 @media (orientation: landscape) and (max-width: 1100px) {
   html.touch-ui .lobby-top {
-    height: 50px; gap: 10px;
-    padding: 0 calc(10px + env(safe-area-inset-right)) 0 calc(10px + env(safe-area-inset-left));
+    height: calc(50px + env(safe-area-inset-top));
+    gap: 10px;
+    padding: env(safe-area-inset-top) calc(10px + env(safe-area-inset-right)) 0 calc(10px + env(safe-area-inset-left));
   }
   html.touch-ui .lobby-brand { font-size: 14px; letter-spacing: .18em; }
   html.touch-ui .lobby-brand span { display: none; }
@@ -1110,44 +1385,83 @@ html.touch-ui .ex-wrap {
   html.touch-ui .lobby-money { gap: 4px; font-size: 8px; letter-spacing: .08em; }
   html.touch-ui .lobby-money b { font-size: 18px; }
   html.touch-ui .lobby-money .lobby-best { display: none; }
+  /* 手机横屏不再塞三栏：角色/武器 + 配装/携带 两栏，出击按钮做底部横条 */
   html.touch-ui .lobby-main {
-    grid-template-columns: minmax(0, 1fr) 148px minmax(0, 1fr);
-    gap: 6px;
-    padding: 6px calc(8px + env(safe-area-inset-right)) 4px calc(8px + env(safe-area-inset-left));
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 8px;
+    padding: 6px calc(8px + env(safe-area-inset-right)) calc(60px + env(safe-area-inset-bottom)) calc(8px + env(safe-area-inset-left));
   }
-  html.touch-ui .lobby-left,
-  html.touch-ui .lobby-right { gap: 5px; }
-  html.touch-ui .panel-sec { padding: 6px 7px; }
-  html.touch-ui .sec-head { font-size: 9px; margin-bottom: 5px; }
-  html.touch-ui .char-list { gap: 4px; }
-  html.touch-ui .char-card { padding: 4px 7px; gap: 6px; }
-  html.touch-ui .char-icon { width: 20px; height: 28px; }
-  html.touch-ui .char-icon i { width: 10px; height: 21px; }
-  html.touch-ui .char-name { font-size: 11px; }
-  html.touch-ui .char-role { font-size: 8px; }
-  html.touch-ui .weapon-list { gap: 4px; }
-  html.touch-ui .wc { padding: 4px 6px; gap: 6px; }
-  html.touch-ui .wc-tag { font-size: 8px; width: 24px; }
-  html.touch-ui .wc-name { font-size: 11px; }
-  html.touch-ui .wc-stats { font-size: 8px; }
-  html.touch-ui .kit-line { gap: 6px; }
-  html.touch-ui .kit-chip { font-size: 9px; }
-  html.touch-ui .load-row { padding: 5px 7px; min-height: 34px; gap: 4px; }
-  html.touch-ui .lr-btn { width: 28px; height: 28px; font-size: 13px; }
-  html.touch-ui .load-list { gap: 4px; }
-  html.touch-ui .carry-num { font-size: 15px; }
-  html.touch-ui .calc { padding: 6px 8px; }
-  html.touch-ui .calc-row { font-size: 9px; }
-  html.touch-ui .calc-row b { font-size: 12px; }
-  html.touch-ui .stash-line { font-size: 9px; }
-  html.touch-ui .launch-zone { width: 100%; bottom: 6px; }
+  html.touch-ui #lobby.pane-mode .lobby-main { padding-bottom: 4px; }
+  html.touch-ui .lobby-center {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    height: calc(56px + env(safe-area-inset-bottom));
+    display: block;
+    padding: 0 calc(12px + env(safe-area-inset-right)) env(safe-area-inset-bottom) calc(12px + env(safe-area-inset-left));
+    background: linear-gradient(0deg, rgba(8, 10, 12, .99), rgba(8, 10, 12, .86));
+    border-top: 1px solid var(--line);
+    z-index: 6;
+  }
+  html.touch-ui .launch-zone {
+    position: static;
+    transform: none;
+    width: 100%; height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 12px;
+    padding: 0;
+  }
+  html.touch-ui .lobby-warn {
+    flex: 1;
+    min-height: 0;
+    margin: 0;
+    text-align: right;
+    font-size: 9px;
+    line-height: 1.4;
+    text-shadow: none;
+  }
   html.touch-ui .launch-btn {
-    padding: 12px 8px; font-size: 16px;
-    letter-spacing: .2em; text-indent: .2em;
+    flex: 0 0 auto;
+    width: 158px; height: 40px;
+    padding: 0 10px;
+    font-size: 15px;
+    letter-spacing: .18em;
+    text-indent: .18em;
   }
-  html.touch-ui .lobby-warn { font-size: 8px; line-height: 1.4; margin-bottom: 4px; }
   html.touch-ui .launch-hint { display: none; }
   html.touch-ui .lobby-foot { display: none; }
+
+  html.touch-ui .lobby-left,
+  html.touch-ui .lobby-right { gap: 6px; }
+  html.touch-ui .panel-sec { padding: 7px 9px; }
+  html.touch-ui .sec-head { font-size: 9.5px; margin-bottom: 6px; }
+  html.touch-ui .char-list { flex-direction: row; gap: 5px; }
+  html.touch-ui .char-card { flex: 1 1 0; min-width: 0; padding: 5px 6px; gap: 5px; }
+  html.touch-ui .char-icon { width: 18px; height: 26px; }
+  html.touch-ui .char-icon i { width: 9px; height: 19px; }
+  html.touch-ui .char-name { font-size: 11px; }
+  html.touch-ui .char-role {
+    font-size: 8px; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  html.touch-ui .char-check { display: none; }
+  html.touch-ui .weapon-tip { display: none; }
+  html.touch-ui .weapon-list { gap: 5px; }
+  html.touch-ui .wc { padding: 5px 7px; gap: 7px; }
+  html.touch-ui .wc-tag { font-size: 9px; width: 26px; }
+  html.touch-ui .wc-name { font-size: 12px; }
+  html.touch-ui .wc-stats { font-size: 9px; }
+  html.touch-ui .kit-line { gap: 8px; }
+  html.touch-ui .kit-chip { font-size: 10px; }
+  html.touch-ui .load-row { padding: 6px 8px; min-height: 38px; gap: 5px; }
+  html.touch-ui .lr-btn { width: 26px; height: 26px; font-size: 13px; }
+  html.touch-ui .load-list { gap: 5px; }
+  html.touch-ui .carry-num { font-size: 16px; }
+  html.touch-ui .calc { padding: 7px 9px; }
+  html.touch-ui .calc-row { font-size: 10px; }
+  html.touch-ui .calc-row b { font-size: 13px; }
+  html.touch-ui .stash-line { font-size: 10px; }
 
   html.touch-ui .tab-pane {
     inset: 5px calc(8px + env(safe-area-inset-right)) 5px calc(8px + env(safe-area-inset-left));
@@ -1165,10 +1479,17 @@ html.touch-ui .ex-wrap {
   html.touch-ui .contract-body,
   html.touch-ui .archive-body { padding: 8px 10px; gap: 10px; }
   html.touch-ui .stash-body { justify-content: flex-start; }
+  html.touch-ui .stash-list-mobile {
+    display: flex; flex-direction: column; gap: 4px;
+    flex: 1 1 auto; min-width: 0; overflow: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  html.touch-ui .stash-grid { display: none; }
   html.touch-ui .stash-side {
     min-width: 0; max-width: 320px; gap: 6px;
     overflow: auto; -webkit-overflow-scrolling: touch;
   }
+  html.touch-ui .stash-side > * { flex: 0 0 auto; }
   html.touch-ui .stash-item .nm { font-size: 7.5px; }
   html.touch-ui .stash-item .val { font-size: 7px; }
   html.touch-ui .stash-item .sz { display: none; }
@@ -1187,6 +1508,7 @@ html.touch-ui .ex-wrap {
 /* 超窄横屏：仓库格子在上，详情在下，避免两侧都挤成一条 */
 @media (orientation: landscape) and (max-width: 620px) {
   html.touch-ui .stash-body { flex-direction: column; overflow: auto; }
+  html.touch-ui .stash-list-mobile { flex: 0 0 auto; overflow: visible; }
   html.touch-ui .stash-side {
     width: 100%; max-width: none; flex: 0 0 auto; overflow: visible;
   }
@@ -1229,6 +1551,7 @@ html.touch-ui .dt-touch { display: flex; }
 }
 .dt-btn:active { border-color: var(--amber); color: var(--amber); }
 .dt-btn.danger { color: #d9a29b; border-color: rgba(226, 96, 79, .45); }
+.dt-btn.dis, .dt-btn:disabled { opacity: .42; pointer-events: none; }
 
 html.touch-ui .inv-panel {
   width: min(98vw, 1000px);
@@ -1250,4 +1573,11 @@ html.touch-ui .inv-item { touch-action: none; }
 @media (max-width: 760px) and (orientation: portrait) {
   html.touch-ui .inv-body { flex-direction: column; }
   html.touch-ui .inv-side { width: 100%; }
+}
+
+/* 很窄的窗口：背包与物资箱上下排，避免横向溢出 */
+@media (max-width: 680px) {
+  .inv-body { flex-direction: column; }
+  .inv-side { width: 100%; }
+  .inv-panel { overflow: auto; }
 }

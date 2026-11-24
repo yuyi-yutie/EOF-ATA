@@ -40,6 +40,7 @@ const Stash = (function () {
     el.root = UI.$('paneStash');
     el.grid = UI.$('stashGrid');
     el.items = UI.$('stashItems');
+    el.list = UI.$('stashListMobile');
     el.bank = UI.$('stashBank');
     el.count = UI.$('stashCount');
     el.value = UI.$('stashValue');
@@ -49,6 +50,10 @@ const Stash = (function () {
     el.all = UI.$('stashAll');
     el.sort = UI.$('stashSort');
     el.msg = UI.$('stashMsg');
+    const tip = el.root.querySelector('.pane-tip');
+    if (tip && window.__touchMode) {
+      tip.innerHTML = '点选物资行 → 直接分解（不消耗时间）<br>撤离成功才会入库';
+    }
 
     layout();
     applyGrid();
@@ -79,6 +84,23 @@ const Stash = (function () {
       const btn = target && target.closest ? target.closest('[data-stash-act]') : null;
       if (!btn || !selected) return;
       dismantle(selected);
+    });
+
+    if (el.list) el.list.addEventListener('click', function (e) {
+      const target = e.target;
+      if (!target || !target.closest) return;
+      const del = target.closest('[data-stash-dismantle]');
+      if (del) {
+        const it = Store.stash()[parseInt(del.getAttribute('data-stash-dismantle'), 10)];
+        if (it) dismantle(it);
+        return;
+      }
+      const row = target.closest('.stash-row');
+      if (!row || !row.dataset.idx) return;
+      const it = Store.stash()[parseInt(row.dataset.idx, 10)];
+      if (!it) return;
+      selected = it;
+      refresh();
     });
 
     window.addEventListener('resize', function () {
@@ -117,6 +139,33 @@ const Stash = (function () {
         dismantle(it);
       });
       el.items.appendChild(div);
+    }
+  }
+
+  /* 手机端用列表代替 12×8 小格子，避免文字和按钮被压扁 */
+  function renderList() {
+    if (!el.list) return;
+    const list = Store.stash();
+    el.list.innerHTML = '';
+    if (!list.length) {
+      el.list.innerHTML = '<div class="stash-row empty">仓库为空</div>';
+      return;
+    }
+    for (let i = 0; i < list.length; i++) {
+      const it = list[i];
+      const d = Grid.dims(it);
+      const t = tierOf(it.tierId);
+      const row = UI.el('div', 'stash-row' + (selected === it ? ' sel' : ''));
+      row.dataset.idx = i;
+      row.style.setProperty('--qc', t.color);
+      row.innerHTML =
+        '<span class="sr-dot"></span>' +
+        '<span class="sr-name">' + UI.esc(it.name) + '</span>' +
+        '<span class="sr-tier">' + t.name + '</span>' +
+        '<span class="sr-size">' + d.w + '×' + d.h + '</span>' +
+        '<span class="sr-val">' + it.value + '</span>' +
+        '<button type="button" class="sr-btn" data-stash-dismantle="' + i + '">分解</button>';
+      el.list.appendChild(row);
     }
   }
 
@@ -187,6 +236,7 @@ const Stash = (function () {
     el.cells.textContent = Store.stashCells() + ' / ' + (CFG.STASH_COLS * CFG.STASH_ROWS);
     el.all.classList.toggle('dis', list.length === 0);
     renderItems();
+    renderList();
     renderDetail();
     renderBreakdown();
   }

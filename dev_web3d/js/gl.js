@@ -20,6 +20,7 @@ const R = (function () {
   const INK = [0.086, 0.075, 0.059];
 
   let fbo = null, colTex = null, depTex = null, fboN = null, nrmTex = null, fboW = 0, fboH = 0;
+  let fboM = null, maskTex = null;
   let quadBuf = null;
 
   /* ---------- 数学 ---------- */
@@ -205,7 +206,7 @@ const R = (function () {
   const FS_POST = [
     'precision mediump float;',
     'varying vec2 vUv;',
-    'uniform sampler2D uColor; uniform sampler2D uDepth; uniform sampler2D uNormal;',
+    'uniform sampler2D uColor; uniform sampler2D uDepth; uniform sampler2D uNormal; uniform sampler2D uMask;',
     'uniform vec2 uTexel; uniform float uNear; uniform float uFar;',
     'uniform vec3 uInk; uniform float uThresh;',
     'float lin(float d){',
@@ -219,6 +220,8 @@ const R = (function () {
     '  float m = 0.0;',
     '  vec2 t1 = t * 1.4;',
     '  vec2 t2 = t * 2.8;',
+    '  vec2 t3 = t * 5.0;',
+    '  vec2 t4 = t * 10.0;',
     '  m = max(m, abs(d0 - dep(vUv + vec2(t1.x, 0.0))));',
     '  m = max(m, abs(d0 - dep(vUv - vec2(t1.x, 0.0))));',
     '  m = max(m, abs(d0 - dep(vUv + vec2(0.0, t1.y))));',
@@ -242,8 +245,41 @@ const R = (function () {
     '                 min(min(dot(n0, n5), dot(n0, n6)), min(dot(n0, n7), dot(n0, n8))) * 0.98);',
     '  float eN = smoothstep(0.99, 0.93, nd);',
     '  float e = max(eD, eN * 0.92);',
+    '  float im0 = texture2D(uMask, vUv).r;',
+    '  float im = im0;',
+    '  float block = 0.0;',
+    '  vec2 offs[8];',
+    '  offs[0] = vec2(t2.x, 0.0); offs[1] = vec2(-t2.x, 0.0);',
+    '  offs[2] = vec2(0.0, t2.y); offs[3] = vec2(0.0, -t2.y);',
+    '  offs[4] = vec2(t3.x, 0.0); offs[5] = vec2(-t3.x, 0.0);',
+    '  offs[6] = vec2(0.0, t3.y); offs[7] = vec2(0.0, -t3.y);',
+    '  for (int k = 0; k < 8; k++) {',
+    '    vec2 uv2 = vUv + offs[k];',
+    '    float mv = texture2D(uMask, uv2).r;',
+    '    float dn = dep(uv2);',
+    '    if (mv > 0.5) {',
+    '      im = max(im, step(dn - 0.18, d0));',
+    '    } else if (dn < d0 - 0.8) {',
+    '      block = 1.0;',
+    '    }',
+    '  }',
+    /* 更宽的遮挡检测：前方有不可互动物体时，整圈白边让位给遮挡物的黑描边 */
+    '  vec2 offsB[4];',
+    '  offsB[0] = vec2(t4.x, 0.0); offsB[1] = vec2(-t4.x, 0.0);',
+    '  offsB[2] = vec2(0.0, t4.y); offsB[3] = vec2(0.0, -t4.y);',
+    '  for (int k2 = 0; k2 < 4; k2++) {',
+    '    vec2 uvb = vUv + offsB[k2];',
+    '    if (texture2D(uMask, uvb).r < 0.5 && dep(uvb) < d0 - 0.8) block = 1.0;',
+    '  }',
+    '  float mn = texture2D(uMask, vUv + vec2(t3.x, 0.0)).r;',
+    '  mn = min(mn, texture2D(uMask, vUv - vec2(t3.x, 0.0)).r);',
+    '  mn = min(mn, texture2D(uMask, vUv + vec2(0.0, t3.y)).r);',
+    '  mn = min(mn, texture2D(uMask, vUv - vec2(0.0, t3.y)).r);',
+    '  float band = clamp(im, 0.0, 1.0) * (1.0 - block);',
+    '  float nearBand = band * (1.0 - mn);',
+    '  vec3 ink = mix(uInk, vec3(0.97, 0.98, 1.0), band);',
     '  vec3 c = texture2D(uColor, vUv).rgb;',
-    '  gl_FragColor = vec4(mix(c, uInk, e), 1.0);',
+    '  gl_FragColor = vec4(mix(c, ink, max(e, nearBand * 0.92)), 1.0);',
     '}'
   ].join('\n');
 
@@ -326,6 +362,40 @@ const R = (function () {
       for (let i = 1; i + 1 < hull.length; i++) {
         W2.push(hull[0][0], 0.03, hull[0][1], hull[i][0], 0.03, hull[i][1], hull[i + 1][0], 0.03, hull[i + 1][1]);
       }
+    }
+  };
+
+  /* 外部三角网格（OBJ 导入）：数据为每顶点 10 个数
+     pos3 + normal3 + color3 + emissive1 */
+  Geo.prototype.mesh = function (mesh, o) {
+    if (!mesh || !mesh.length) return;
+    o = o || {};
+    const yaw = o.yaw || 0, rx = o.rotX || 0;
+    boxMatrix(_m, o.x || 0, o.y || 0, o.z || 0, yaw, rx, o.px || 0, o.py || 0, o.pz || 0);
+    const m = _m;
+    const S = this.solid;
+    const sc = o.scale || 1;
+    const px0 = o.px || 0, py0 = o.py || 0, pz0 = o.pz || 0;
+    for (let i = 0; i < mesh.length; i += 10) {
+      let lx = mesh[i], ly = mesh[i + 1], lz = mesh[i + 2];
+      if (sc !== 1) {
+        lx = px0 + (lx - px0) * sc;
+        ly = py0 + (ly - py0) * sc;
+        lz = pz0 + (lz - pz0) * sc;
+      }
+      const nx0 = mesh[i + 3], ny0 = mesh[i + 4], nz0 = mesh[i + 5];
+      const r = o.color ? o.color[0] : mesh[i + 6];
+      const g = o.color ? o.color[1] : mesh[i + 7];
+      const b = o.color ? o.color[2] : mesh[i + 8];
+      const emis = (o.emis !== undefined) ? (o.emis ? 1 : 0) : mesh[i + 9];
+      const wx = m[0] * lx + m[4] * ly + m[8] * lz + m[12];
+      const wy = m[1] * lx + m[5] * ly + m[9] * lz + m[13];
+      const wz = m[2] * lx + m[6] * ly + m[10] * lz + m[14];
+      let nx = m[0] * nx0 + m[4] * ny0 + m[8] * nz0;
+      let ny = m[1] * nx0 + m[5] * ny0 + m[9] * nz0;
+      let nz = m[2] * nx0 + m[6] * ny0 + m[10] * nz0;
+      const nl = Math.hypot(nx, ny, nz) || 1;
+      S.push(wx, wy, wz, nx / nl, ny / nl, nz / nl, r, g, b, emis);
     }
   };
 
@@ -415,6 +485,8 @@ const R = (function () {
 
   const staticGeo = new Geo();
   const dynGeo = new Geo();
+  const maskGeo = new Geo();
+  const dynXGeo = new Geo();   // 最后叠在画面上、忽略深度的效果层（声波穿墙）
 
   /* ---------- 离屏目标 ---------- */
   function ensureTargets(w, h) {
@@ -422,9 +494,11 @@ const R = (function () {
     if (!fbo) {
       fbo = gl.createFramebuffer();
       fboN = gl.createFramebuffer();
+      fboM = gl.createFramebuffer();
       colTex = gl.createTexture();
       depTex = gl.createTexture();
       nrmTex = gl.createTexture();
+      maskTex = gl.createTexture();
     }
     gl.bindTexture(gl.TEXTURE_2D, colTex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
@@ -447,12 +521,24 @@ const R = (function () {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
+    gl.bindTexture(gl.TEXTURE_2D, maskTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, colTex, 0);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, depTex, 0);
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, fboN);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, nrmTex, 0);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, depTex, 0);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fboM);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, maskTex, 0);
+    /* 复用主场景深度：遮罩只记录真正可见的交互物像素 */
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, depTex, 0);
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -512,6 +598,8 @@ const R = (function () {
     gl.clearColor(sky[0], sky[1], sky[2], 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     dynGeo.clear();
+    dynXGeo.clear();
+    maskGeo.clear();
   }
 
   function useSolid() {
@@ -571,6 +659,51 @@ const R = (function () {
     gl.depthMask(true);
   }
 
+  /* 可互动物品遮罩：只记录物品覆盖的屏幕像素，用于把它们的描边染成白色 */
+  function drawMask() {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fboM);
+    gl.viewport(0, 0, W, H);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    if (!maskGeo.nS || maskGeo.nS <= 0) return;
+    /* 复用场景深度：被墙挡住的箱子不会写进遮罩，白描边也不会透墙 */
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LEQUAL);
+    gl.depthMask(false);
+    gl.enable(gl.CULL_FACE);
+    gl.cullFace(gl.BACK);
+    gl.disable(gl.BLEND);
+    gl.useProgram(progShadow.p);
+    gl.uniformMatrix4fv(progShadow.u.uVP, false, vpMat);
+    gl.uniform3f(progShadow.u.uColor, 1, 1, 1);
+    gl.uniform1f(progShadow.u.uAlpha, 1);
+    gl.bindBuffer(gl.ARRAY_BUFFER, maskGeo.bufS);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 40, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, maskGeo.nS / 10);
+    gl.depthMask(true);
+    gl.enable(gl.DEPTH_TEST);
+    gl.enable(gl.CULL_FACE);
+    gl.cullFace(gl.BACK);
+  }
+
+  /* 忽略深度的效果层：最后画到画布上，可穿过墙体显示 */
+  function drawXray() {
+    if (!dynXGeo.nS || dynXGeo.nS <= 0) return;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, W, H);
+    gl.disable(gl.DEPTH_TEST);
+    gl.disable(gl.CULL_FACE);
+    gl.disable(gl.BLEND);
+    gl.depthMask(false);
+    useSolid();
+    dynXGeo.drawSolid();
+    gl.depthMask(true);
+    gl.enable(gl.DEPTH_TEST);
+    gl.enable(gl.CULL_FACE);
+    gl.cullFace(gl.BACK);
+  }
+
   function post() {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, W, H);
@@ -588,6 +721,9 @@ const R = (function () {
     gl.activeTexture(gl.TEXTURE2);
     gl.bindTexture(gl.TEXTURE_2D, nrmTex);
     gl.uniform1i(progPost.u.uNormal, 2);
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, maskTex);
+    gl.uniform1i(progPost.u.uMask, 3);
     gl.uniform2f(progPost.u.uTexel, 1 / W, 1 / H);
     gl.uniform1f(progPost.u.uNear, NEAR);
     gl.uniform1f(progPost.u.uFar, FAR);
@@ -610,12 +746,18 @@ const R = (function () {
     begin: begin,
     end: function () {
       dynGeo.upload();
+      dynXGeo.upload();
+      maskGeo.upload();
       drawScene();
       drawNormals();
+      drawMask();
       post();
+      drawXray();
     },
     buildStatic: buildStatic,
     dyn: dynGeo,
+    xray: dynXGeo,
+    mask: maskGeo,
     stat: staticGeo,
     setSky: function (c) { sky = c; },
     setFog: function (a, b) { fogRange = [a, b]; }

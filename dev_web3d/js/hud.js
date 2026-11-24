@@ -8,6 +8,7 @@ const HUD = (function () {
   let el = {};
   let fpsT = 0, fpsN = 0, fps = 0;
   let hitT = 0;
+  let dmgPool = [], dmgCursor = 0;
 
   function $(id) { return document.getElementById(id); }
 
@@ -25,6 +26,8 @@ const HUD = (function () {
       slots: $('slots'),
       prompt: $('prompt'),
       exWrap: $('extractWrap'), exFill: $('exFill'),
+      respawnWrap: $('respawnWrap'), respawnFill: $('respawnFill'),
+      dmgLayer: $('dmgLayer'),
       dmg: $('dmgFlash'),
       end: $('endScreen'), endTag: $('endTag'), endTitle: $('endTitle'),
       endBody: $('endBody'), endNote: $('endNote'), endContracts: $('endContracts'),
@@ -32,6 +35,70 @@ const HUD = (function () {
       hitmark: $('hitmark'),
       reloadBtn: document.querySelector('[data-touch-act="reload"]')
     };
+    buildDmgPool();
+  }
+
+  /* 伤害跳字：固定 DOM 池，按世界坐标每帧投影，数字向上飘并淡出 */
+  function buildDmgPool() {
+    dmgPool = [];
+    dmgCursor = 0;
+    if (!el.dmgLayer) return;
+    el.dmgLayer.innerHTML = '';
+    for (let i = 0; i < 36; i++) {
+      const node = document.createElement('div');
+      node.className = 'dmgnum';
+      node.style.display = 'none';
+      el.dmgLayer.appendChild(node);
+      dmgPool.push({
+        node: node, active: false, t: 0, life: 0.85,
+        x: 0, y: 1.2, z: 0, drift: 0
+      });
+    }
+  }
+
+  function damageNumber(x, y, z, amount, rgb) {
+    if (!dmgPool.length) return;
+    if (typeof G === 'undefined' || G.mode !== 'mission') return;
+    const d = dmgPool[dmgCursor++ % dmgPool.length];
+    d.active = true;
+    d.t = 0;
+    d.life = 0.8 + Math.random() * 0.18;
+    d.x = x; d.y = y; d.z = z;
+    d.drift = (Math.random() - 0.5) * 30;
+    const c = rgb || [1, 0.9, 0.68];
+    const r = Math.round((c[0] * 0.4 + 0.6) * 255);
+    const g = Math.round((c[1] * 0.4 + 0.6) * 255);
+    const b = Math.round((c[2] * 0.4 + 0.6) * 255);
+    const n = d.node;
+    n.textContent = String(Math.max(1, Math.round(amount)));
+    n.style.color = 'rgb(' + r + ',' + g + ',' + b + ')';
+    n.style.textShadow = '0 0 8px rgba(' + r + ',' + g + ',' + b + ',.55), 0 2px 3px rgba(0,0,0,.9)';
+    n.classList.toggle('big', amount >= 30);
+    n.style.display = 'block';
+    n.style.opacity = '1';
+  }
+
+  function updateDamageNumbers(dt) {
+    if (!dmgPool.length) return;
+    for (let i = 0; i < dmgPool.length; i++) {
+      const d = dmgPool[i];
+      if (!d.active) continue;
+      d.t += dt;
+      if (d.t >= d.life) {
+        d.active = false;
+        d.node.style.display = 'none';
+        continue;
+      }
+      const wy = d.y + d.t * 1.4;
+      const s = (G.worldToScreen ? G.worldToScreen(d.x, wy, d.z) : null);
+      if (!s) { d.node.style.opacity = '0'; continue; }
+      const k = d.t / d.life;
+      const alpha = k < 0.6 ? 1 : Math.max(0, 1 - (k - 0.6) / 0.4);
+      const pop = 1 + 0.32 * Math.max(0, 1 - d.t / 0.1);
+      d.node.style.opacity = alpha.toFixed(2);
+      d.node.style.transform = 'translate(-50%,-50%) translate(' +
+        (s.x + d.drift * d.t).toFixed(1) + 'px,' + s.y.toFixed(1) + 'px) scale(' + pop.toFixed(3) + ')';
+    }
   }
 
   function pct(v, m) { return Math.max(0, Math.min(1, v / m)) * 100; }
@@ -108,6 +175,12 @@ const HUD = (function () {
     el.dmg.classList.remove('hit');
     el.exWrap.classList.remove('on');
     el.exFill.style.width = '0%';
+    if (el.respawnWrap) el.respawnWrap.classList.remove('on');
+    if (el.respawnFill) el.respawnFill.style.width = '0%';
+    for (let i = 0; i < dmgPool.length; i++) {
+      dmgPool[i].active = false;
+      dmgPool[i].node.style.display = 'none';
+    }
     el.reload.classList.add('hidden');
     prompt(null);
     objective('撤离点', false);
@@ -127,6 +200,17 @@ const HUD = (function () {
     }
     el.exWrap.classList.add('on');
     el.exFill.style.width = (p * 100) + '%';
+  }
+
+  function respawn(p) {
+    if (!el.respawnWrap || !el.respawnFill) return;
+    if (p <= 0.001) {
+      el.respawnWrap.classList.remove('on');
+      el.respawnFill.style.width = '0%';
+      return;
+    }
+    el.respawnWrap.classList.add('on');
+    el.respawnFill.style.width = (Math.min(1, p) * 100) + '%';
   }
 
   function damage() {
@@ -232,6 +316,8 @@ const HUD = (function () {
     if (fpsT > 0.4) { fps = Math.round(fpsN / fpsT); fpsT = 0; fpsN = 0; }
     const p = G.state.player;
     if (G.mode !== 'mission') return;
+    if (typeof MINIMAP !== 'undefined') MINIMAP.draw(dt);
+    updateDamageNumbers(dt);
     el.camInfo.textContent = Math.round(G.state.cam.pitch) + '° · ' + fps + 'fps';
     el.data.textContent = UI.fmt(p.data);
     updateSlots(p);
@@ -269,7 +355,8 @@ const HUD = (function () {
     aimAt: aimAt,
     objective: objective,
     buildSlots: buildSlots, updateSlots: updateSlots,
-    extract: extract, damage: damage, toast: toast, hit: hit,
+    extract: extract, respawn: respawn, damage: damage, toast: toast, hit: hit,
+    damageNumber: damageNumber,
     end: end, hideEnd: hideEnd, tick: tick
   };
 })();

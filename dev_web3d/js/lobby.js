@@ -120,6 +120,12 @@ const Lobby = (function () {
 
   function bindStatic() {
     el.start.addEventListener('click', launch);
+    const testBtn = UI.$('testMapBtn');
+    if (testBtn) testBtn.addEventListener('click', function () {
+      if (G.mode !== 'lobby') return;
+      if (typeof MOBILE !== 'undefined') MOBILE.enterGame();
+      G.beginTestMap();
+    });
     UI.$('carryMinus').addEventListener('click', function () { addCarry(-CFG.CARRY_UNIT); });
     UI.$('carryPlus').addEventListener('click', function () { addCarry(CFG.CARRY_UNIT); });
     UI.$('carryAll').addEventListener('click', function () {
@@ -298,6 +304,8 @@ const Lobby = (function () {
     if (picked.length !== 2) { msg('需要携带 2 把武器'); return; }
     const cost = totalCost();
     if (cost > Store.bank()) { msg('数据不足，无法配给'); return; }
+    /* 点击出击算一次用户手势，尽量直接进全屏，去掉浏览器页眉 */
+    if (typeof MOBILE !== 'undefined' && location.search.indexOf('selftest=1') < 0) MOBILE.enterGame();
     if (!Store.spend(cost)) { msg('数据不足，无法配给'); return; }
     Store.setLoadout({ weapons: picked, mags: mags, carry: carry });
     Store.setChar(character);

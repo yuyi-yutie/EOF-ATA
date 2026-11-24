@@ -30,8 +30,8 @@ const CFG = {
 
   /* 触屏双摇杆：比例都相对于摇杆底座半径 */
   TOUCH: {
-    INNER: 0.58,       // 内圆直径 / 底座直径
-    DEAD: 0.12,        // 中心死区
+    INNER: 0.55,       // 内圆直径 / 底座直径
+    DEAD: 0.13,        // 中心死区
     AIM_LERP: 22       // 上半身瞄准跟随速度
   },
 
@@ -68,6 +68,16 @@ const CFG = {
 
   LOOT_COUNT: 26,
 
+  /* 可开启物资箱（训练场） */
+  CHEST_COLS: 4,
+  CHEST_ROWS: 4,
+  CHEST_ITEMS: 6,
+  CHEST_R: 0.55,
+  CHEST_PRY_TIME: 1.6,
+  CHEST_OPEN_DELAY: 0.55,
+  CHEST_SEARCH_TIME: 0.34,
+  CHEST_SEARCH_GAP: 0.10,
+
   /* ----------------------------------------------------------
      局外系统（大厅 / 仓库 / 背包 / 经济）
      ---------------------------------------------------------- */
@@ -102,10 +112,10 @@ const WEAPONS = [
     mag: 5, maxSpare: 2, rate: 0.9, reload: 2.6, dmg: 34, dmgFar: 20, cost: 70,
     range: 40, speed: 24, zoneR: 3.1, zoneLife: 3.2, tickDmg: 3.5, recoil: 1.4, kick: 1.3, noise: 560,
     desc: '弹体命中后灼烧一小片区域' },
-  { id: 'kinetic', auto: false, name: '轨道步枪', tag: '力学', color: '#e8e8e8', accent: '#DDE3EA',
-    mag: 12, maxSpare: 2, rate: 0.28, reload: 1.8, dmg: 34, dmgFar: 30, cost: 25,
+  { id: 'kinetic', auto: true, name: '轨道步枪', tag: '力学', color: '#e8e8e8', accent: '#DDE3EA',
+    mag: 30, maxSpare: 2, rate: 0.28, reload: 1.8, dmg: 20, dmgFar: 16, cost: 25,
     range: 70, speed: 60, recoil: 0.35, kick: 0.5, noise: 520,
-    desc: '高速动能弹，单发高伤' },
+    desc: '高速动能弹，全自动压制' },
   { id: 'voltaic', auto: false, name: '电弧枪', tag: '电学', color: '#b28cff', accent: '#B491F0',
     mag: 8, maxSpare: 2, rate: 0.45, reload: 2.0, dmg: 22, dmgFar: 14, cost: 60,
     range: 34, speed: 42, chainR: 6.0, chainMax: 3, chainMul: [0.6, 0.4, 0.25], recoil: 0.5, kick: 0.75, noise: 540,

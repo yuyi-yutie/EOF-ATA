@@ -107,6 +107,41 @@
       check('loot near count', World.loot.length <= CFG.LOOT_COUNT + 8, World.loot.length);
       check('loot has item', !!(World.loot[0] && World.loot[0].item));
 
+      /* 光学反射：任意方向撞墙后，反射起点必须仍在地板上（贴墙/墙角不丢反射） */
+      let reflFail = 0, reflHits = 0;
+      for (let cz = 1; cz < World.H - 1 && reflFail === 0; cz += 3) {
+        for (let cx = 1; cx < World.W - 1 && reflFail === 0; cx += 3) {
+          if (!World.isFloor(cx, cz)) continue;
+          const cc = World.cellCenter(cx, cz);
+          for (let k = 0; k < 12 && reflFail === 0; k++) {
+            let ox = cc.x, oz = cc.z, a = k / 12 * Math.PI * 2, remain = 60;
+            for (let b = 0; b <= 3; b++) {
+              const dx = Math.sin(a), dz = Math.cos(a);
+              const hit = World.rayWallHit(ox, oz, dx, dz, remain);
+              if (!hit.axis) break;
+              remain -= hit.d;
+              if (remain <= 0.05) break;
+              let nx = dx, nz = dz;
+              if (hit.axis === 'x' || hit.axis === 'both') nx = -nx;
+              if (hit.axis === 'z' || hit.axis === 'both') nz = -nz;
+              let hx = ox + dx * hit.d, hz = oz + dz * hit.d;
+              if (hit.axis === 'x' || hit.axis === 'both') hx -= Math.sign(dx) * 0.012;
+              if (hit.axis === 'z' || hit.axis === 'both') hz -= Math.sign(dz) * 0.012;
+              if (!World.isFloorAt(hx, hz)) {
+                const back = Math.min(0.06, hit.d);
+                hx -= dx * back;
+                hz -= dz * back;
+              }
+              ox = hx; oz = hz;
+              reflHits++;
+              if (!World.isFloorAt(ox, oz)) { reflFail++; break; }
+              a = Math.atan2(nx, nz);
+            }
+          }
+        }
+      }
+      check('laser reflection stays on floor', reflFail === 0, reflFail + ' / ' + reflHits);
+
       /* ---------- 6. 背包 / 拖拽 / 旋转 / 右键分解 ---------- */
       Inventory.open();
       check('inventory open', Inventory.isOpen());
@@ -123,13 +158,17 @@
       const node0 = document.querySelector('#invItems .inv-item');
       check('item rendered', !!node0);
       const rect0 = node0.getBoundingClientRect();
+      const gridEl = document.getElementById('invGrid');
+      const cellW = parseFloat(getComputedStyle(gridEl).gridTemplateColumns) || 72;
+      const gapW = parseFloat(getComputedStyle(gridEl).columnGap) || 8;
+      const pitchW = cellW + gapW;
       node0.dispatchEvent(new PointerEvent('pointerdown', {
         bubbles: true, button: 0, buttons: 1, pointerId: 1, pointerType: 'mouse',
         clientX: rect0.left + 8, clientY: rect0.top + 8
       }));
       window.dispatchEvent(new PointerEvent('pointermove', {
         bubbles: true, buttons: 1, pointerId: 1, pointerType: 'mouse',
-        clientX: rect0.left + 8 + 80, clientY: rect0.top + 8
+        clientX: rect0.left + 8 + pitchW, clientY: rect0.top + 8
       }));
       window.dispatchEvent(new PointerEvent('pointerup', {
         bubbles: true, button: 0, pointerId: 1, pointerType: 'mouse'

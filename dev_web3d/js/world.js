@@ -11,8 +11,11 @@ const World = (function () {
   let rooms = [];
   let spawn = { x: 0, z: 0 };
   let pad = { x: 0, z: 0, r: CFG.EXTRACT_R };
+  let respawn = null;
+  let test = null;
   let props = [];
   let loot = [];
+  let chests = [];
 
   const CELL = CFG.CELL;
 
@@ -47,6 +50,8 @@ const World = (function () {
     W = CFG.MAP_W; H = CFG.MAP_H;
     floor = new Uint8Array(W * H);
     rooms = []; props = []; loot = [];
+    respawn = null; test = null;
+    chests = [];
 
     /* 1. 房间 */
     const target = 9;
@@ -164,6 +169,122 @@ const World = (function () {
     return api;
   }
 
+  /* ---------- 测试场 ----------
+     48×48m 开放场地：
+     - 东侧走廊：两墙之间放光学测试靶
+     - 西侧扇形：声学测试靶
+     - 北侧圆圈：热学测试靶
+     - 南侧蓝色刷新点 + 东侧琥珀撤离点
+     - 全图随机物资；无限体力
+  */
+  function genTest(seed) {
+    rngState = (seed || 1234567) >>> 0 || 1;
+    W = 24; H = 24;
+    floor = new Uint8Array(W * H);
+    rooms = [{ x: 1, z: 1, w: W - 2, h: H - 2, cx: W >> 1, cz: H >> 1 }];
+    props = []; loot = []; respawn = null; test = null; chests = [];
+
+    for (let z = 1; z < H - 1; z++) {
+      for (let x = 1; x < W - 1; x++) floor[idx(x, z)] = 1;
+    }
+    /* 光学测试走廊：两堵竖墙，中间留 3 格宽 */
+    for (let z = 3; z <= 9; z++) {
+      floor[idx(16, z)] = 0;
+      floor[idx(20, z)] = 0;
+    }
+
+    spawn = cellCenter(11, 20);
+    pad = { x: cellCenter(20, 20).x, z: cellCenter(20, 20).z, r: CFG.EXTRACT_R };
+    respawn = { x: cellCenter(11, 16).x, z: cellCenter(11, 16).z, r: CFG.EXTRACT_R };
+
+    const spawns = [];
+    const add = function (group, type, x, z) {
+      spawns.push({ group: group, type: type, x: x, z: z });
+    };
+
+    /* 1. 两墙之间：光学武器靶 */
+    const laserTypes = ['zombie', 'gaunt', 'spitter'];
+    let li = 0;
+    for (const zc of [4, 6, 8]) {
+      for (const xc of [17, 19]) {
+        const c = cellCenter(xc, zc);
+        add('laser', laserTypes[li++ % laserTypes.length], c.x, c.z);
+      }
+    }
+
+    /* 2. 扇形：声学武器靶（北向扇面） */
+    const fanOrigin = cellCenter(6, 14);
+    const fanAngles = [-28, 0, 28, -20, 0, 20, -12, 0, 12];
+    const fanDists = [7, 7, 7, 10, 10, 10, 13, 13, 13];
+    for (let i = 0; i < fanAngles.length; i++) {
+      const a = fanAngles[i] * Math.PI / 180;
+      const d = fanDists[i];
+      add('fan', i % 3 === 0 ? 'gaunt' : (i % 3 === 1 ? 'zombie' : 'spitter'),
+        fanOrigin.x + Math.sin(a) * d,
+        fanOrigin.z - Math.cos(a) * d);
+    }
+
+    /* 3. 圆圈：热学武器靶 */
+    const circleC = cellCenter(12, 6);
+    for (let i = 0; i < 8; i++) {
+      const a = i / 8 * Math.PI * 2;
+      add('circle', i % 3 === 0 ? 'spitter' : (i % 3 === 1 ? 'zombie' : 'gaunt'),
+        circleC.x + Math.cos(a) * 2.2,
+        circleC.z + Math.sin(a) * 2.2);
+    }
+
+    /* 4. 训练场物资箱：先放箱子，再让散落物资避开箱子 */
+    const chestCells = [[8, 17], [15, 18], [14, 12], [21, 15]];
+    for (let ci = 0; ci < chestCells.length; ci++) {
+      const c = cellCenter(chestCells[ci][0], chestCells[ci][1]);
+      const ch = {
+        x: c.x, z: c.z,
+        yaw: Math.atan2(spawn.x - c.x, spawn.z - c.z),
+        cr: CFG.CHEST_R,
+        pried: false, prying: false, pryT: 0, pryBurst: 0, openDelay: 0,
+        search: null, inv: []
+      };
+      let g2 = 0;
+      while (ch.inv.length < CFG.CHEST_ITEMS && g2++ < 40) {
+        const raw = ITEMS.roll(null, rnd, 0.62);
+        const it = Grid.cloneItem(raw);
+        if (Grid.autoPlace(ch.inv, it, CFG.CHEST_COLS, CFG.CHEST_ROWS)) ch.inv.push(it);
+      }
+      chests.push(ch);
+    }
+
+    /* 5. 随机物资 */
+    let guard = 0;
+    while (loot.length < 12 && guard++ < 400) {
+      const cx = ri(2, W - 3);
+      const cz = ri(2, H - 3);
+      if (!isFloor(cx, cz)) continue;
+      const c = cellCenter(cx, cz);
+      if (Math.hypot(c.x - spawn.x, c.z - spawn.z) < 3) continue;
+      if (Math.hypot(c.x - pad.x, c.z - pad.z) < pad.r + 1) continue;
+      if (Math.hypot(c.x - respawn.x, c.z - respawn.z) < respawn.r + 1) continue;
+      let tooClose = false;
+      for (let i = 0; i < chests.length; i++) {
+        if (Math.hypot(chests[i].x - c.x, chests[i].z - c.z) < 2.6) { tooClose = true; break; }
+      }
+      if (tooClose) continue;
+      for (let i = 0; i < loot.length; i++) {
+        if (Math.hypot(loot[i].x - c.x, loot[i].z - c.z) < 1.5) { tooClose = true; break; }
+      }
+      if (tooClose) continue;
+      const item = ITEMS.roll(null, rnd, 0.7);
+      loot.push({
+        x: c.x + (rnd() - 0.5) * 0.4,
+        z: c.z + (rnd() - 0.5) * 0.4,
+        kind: rnd() < 0.7 ? 'case' : 'canister',
+        taken: false, tier: item.tierId, item: item
+      });
+    }
+
+    test = { respawn: respawn, spawns: spawns, extractHold: 2.0 };
+    return api;
+  }
+
   /* ---------- 静态几何 ---------- */
   function buildStatic(geo) {
     const P = PAL;
@@ -221,38 +342,46 @@ const World = (function () {
       }
     }
 
-    /* 撤离台 */
+    /* 撤离台 / 测试场刷新点 */
     const padC = [0.94, 0.69, 0.30];
-    geo.plane({ x: pad.x, y: 0.03, z: pad.z, sx: pad.r * 2, sz: pad.r * 2, color: [0.22, 0.19, 0.14] });
+    drawPad(geo, pad, padC, false);
+    if (respawn) drawPad(geo, respawn, [0.43, 0.85, 0.94], true);
+    return geo;
+  }
+
+  function drawPad(geo, p, color, isRespawn) {
+    geo.plane({ x: p.x, y: 0.03, z: p.z, sx: p.r * 2, sz: p.r * 2, color: [0.22, 0.19, 0.14] });
     for (let i = 0; i < 4; i++) {
       const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
       geo.box({
-        x: pad.x + Math.cos(a) * (pad.r - 0.35), y: 0.06, z: pad.z + Math.sin(a) * (pad.r - 0.35),
+        x: p.x + Math.cos(a) * (p.r - 0.35), y: 0.06, z: p.z + Math.sin(a) * (p.r - 0.35),
         sx: 0.5, sy: 0.06, sz: 0.5, yaw: a,
-        color: padC, outline: 0, emis: true
+        color: color, outline: 0, emis: true
       });
     }
     for (let i = 0; i < 4; i++) {
       const a = (i / 4) * Math.PI * 2;
       geo.box({
-        x: pad.x + Math.cos(a) * pad.r, y: 0.9, z: pad.z + Math.sin(a) * pad.r,
+        x: p.x + Math.cos(a) * p.r, y: 0.9, z: p.z + Math.sin(a) * p.r,
         sx: 0.16, sy: 1.8, sz: 0.16, color: PAL.steel, outline: 0.012, shadow: true
       });
       geo.box({
-        x: pad.x + Math.cos(a) * pad.r, y: 1.86, z: pad.z + Math.sin(a) * pad.r,
-        sx: 0.22, sy: 0.12, sz: 0.22, color: padC, outline: 0, emis: true
-      });
-      /* 高空光柱：隔着墙也能看到撤离点方向 */
-      geo.box({
-        x: pad.x + Math.cos(a) * pad.r, y: 6.4, z: pad.z + Math.sin(a) * pad.r,
-        sx: 0.09, sy: 8.6, sz: 0.09, color: padC, outline: 0, emis: true
+        x: p.x + Math.cos(a) * p.r, y: 1.86, z: p.z + Math.sin(a) * p.r,
+        sx: 0.22, sy: 0.12, sz: 0.22, color: color, outline: 0, emis: true
       });
       geo.box({
-        x: pad.x + Math.cos(a) * pad.r, y: 10.7, z: pad.z + Math.sin(a) * pad.r,
-        sx: 0.26, sy: 0.26, sz: 0.26, color: padC, outline: 0, emis: true
+        x: p.x + Math.cos(a) * p.r, y: 6.4, z: p.z + Math.sin(a) * p.r,
+        sx: 0.09, sy: 8.6, sz: 0.09, color: color, outline: 0, emis: true
+      });
+      geo.box({
+        x: p.x + Math.cos(a) * p.r, y: 10.7, z: p.z + Math.sin(a) * p.r,
+        sx: 0.26, sy: 0.26, sz: 0.26, color: color, outline: 0, emis: true
       });
     }
-    return geo;
+    if (isRespawn) {
+      geo.box({ x: p.x, y: 0.07, z: p.z, sx: 0.26, sy: 0.04, sz: 1.15, color: color, outline: 0, emis: true });
+      geo.box({ x: p.x, y: 0.07, z: p.z, sx: 1.15, sy: 0.04, sz: 0.26, color: color, outline: 0, emis: true });
+    }
   }
 
   /* ---------- 查询 ---------- */
@@ -268,7 +397,117 @@ const World = (function () {
       const p = props[i];
       if (Math.hypot(x - p.x, z - p.z) < r + p.cr) return true;
     }
+    /* 物资箱碰撞 */
+    for (let i = 0; i < chests.length; i++) {
+      const ch = chests[i];
+      if (Math.hypot(x - ch.x, z - ch.z) < r + ch.cr) return true;
+    }
     return false;
+  }
+
+  /* 平滑移动：撞到障碍时沿墙/圆形障碍的切向滑动，而不是硬停。
+     分小步推进，优先整步，其次单轴滑动，再尝试圆形障碍切线和角度偏转。 */
+  function nearestObstacle(x, z, r) {
+    let best = null, bd = Infinity;
+    for (let i = 0; i < props.length; i++) {
+      const p = props[i];
+      const d = Math.hypot(x - p.x, z - p.z);
+      if (d < r + p.cr && d < bd) { bd = d; best = p; }
+    }
+    for (let i = 0; i < chests.length; i++) {
+      const ch = chests[i];
+      const d = Math.hypot(x - ch.x, z - ch.z);
+      if (d < r + ch.cr && d < bd) { bd = d; best = ch; }
+    }
+    return best;
+  }
+
+  function moveCircle(x, z, dx, dz, r) {
+    const dist = Math.hypot(dx, dz);
+    if (dist < 1e-6) return { x: x, z: z };
+    const maxStep = Math.max(0.08, Math.min(0.22, r * 0.55));
+    const steps = Math.min(14, Math.max(1, Math.ceil(dist / maxStep)));
+    const sx = dx / steps, sz = dz / steps;
+    const stepLen = Math.hypot(sx, sz);
+    const base = Math.atan2(sz, sx);
+    let cx = x, cz = z;
+
+    function tryAxis() {
+      const firstX = Math.abs(sx) >= Math.abs(sz);
+      const tries = firstX
+        ? [[sx, 0], [0, sz]]
+        : [[0, sz], [sx, 0]];
+      for (let k = 0; k < tries.length; k++) {
+        const t = tries[k];
+        if (Math.abs(t[0]) + Math.abs(t[1]) < 1e-6) continue;
+        if (!blocked(cx + t[0], cz + t[1], r)) {
+          cx += t[0]; cz += t[1];
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function tryAngles() {
+      const angles = [0.22, -0.22, 0.44, -0.44, 0.69, -0.69, 0.96, -0.96, 1.22, -1.22, 1.48, -1.48];
+      for (let k = 0; k < angles.length; k++) {
+        const a = base + angles[k];
+        const ax = Math.cos(a) * stepLen;
+        const az = Math.sin(a) * stepLen;
+        if (!blocked(cx + ax, cz + az, r)) {
+          cx += ax; cz += az;
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function tryCardinal() {
+      const card = [[stepLen, 0], [-stepLen, 0], [0, stepLen], [0, -stepLen]];
+      for (let k = 0; k < card.length; k++) {
+        const t = card[k];
+        if (!blocked(cx + t[0], cz + t[1], r)) {
+          cx += t[0]; cz += t[1];
+          return true;
+        }
+      }
+      return false;
+    }
+
+    for (let i = 0; i < steps; i++) {
+      if (!blocked(cx + sx, cz + sz, r)) {
+        cx += sx; cz += sz;
+        continue;
+      }
+
+      const obs = nearestObstacle(cx + sx, cz + sz, r);
+      if (obs) {
+        /* 圆形障碍：先尝试足够强的切向滑动，避免贴脸时被“吸住” */
+        let nx = cx - obs.x, nz = cz - obs.z;
+        const nl = Math.hypot(nx, nz) || 1;
+        nx /= nl; nz /= nl;
+        const dot = sx * nx + sz * nz;
+        if (dot < 0) {
+          const tx = sx - nx * dot;
+          const tz = sz - nz * dot;
+          if (Math.hypot(tx, tz) > stepLen * 0.3 && !blocked(cx + tx, cz + tz, r)) {
+            cx += tx; cz += tz;
+            continue;
+          }
+        }
+        /* 正面撞圆：优先角度偏转，再单轴，再直角 */
+        if (tryAngles()) continue;
+        if (tryAxis()) continue;
+        if (tryCardinal()) continue;
+      } else {
+        /* 墙体/格子：单轴滑动优先 */
+        if (tryAxis()) continue;
+        if (tryAngles()) continue;
+        if (tryCardinal()) continue;
+      }
+      break;
+    }
+    return { x: cx, z: cz };
   }
 
   /* 射线：返回撞墙距离（没有墙返回 maxD） */
@@ -280,6 +519,41 @@ const World = (function () {
       if (!isFloor(c.cx, c.cz)) return d;
     }
     return maxD;
+  }
+
+  /* 精确射线（DDA 逐格步进）：返回撞墙距离与穿越的格子轴。
+     axis = 'x' / 'z' / 'both'（正好穿过格角），没有撞墙为 null。
+     光学武器用它计算反射面，掠射角下也不会漏掉墙角。 */
+  function rayWallHit(x0, z0, dx, dz, maxD) {
+    let cx = Math.floor(x0 / CELL);
+    let cz = Math.floor(z0 / CELL);
+    if (!isFloor(cx, cz)) return { d: 0, axis: null };
+
+    const stepX = dx > 0 ? 1 : (dx < 0 ? -1 : 0);
+    const stepZ = dz > 0 ? 1 : (dz < 0 ? -1 : 0);
+    const adx = Math.abs(dx), adz = Math.abs(dz);
+    const tdx = adx > 1e-9 ? CELL / adx : Infinity;
+    const tdz = adz > 1e-9 ? CELL / adz : Infinity;
+    let tmx = adx > 1e-9
+      ? (stepX > 0 ? ((cx + 1) * CELL - x0) / adx : (x0 - cx * CELL) / adx)
+      : Infinity;
+    let tmz = adz > 1e-9
+      ? (stepZ > 0 ? ((cz + 1) * CELL - z0) / adz : (z0 - cz * CELL) / adz)
+      : Infinity;
+
+    for (let guard = 0; guard < 20000; guard++) {
+      let axis, d;
+      if (tmx < tmz) {
+        d = tmx; cx += stepX; tmx += tdx; axis = 'x';
+      } else if (tmz < tmx) {
+        d = tmz; cz += stepZ; tmz += tdz; axis = 'z';
+      } else {
+        d = tmx; cx += stepX; cz += stepZ; tmx += tdx; tmz += tdz; axis = 'both';
+      }
+      if (d > maxD) return { d: maxD, axis: null };
+      if (!isFloor(cx, cz)) return { d: d, axis: axis };
+    }
+    return { d: maxD, axis: null };
   }
 
   /* 视线：两点之间是否被墙挡住 */
@@ -306,6 +580,7 @@ const World = (function () {
 
   const api = {
     gen: gen,
+    genTest: genTest,
     buildStatic: buildStatic,
     isFloor: isFloor,
     isFloorAt: isFloorAt,
@@ -313,7 +588,9 @@ const World = (function () {
     worldToCell: worldToCell,
     cellCenter: cellCenter,
     blocked: blocked,
+    moveCircle: moveCircle,
     rayWall: rayWall,
+    rayWallHit: rayWallHit,
     los: los,
     randomFloorPoint: randomFloorPoint,
     get W() { return W; },
@@ -321,8 +598,11 @@ const World = (function () {
     get rooms() { return rooms; },
     get spawn() { return spawn; },
     get pad() { return pad; },
+    get respawn() { return respawn; },
+    get test() { return test; },
     get props() { return props; },
-    get loot() { return loot; }
+    get loot() { return loot; },
+    get chests() { return chests; }
   };
   return api;
 })();

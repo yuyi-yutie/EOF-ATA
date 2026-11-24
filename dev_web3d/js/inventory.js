@@ -17,17 +17,20 @@ const Inventory = (function () {
   let drag = null, hover = null, ghost = null, lastMouse = null;
   let action = null;
   let builtRows = 0;
+  let chest = null;
+  let chestBuilt = false;
+  let chestDrag = null;
 
   function P() { return G.state.player; }
   function cols() { return CFG.INV_COLS; }
   function rows() { return P().invRows || CFG.INV_ROWS; }
 
-  /* 手机窄/矮屏用更小的格子，保证 6 列背包能完整放下 */
+  /* 窄/矮屏用更小的格子，保证 6 列背包能完整放下 */
   function layout() {
-    const compact = !!window.__touchMode &&
-      (window.innerWidth < 820 || window.innerHeight < 520);
-    const nextCell = compact ? 54 : 72;
-    const nextGap = compact ? 6 : 8;
+    const compact = (window.innerWidth < 820 || window.innerHeight < 520);
+    const tiny = window.innerWidth < 620;
+    const nextCell = tiny ? 48 : (compact ? 54 : 72);
+    const nextGap = tiny ? 5 : (compact ? 6 : 8);
     if (nextCell === CELL && nextGap === GAP) return false;
     CELL = nextCell;
     GAP = nextGap;
@@ -52,10 +55,24 @@ const Inventory = (function () {
     el.progLabel = UI.$('apLabel');
     el.progFill = UI.$('apFill');
     el.close = UI.$('invClose');
+    el.title = document.querySelector('.inv-title');
+    el.chestPanel = UI.$('chestPanel');
+    el.chestGrid = UI.$('chestGrid');
+    el.chestItems = UI.$('chestItems');
+    el.chestCount = UI.$('chestCount');
+    el.chestCap = UI.$('chestCap');
+    el.chestStatus = UI.$('chestStatus');
+    el.chestLens = UI.$('chestLens');
+    el.takeAll = UI.$('chestTakeAll');
+    el.storeAll = UI.$('chestStoreAll');
+    el.chestClose = UI.$('chestClose');
     if (window.__touchMode) el.close.textContent = '关闭';
 
     el.close.addEventListener('click', function () { close(); });
     el.heal.addEventListener('click', function () { tryHeal(); });
+    if (el.takeAll) el.takeAll.addEventListener('click', takeAll);
+    if (el.storeAll) el.storeAll.addEventListener('click', storeAll);
+    if (el.chestClose) el.chestClose.addEventListener('click', close);
 
     el.detail.addEventListener('click', function (e) {
       const target = e.target;
@@ -75,8 +92,10 @@ const Inventory = (function () {
     window.addEventListener('resize', function () {
       if (layout()) {
         builtRows = 0;
+        chestBuilt = false;
         if (isOpen()) {
           buildGrid(rows(), true);
+          if (chest) buildChestGrid();
           refresh();
         }
       }
@@ -89,6 +108,16 @@ const Inventory = (function () {
     drag = null;
     action = null;
     hover = null;
+    chest = null;
+    chestDrag = null;
+    chestBuilt = false;
+    hideDrop();
+    clearChestHighlight();
+    hideChestLens();
+    if (el.root) el.root.classList.remove('chest-open');
+    if (el.chestPanel) el.chestPanel.classList.add('hidden');
+    if (el.chestGrid) el.chestGrid.classList.remove('searching');
+    if (el.title) el.title.textContent = '背包 / INVENTORY';
     if (el.prog) el.prog.classList.add('hidden');
   }
 
@@ -178,6 +207,300 @@ const Inventory = (function () {
     }
   }
 
+  /* ---------------- 物资箱 ---------------- */
+  function nowSec() {
+    return (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000;
+  }
+
+  function buildChestGrid() {
+    if (!el.chestGrid) return;
+    if (chestBuilt && el.chestGrid.children.length > 1) {
+      el.chestCap.textContent = CFG.CHEST_COLS * CFG.CHEST_ROWS;
+      return;
+    }
+    chestBuilt = true;
+    el.chestGrid.innerHTML = '';
+    el.chestGrid.style.gridTemplateColumns = 'repeat(' + CFG.CHEST_COLS + ', ' + CELL + 'px)';
+    el.chestGrid.style.gridTemplateRows = 'repeat(' + CFG.CHEST_ROWS + ', ' + CELL + 'px)';
+    for (let i = 0; i < CFG.CHEST_COLS * CFG.CHEST_ROWS; i++) {
+      el.chestGrid.appendChild(UI.el('div', 'cell'));
+    }
+    const items = UI.el('div', 'inv-items');
+    items.id = 'chestItems';
+    el.chestGrid.appendChild(items);
+    const lens = UI.el('div', 'chest-lens hidden');
+    lens.id = 'chestLens';
+    el.chestGrid.appendChild(lens);
+    el.chestItems = items;
+    el.chestLens = lens;
+    el.chestCap.textContent = CFG.CHEST_COLS * CFG.CHEST_ROWS;
+  }
+
+  /* 开箱搜索：保留已搜索过的物品；已全部搜索过则直接显示，不重播动画 */
+  function initChestSearch(c) {
+    const s = {
+      active: false, done: true,
+      order: [], idx: -1, t: 0,
+      found: 0, total: 0, lastFound: null
+    };
+    c.search = s;
+    const unfound = [];
+    for (let i = 0; i < c.inv.length; i++) {
+      const it = c.inv[i];
+      if (it.found) s.found++;
+      else unfound.push(it);
+    }
+    s.total = c.inv.length;
+    s.order = unfound.sort(function (a, b) {
+      return (a.gy - b.gy) || (a.gx - b.gx);
+    });
+    s.active = s.order.length > 0;
+    s.done = !s.active;
+    s.idx = s.active ? 0 : -1;
+    s.t = 0;
+    renderChest();
+    updateChestStatus();
+    if (s.active) updateChestLens(s.order[0], s);
+    else hideChestLens();
+  }
+
+  function nextChestItem() {
+    if (!chest || !chest.search) return;
+    const s = chest.search;
+    s.idx++;
+    s.t = 0;
+    if (s.idx >= s.order.length) { finishChestSearch(); return; }
+    renderChest();
+    updateChestStatus();
+    updateChestLens(s.order[s.idx], s);
+  }
+
+  function finishChestSearch() {
+    if (!chest || !chest.search) return;
+    const s = chest.search;
+    s.active = false;
+    s.done = true;
+    hideChestLens();
+    renderChest();
+    updateChestStatus();
+  }
+
+  function updateChestSearch(dt) {
+    if (!chest || !chest.search) return;
+    const s = chest.search;
+    if (!s.active) return;
+    const it = s.order[s.idx];
+    if (!it) { finishChestSearch(); return; }
+    s.t += dt;
+    if (!it.found && s.t >= CFG.CHEST_SEARCH_TIME) {
+      it.found = true;
+      it.foundAt = nowSec();
+      s.lastFound = it;
+      s.found++;
+      foundBurst(it);
+      renderChest();
+      hideChestLens();
+      updateChestStatus();
+    }
+    if (s.t >= CFG.CHEST_SEARCH_TIME + CFG.CHEST_SEARCH_GAP) {
+      nextChestItem();
+    } else if (!it.found) {
+      updateChestLens(it, s);
+    }
+  }
+
+  function updateChestStatus() {
+    if (!chest || !chest.search) return;
+    const s = chest.search;
+    let found = 0;
+    for (let i = 0; i < chest.inv.length; i++) if (chest.inv[i].found) found++;
+    s.found = found;
+    s.total = chest.inv.length;
+    if (el.chestStatus) {
+      el.chestStatus.textContent = s.total
+        ? (s.active ? '搜索中 ' + found + ' / ' + s.total : '搜索完成')
+        : '空箱子';
+    }
+    if (el.takeAll) {
+      el.takeAll.disabled = s.active;
+      el.takeAll.classList.toggle('dis', s.active);
+    }
+    if (el.chestGrid) el.chestGrid.classList.toggle('searching', s.active);
+  }
+
+  function updateChestLens(it, s) {
+    if (!el.chestLens || !it) { hideChestLens(); return; }
+    const d = Grid.dims(it);
+    const w = d.w * CELL + (d.w - 1) * GAP;
+    const h = d.h * CELL + (d.h - 1) * GAP;
+    const cx = it.gx * PITCH + w * 0.5;
+    const cy = it.gy * PITCH + h * 0.5;
+    const rad = Math.max(6, Math.min(w, h) * 0.24);
+    const a = s.t * 9 + s.idx * 1.7;
+    el.chestLens.style.left = (cx + Math.cos(a) * rad) + 'px';
+    el.chestLens.style.top = (cy + Math.sin(a) * rad * 0.82) + 'px';
+    el.chestLens.classList.remove('hidden');
+  }
+
+  function hideChestLens() {
+    if (el.chestLens) el.chestLens.classList.add('hidden');
+  }
+
+  function foundBurst(it) {
+    if (!el.chestGrid) return;
+    /* 一次只保留当前物品的成功特效，避免上一个物品的特效同时播放 */
+    const olds = el.chestGrid.querySelectorAll('.chest-burst');
+    for (let i = 0; i < olds.length; i++) olds[i].remove();
+    const d = Grid.dims(it);
+    const b = UI.el('div', 'chest-burst');
+    b.style.left = (it.gx * PITCH) + 'px';
+    b.style.top = (it.gy * PITCH) + 'px';
+    b.style.width = (d.w * CELL + (d.w - 1) * GAP) + 'px';
+    b.style.height = (d.h * CELL + (d.h - 1) * GAP) + 'px';
+    el.chestGrid.appendChild(b);
+    setTimeout(function () {
+      if (b.parentNode) b.parentNode.removeChild(b);
+    }, 560);
+  }
+
+  function renderChest() {
+    if (!chest || !el.chestItems) return;
+    el.chestItems.innerHTML = '';
+    const s = chest.search;
+    const cur = (s && s.active && s.idx >= 0) ? s.order[s.idx] : null;
+    const now = nowSec();
+    for (let i = 0; i < chest.inv.length; i++) {
+      const it = chest.inv[i];
+      const found = !!it.found;
+      const recent = found && s && s.lastFound === it && it.foundAt && (now - it.foundAt < 0.4);
+      const cls = ' chest-item' + (found ? ' found' : ' unknown') +
+        (it === cur && !found ? ' scanning' : '') +
+        (recent ? ' pop' : '');
+      const div = itemNode(it, cls);
+      if (!found) div.innerHTML = '';
+      div.title = found ? '点击或拖拽放入背包' : '搜索中…';
+      div.addEventListener('pointerdown', function (e) { onChestDown(e, it); });
+      el.chestItems.appendChild(div);
+    }
+    el.chestCount.textContent = Grid.usedCells(chest.inv);
+    el.chestCap.textContent = CFG.CHEST_COLS * CFG.CHEST_ROWS;
+    updateChestStatus();
+  }
+
+  function placeInBag(copy, tx, ty) {
+    const p = P();
+    if (tx !== undefined && ty !== undefined) {
+      if (Grid.fits(p.inv, copy, tx, ty, copy.rot, cols(), rows())) {
+        copy.gx = tx;
+        copy.gy = ty;
+        return true;
+      }
+      return false;
+    }
+    return Grid.autoPlace(p.inv, copy, cols(), rows());
+  }
+
+  function placeInChest(copy, tx, ty) {
+    if (tx !== undefined && ty !== undefined) {
+      if (Grid.fits(chest.inv, copy, tx, ty, copy.rot, CFG.CHEST_COLS, CFG.CHEST_ROWS)) {
+        copy.gx = tx;
+        copy.gy = ty;
+        return true;
+      }
+      return false;
+    }
+    return Grid.autoPlace(chest.inv, copy, CFG.CHEST_COLS, CFG.CHEST_ROWS);
+  }
+
+  function transferToBag(it, tx, ty) {
+    if (!chest) return;
+    const s = chest.search;
+    if (s && s.active) {
+      HUD.toast('还在搜索物资 · 请稍候', 'warn');
+      return;
+    }
+    const i = chest.inv.indexOf(it);
+    if (i < 0) return;
+    const p = P();
+    const copy = Grid.cloneItem(it);
+    if (!placeInBag(copy, tx, ty)) {
+      HUD.toast(tx !== undefined ? '这里放不下' : '背包已满 · 先分解或存入箱子', 'warn');
+      return;
+    }
+    p.inv.push(copy);
+    chest.inv.splice(i, 1);
+    if (G.noteLoot) G.noteLoot(1);
+    refresh();
+  }
+
+  function transferToChest(it, tx, ty) {
+    if (!chest) return;
+    const p = P();
+    const i = p.inv.indexOf(it);
+    if (i < 0) return;
+    const copy = Grid.cloneItem(it);
+    if (!placeInChest(copy, tx, ty)) {
+      HUD.toast(tx !== undefined ? '这里放不下' : '物资箱已满', 'warn');
+      refresh();
+      return;
+    }
+    /* 自己放进去的东西直接可见，不参与搜索队列 */
+    copy.found = true;
+    copy.foundAt = nowSec();
+    chest.inv.push(copy);
+    p.inv.splice(i, 1);
+    if (p.sel === it) p.sel = null;
+    refresh();
+  }
+
+  function takeAll() {
+    if (!chest) return;
+    if (chest.search && chest.search.active) {
+      HUD.toast('还在搜索物资 · 请稍候', 'warn');
+      return;
+    }
+    if (!chest.inv.length) {
+      HUD.toast('物资箱是空的', 'warn');
+      return;
+    }
+    const p = P();
+    let n = 0, full = false;
+    for (const it of chest.inv.slice()) {
+      const copy = Grid.cloneItem(it);
+      if (!Grid.autoPlace(p.inv, copy, cols(), rows())) { full = true; break; }
+      p.inv.push(copy);
+      chest.inv.splice(chest.inv.indexOf(it), 1);
+      n++;
+    }
+    if (n && G.noteLoot) G.noteLoot(n);
+    refresh();
+    if (n) HUD.toast('拿走 ' + n + ' 件' + (full ? ' · 背包已满' : ''), 'good');
+    else HUD.toast('背包已满', 'warn');
+  }
+
+  function storeAll() {
+    if (!chest) return;
+    const p = P();
+    if (!p.inv.length) {
+      HUD.toast('背包是空的', 'warn');
+      return;
+    }
+    let n = 0, full = false;
+    for (const it of p.inv.slice()) {
+      const copy = Grid.cloneItem(it);
+      if (!Grid.autoPlace(chest.inv, copy, CFG.CHEST_COLS, CFG.CHEST_ROWS)) { full = true; break; }
+      copy.found = true;
+      copy.foundAt = nowSec();
+      chest.inv.push(copy);
+      p.inv.splice(p.inv.indexOf(it), 1);
+      n++;
+    }
+    if (p.sel && p.inv.indexOf(p.sel) < 0) p.sel = null;
+    refresh();
+    if (n) HUD.toast('存入 ' + n + ' 件' + (full ? ' · 箱子已满' : ''), 'good');
+    else HUD.toast('物资箱已满', 'warn');
+  }
+
   function tierName(id) {
     const t = TIERS.filter(function (x) { return x.id === id; })[0];
     return t ? t.name : '常见';
@@ -258,6 +581,7 @@ const Inventory = (function () {
     renderDetail();
     renderCraft();
     renderKit();
+    if (chest) renderChest();
     el.count.textContent = usedCells();
     el.cap.textContent = cols() * rows();
     el.data.textContent = UI.fmt(p.data);
@@ -288,6 +612,7 @@ const Inventory = (function () {
   }
 
   function onMove(e) {
+    if (chestDrag) { onChestMove(e); return; }
     if (!drag || e.pointerId !== drag.pointerId) return;
     e.preventDefault();
     lastMouse = { clientX: e.clientX, clientY: e.clientY };
@@ -295,11 +620,114 @@ const Inventory = (function () {
     updateGhost(e);
   }
 
+  function pointIn(node, e) {
+    if (!node || !e) return false;
+    const r = node.getBoundingClientRect();
+    return e.clientX >= r.left && e.clientX <= r.right &&
+      e.clientY >= r.top && e.clientY <= r.bottom;
+  }
+
+  function onChestDown(e, it) {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (!it.found || (chest && chest.search && chest.search.active)) return;
+    e.preventDefault();
+    const rect = el.chestGrid.getBoundingClientRect();
+    const d = Grid.dims(it);
+    const itemX = rect.left + it.gx * PITCH;
+    const itemY = rect.top + it.gy * PITCH;
+    chestDrag = {
+      it: it, pointerId: e.pointerId,
+      sx: e.clientX, sy: e.clientY, moved: false,
+      fx: clamp((e.clientX - itemX) / PITCH, 0, d.w - 0.01),
+      fy: clamp((e.clientY - itemY) / PITCH, 0, d.h - 0.01)
+    };
+    const g = ensureGhost(it);
+    g.style.width = (d.w * CELL + (d.w - 1) * GAP) + 'px';
+    g.style.height = (d.h * CELL + (d.h - 1) * GAP) + 'px';
+    g.style.left = (e.clientX - chestDrag.fx * PITCH) + 'px';
+    g.style.top = (e.clientY - chestDrag.fy * PITCH) + 'px';
+  }
+
+  function onChestMove(e) {
+    if (!chestDrag || e.pointerId !== chestDrag.pointerId) return;
+    e.preventDefault();
+    if (Math.abs(e.clientX - chestDrag.sx) + Math.abs(e.clientY - chestDrag.sy) > 3) {
+      chestDrag.moved = true;
+    }
+    if (ghost) {
+      ghost.style.left = (e.clientX - chestDrag.fx * PITCH) + 'px';
+      ghost.style.top = (e.clientY - chestDrag.fy * PITCH) + 'px';
+    }
+    if (pointIn(el.grid, e)) {
+      const r = el.grid.getBoundingClientRect();
+      const tx = Math.round((e.clientX - r.left) / PITCH - chestDrag.fx);
+      const ty = Math.round((e.clientY - r.top) / PITCH - chestDrag.fy);
+      const valid = Grid.fits(P().inv, chestDrag.it, tx, ty, chestDrag.it.rot, cols(), rows());
+      showDrop(tx, ty, chestDrag.it, valid);
+      if (el.chestGrid) {
+        el.chestGrid.classList.remove('drop-over');
+        el.chestGrid.classList.remove('bad');
+      }
+    } else {
+      hideDrop();
+    }
+  }
+
+  function onChestUp(e) {
+    if (!chestDrag) return;
+    const d = chestDrag;
+    chestDrag = null;
+    removeGhost();
+    hideDrop();
+    clearChestHighlight();
+    if (!e || e.type === 'pointercancel') { refresh(); return; }
+    if (!d.moved) { transferToBag(d.it); return; }
+    if (pointIn(el.grid, e)) {
+      const r = el.grid.getBoundingClientRect();
+      const tx = Math.round((e.clientX - r.left) / PITCH - d.fx);
+      const ty = Math.round((e.clientY - r.top) / PITCH - d.fy);
+      transferToBag(d.it, tx, ty);
+      return;
+    }
+    if (pointIn(el.chestGrid, e)) {
+      const rect = el.chestGrid.getBoundingClientRect();
+      const tx = Math.round((e.clientX - rect.left) / PITCH - d.fx);
+      const ty = Math.round((e.clientY - rect.top) / PITCH - d.fy);
+      if (Grid.fits(chest.inv, d.it, tx, ty, d.it.rot, CFG.CHEST_COLS, CFG.CHEST_ROWS, d.it)) {
+        d.it.gx = tx;
+        d.it.gy = ty;
+      }
+      refresh();
+      return;
+    }
+    refresh();
+  }
+
   function onUp(e) {
+    if (chestDrag) { onChestUp(e); return; }
     if (!drag) return;
     if (e && e.pointerId !== undefined && e.pointerId !== drag.pointerId) return;
     const d = drag;
     drag = null;
+    removeGhost();
+    hideDrop();
+    clearChestHighlight();
+    const canceled = e && e.type === 'pointercancel';
+    if (chest && !canceled) {
+      if (!d.moved) {
+        /* 点击背包物品：自动放入箱子 */
+        transferToChest(d.it);
+        return;
+      }
+      if (pointIn(el.chestGrid, e)) {
+        /* 拖到箱子：按落点放置 */
+        const r = el.chestGrid.getBoundingClientRect();
+        const tx = Math.round((e.clientX - r.left) / PITCH - d.fx);
+        const ty = Math.round((e.clientY - r.top) / PITCH - d.fy);
+        transferToChest(d.it, tx, ty);
+        return;
+      }
+    }
     if (d.moved && d.valid) {
       d.it.gx = d.tx;
       d.it.gy = d.ty;
@@ -310,9 +738,29 @@ const Inventory = (function () {
         d.it.rot = d.orot;
       }
     }
-    removeGhost();
-    if (el.drop) el.drop.style.display = 'none';
     refresh();
+  }
+
+  function showDrop(tx, ty, it, valid) {
+    if (!el.drop) return;
+    const d = Grid.dims(it);
+    el.drop.style.display = 'block';
+    el.drop.style.left = (tx * PITCH) + 'px';
+    el.drop.style.top = (ty * PITCH) + 'px';
+    el.drop.style.width = (d.w * CELL + (d.w - 1) * GAP) + 'px';
+    el.drop.style.height = (d.h * CELL + (d.h - 1) * GAP) + 'px';
+    el.drop.className = 'inv-drop ' + (valid ? 'ok' : 'bad');
+  }
+
+  function hideDrop() {
+    if (el.drop) el.drop.style.display = 'none';
+  }
+
+  function clearChestHighlight() {
+    if (el.chestGrid) {
+      el.chestGrid.classList.remove('drop-over');
+      el.chestGrid.classList.remove('bad');
+    }
   }
 
   function updateGhost(e) {
@@ -329,16 +777,21 @@ const Inventory = (function () {
     drag.ty = ty;
     drag.valid = valid;
 
-    if (drag.moved) {
-      el.drop.style.display = 'block';
-      el.drop.style.left = (tx * PITCH) + 'px';
-      el.drop.style.top = (ty * PITCH) + 'px';
-      el.drop.style.width = (d.w * CELL + (d.w - 1) * GAP) + 'px';
-      el.drop.style.height = (d.h * CELL + (d.h - 1) * GAP) + 'px';
-      el.drop.className = 'inv-drop ' + (valid ? 'ok' : 'bad');
-    } else {
-      el.drop.style.display = 'none';
+    const overChest = !!(chest && pointIn(el.chestGrid, e));
+    if (el.chestGrid) {
+      el.chestGrid.classList.toggle('drop-over', overChest);
+      if (overChest) {
+        const cr = el.chestGrid.getBoundingClientRect();
+        const ctx = Math.round((e.clientX - cr.left) / PITCH - drag.fx);
+        const cty = Math.round((e.clientY - cr.top) / PITCH - drag.fy);
+        const cvalid = Grid.fits(chest.inv, it, ctx, cty, it.rot, CFG.CHEST_COLS, CFG.CHEST_ROWS);
+        el.chestGrid.classList.toggle('bad', !cvalid);
+      } else {
+        el.chestGrid.classList.remove('bad');
+      }
     }
+    if (drag.moved && !overChest) showDrop(tx, ty, it, valid);
+    else hideDrop();
 
     const g = ensureGhost(it);
     g.style.width = (d.w * CELL + (d.w - 1) * GAP) + 'px';
@@ -406,11 +859,53 @@ const Inventory = (function () {
   function close() {
     if (!isOpen()) return;
     drag = null;
+    chestDrag = null;
     removeGhost();
+    hideDrop();
+    clearChestHighlight();
     cancelAction();
+    if (chest) {
+      chest.search = null;
+      chest = null;
+    }
+    hideChestLens();
+    el.root.classList.remove('chest-open');
+    if (el.chestPanel) el.chestPanel.classList.add('hidden');
+    if (el.chestGrid) el.chestGrid.classList.remove('searching');
+    if (el.title) el.title.textContent = '背包 / INVENTORY';
     el.root.classList.add('hidden');
     HUD.setAimVisible(true);
   }
+
+  function openChest(c) {
+    if (!c) return;
+    const p = P();
+    if (p.dead || G.mode !== 'mission') return;
+    chest = c;
+    c.opened = true;
+    buildChestGrid();
+    initChestSearch(c);
+    if (!isOpen()) open();
+    el.root.classList.add('chest-open');
+    if (el.chestPanel) el.chestPanel.classList.remove('hidden');
+    if (el.title) el.title.textContent = '物资箱 + 背包 / CONTAINER';
+    refresh();
+  }
+
+  function closeChest() {
+    if (chest) {
+      chest.search = null;
+      chest = null;
+    }
+    hideChestLens();
+    if (el.root) el.root.classList.remove('chest-open');
+    if (el.chestPanel) el.chestPanel.classList.add('hidden');
+    if (el.chestGrid) el.chestGrid.classList.remove('searching');
+    if (el.title) el.title.textContent = '背包 / INVENTORY';
+    if (isOpen()) refresh();
+  }
+
+  function isChestOpen() { return !!chest; }
 
   function toggle() {
     if (isOpen()) close();
@@ -531,9 +1026,10 @@ const Inventory = (function () {
   }
 
   function update(dt) {
+    if (!isOpen()) { cancelAction(); return; }
+    if (chest) updateChestSearch(dt);
     if (!action) return;
     const p = P();
-    if (!isOpen()) { cancelAction(); return; }
     if (p.moving || p.dead) { cancelAction('操作中断'); return; }
     action.t += dt;
     const pct = clamp(action.t / action.dur, 0, 1) * 100;
@@ -544,9 +1040,14 @@ const Inventory = (function () {
 
   function reset() {
     drag = null; hover = null; action = null;
+    chest = null; chestDrag = null;
     removeGhost();
+    hideDrop();
+    clearChestHighlight();
+    hideChestLens();
     if (el.root) el.root.classList.add('hidden');
     if (el.prog) el.prog.classList.add('hidden');
+    if (el.title) el.title.textContent = '背包 / INVENTORY';
   }
 
   function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
@@ -555,6 +1056,7 @@ const Inventory = (function () {
     init: init, beginRun: beginRun, reset: reset,
     addItem: addItem, removeItem: removeItem, refresh: refresh,
     open: open, close: close, toggle: toggle, isOpen: isOpen,
+    openChest: openChest, closeChest: closeChest, isChestOpen: isChestOpen,
     rotate: rotate, update: update, cancelAction: cancelAction,
     startAction: startAction, debugComplete: complete,
     debugCraft: tryCraft, debugHeal: tryHeal, debugUse: useSupply,
