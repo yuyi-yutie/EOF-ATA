@@ -90,14 +90,18 @@ const HUD = (function () {
         continue;
       }
       const wy = d.y + d.t * 1.4;
-      const s = (G.worldToScreen ? G.worldToScreen(d.x, wy, d.z) : null);
+      const s = G.worldToScreenClamped
+        ? G.worldToScreenClamped(d.x, wy, d.z)
+        : (G.worldToScreen ? G.worldToScreen(d.x, wy, d.z) : null);
       if (!s) { d.node.style.opacity = '0'; continue; }
       const k = d.t / d.life;
       const alpha = k < 0.6 ? 1 : Math.max(0, 1 - (k - 0.6) / 0.4);
       const pop = 1 + 0.32 * Math.max(0, 1 - d.t / 0.1);
+      const drift = s.edge ? 0 : d.drift * d.t;
+      d.node.classList.toggle('edge', !!s.edge);
       d.node.style.opacity = alpha.toFixed(2);
       d.node.style.transform = 'translate(-50%,-50%) translate(' +
-        (s.x + d.drift * d.t).toFixed(1) + 'px,' + s.y.toFixed(1) + 'px) scale(' + pop.toFixed(3) + ')';
+        (s.x + drift).toFixed(1) + 'px,' + s.y.toFixed(1) + 'px) scale(' + pop.toFixed(3) + ')';
     }
   }
 
@@ -119,20 +123,28 @@ const HUD = (function () {
 
   function mag(i) {
     const p = G.state.player;
+    if (i === undefined || i === null) i = p.weapon;
     const w = WEAPONS[i];
-    if (!w) return;
+    if (!w) {
+      el.wName.textContent = '未装备武器';
+      el.wTag.textContent = '空手';
+      el.wMag.textContent = '0';
+      el.wRes.textContent = '0';
+      return;
+    }
+    const slot = p.slot;
     el.wName.textContent = w.name;
     el.wTag.textContent = w.tag;
-    el.wMag.textContent = p.mags[i];
-    el.wRes.textContent = p.spares[i];
+    el.wMag.textContent = (slot >= 0 && p.mags[slot] !== undefined) ? p.mags[slot] : 0;
+    el.wRes.textContent = (slot >= 0 && p.spares[slot] !== undefined) ? p.spares[slot] : 0;
   }
 
-  /* 左下两个武器槽 */
+  /* 左下武器槽 */
   function buildSlots(p) {
     if (!el.slots) return;
     el.slots.innerHTML = '';
     for (let s = 0; s < p.carried.length; s++) {
-      const wi = p.carried[s];
+      const wi = p.carried[s].weaponId;
       const w = WEAPONS[wi];
       const d = UI.el('div', 'slot');
       d.dataset.slot = s;
@@ -141,8 +153,13 @@ const HUD = (function () {
         '<div class="s-top"><span class="s-key">' + (s + 1) + '</span>' +
         '<span class="s-tag">' + w.tag + '</span></div>' +
         '<div class="s-name">' + w.name + '</div>' +
-        '<div class="s-ammo"><b data-mag>0</b> / <span data-spare>0</span> 夹</div>';
+        '<div class="s-ammo"><b data-mag>0</b> / <span data-spare>0</span> 夹</div>' +
+        '<div class="s-chips"><i></i><i></i><i></i></div>';
       d.addEventListener('click', function () { G.switchSlot(s); });
+      el.slots.appendChild(d);
+    }
+    if (!p.carried.length) {
+      const d = UI.el('div', 'slot-empty', '未装备武器<br><span>可在背包中装备搜到的武器</span>');
       el.slots.appendChild(d);
     }
     updateSlots(p);
@@ -151,16 +168,25 @@ const HUD = (function () {
   function updateSlots(p) {
     if (!el.slots) return;
     p = p || G.state.player;
-    const list = el.slots.children;
+    const list = el.slots.querySelectorAll('.slot');
     for (let s = 0; s < list.length; s++) {
-      const wi = p.carried[s];
-      if (wi === undefined) continue;
+      if (!p.carried[s]) continue;
+      const wi = p.carried[s].weaponId;
       const node = list[s];
       node.classList.toggle('on', s === p.slot);
       const m = node.querySelector('[data-mag]');
       const sp = node.querySelector('[data-spare]');
-      if (m) m.textContent = p.mags[wi];
-      if (sp) sp.textContent = p.spares[wi];
+      if (m) m.textContent = p.mags[s] !== undefined ? p.mags[s] : 0;
+      if (sp) sp.textContent = p.spares[s] !== undefined ? p.spares[s] : 0;
+      const chips = (p.weaponChips && p.weaponChips[wi]) || [];
+      const dots = node.querySelectorAll('.s-chips i');
+      for (let k = 0; k < dots.length; k++) {
+        const c = chips[k];
+        const def = c ? CHIP_BY_ID[c.chipId] : null;
+        const tier = c ? ITEMS.tier(c.tierId) : null;
+        dots[k].className = def ? 'on' : '';
+        dots[k].style.setProperty('--cc', tier ? tier.color : 'transparent');
+      }
     }
   }
 
@@ -331,9 +357,9 @@ const HUD = (function () {
     const t = Math.floor(G.state.time);
     if (el.timer) el.timer.textContent = String(Math.floor(t / 60)).padStart(2, '0') + ':' + String(t % 60).padStart(2, '0');
     if (p.reload > 0) {
-      const w = WEAPONS[p.weapon];
       el.reload.classList.remove('hidden');
-      el.reloadFill.style.width = (100 - (p.reload / (w.reload * p.reloadMul)) * 100) + '%';
+      const dur = p.reloadDur || (WEAPONS[p.weapon].reload * p.reloadMul);
+      el.reloadFill.style.width = (100 - (p.reload / dur) * 100) + '%';
     } else if (el.reload) {
       el.reload.classList.add('hidden');
     }

@@ -45,6 +45,76 @@ const World = (function () {
   }
   function ri(a, b) { return a + Math.floor(rnd() * (b - a + 1)); }
 
+  /* 物资箱内容：先决定出 0–2 块芯片，再用普通物资填满。
+     芯片固定 1×1，能塞进 4×4 箱子的任何空位。 */
+  function fillChest(ch, luck) {
+    let guard = 0;
+    const chipN = rnd() < 0.62 ? (rnd() < 0.28 ? 2 : 1) : 0;
+    for (let i = 0; i < chipN && ch.inv.length < CFG.CHEST_ITEMS; i++) {
+      const chip = ITEMS.rollChip(rnd, luck);
+      if (chip && Grid.autoPlace(ch.inv, chip, CFG.CHEST_COLS, CFG.CHEST_ROWS)) ch.inv.push(chip);
+    }
+    while (ch.inv.length < CFG.CHEST_ITEMS && guard++ < 60) {
+      const raw = ITEMS.roll(null, rnd, luck);
+      const it = Grid.cloneItem(raw);
+      if (Grid.autoPlace(ch.inv, it, CFG.CHEST_COLS, CFG.CHEST_ROWS)) ch.inv.push(it);
+    }
+  }
+
+  function makeChest(x, z, yaw, luck) {
+    const ch = {
+      x: x, z: z, yaw: yaw,
+      cr: CFG.CHEST_R,
+      type: 'supply',
+      name: '物资箱',
+      cols: CFG.CHEST_COLS,
+      rows: CFG.CHEST_ROWS,
+      pried: false, prying: false, pryT: 0, pryBurst: 0, openDelay: 0,
+      search: null, inv: []
+    };
+    fillChest(ch, luck);
+    return ch;
+  }
+
+  /* 武器箱：3×2，只出武器和芯片 */
+  function fillWeaponCrate(ch, rnd) {
+    const r = rnd || Math.random;
+    const twoWeapons = r() < 0.35;
+    const weaponCount = twoWeapons ? 2 : 1;
+    for (let i = 0; i < weaponCount; i++) {
+      const wi = Math.floor(r() * WEAPONS.length) % WEAPONS.length;
+      const it = ITEMS.makeWeaponItem(wi);
+      if (it && Grid.autoPlace(ch.inv, it, ch.cols, ch.rows)) ch.inv.push(it);
+    }
+    if (!twoWeapons) {
+      const chipN = 1 + Math.floor(r() * 3);
+      for (let i = 0; i < chipN; i++) {
+        const chip = ITEMS.rollChip(r, 0.7);
+        if (chip && Grid.autoPlace(ch.inv, chip, ch.cols, ch.rows)) ch.inv.push(chip);
+      }
+    }
+    /* 极端情况下武器没放下：至少塞一块芯片 */
+    if (!ch.inv.length) {
+      const chip = ITEMS.rollChip(r, 0.7);
+      if (chip && Grid.autoPlace(ch.inv, chip, ch.cols, ch.rows)) ch.inv.push(chip);
+    }
+  }
+
+  function makeWeaponCrate(x, z, yaw, rnd) {
+    const ch = {
+      x: x, z: z, yaw: yaw,
+      cr: CFG.WEAPON_CHEST_R || 0.72,
+      type: 'weapon',
+      name: '武器箱',
+      cols: CFG.WEAPON_CHEST_COLS || 3,
+      rows: CFG.WEAPON_CHEST_ROWS || 2,
+      pried: false, prying: false, pryT: 0, pryBurst: 0, openDelay: 0,
+      search: null, inv: []
+    };
+    fillWeaponCrate(ch, rnd);
+    return ch;
+  }
+
   function gen(seed) {
     rngState = (seed || 1234567) >>> 0 || 1;
     W = CFG.MAP_W; H = CFG.MAP_H;
@@ -166,6 +236,66 @@ const World = (function () {
         item: ITEMS.rollForTier(tier, rnd)
       });
     }
+
+    /* 6. 物资箱：普通局也生成，芯片主要从这里出 */
+    const chestTarget = 4;
+    let cguard = 0;
+    while (chests.length < chestTarget && cguard++ < 500) {
+      const r = rooms[Math.floor(rnd() * rooms.length)];
+      if (!r) break;
+      const cx = ri(r.x + 1, r.x + r.w - 2);
+      const cz = ri(r.z + 1, r.z + r.h - 2);
+      if (!isFloor(cx, cz)) continue;
+      const c = cellCenter(cx, cz);
+      if (Math.hypot(c.x - spawn.x, c.z - spawn.z) < 5.5) continue;
+      if (Math.hypot(c.x - pad.x, c.z - pad.z) < pad.r + 2.5) continue;
+      let tooClose = false;
+      for (let k = 0; k < props.length; k++) {
+        if (Math.hypot(props[k].x - c.x, props[k].z - c.z) < 1.8) { tooClose = true; break; }
+      }
+      if (tooClose) continue;
+      for (let k = 0; k < loot.length; k++) {
+        if (Math.hypot(loot[k].x - c.x, loot[k].z - c.z) < 3.2) { tooClose = true; break; }
+      }
+      if (tooClose) continue;
+      for (let k = 0; k < chests.length; k++) {
+        if (Math.hypot(chests[k].x - c.x, chests[k].z - c.z) < 3.0) { tooClose = true; break; }
+      }
+      if (tooClose) continue;
+      const dist = Math.hypot(c.x - spawn.x, c.z - spawn.z);
+      const luck = Math.max(0, Math.min(1, dist / (W * CELL * 0.55)));
+      chests.push(makeChest(c.x, c.z, Math.atan2(spawn.x - c.x, spawn.z - c.z), luck));
+    }
+
+    /* 7. 武器箱：容量 3×2，只出武器和芯片 */
+    let weaponCrates = 0;
+    const weaponTarget = CFG.WEAPON_CHEST_COUNT || 2;
+    let wguard = 0;
+    while (weaponCrates < weaponTarget && wguard++ < 500) {
+      const r = rooms[Math.floor(rnd() * rooms.length)];
+      if (!r) break;
+      const cx = ri(r.x + 1, r.x + r.w - 2);
+      const cz = ri(r.z + 1, r.z + r.h - 2);
+      if (!isFloor(cx, cz)) continue;
+      const c = cellCenter(cx, cz);
+      if (Math.hypot(c.x - spawn.x, c.z - spawn.z) < 6.0) continue;
+      if (Math.hypot(c.x - pad.x, c.z - pad.z) < pad.r + 3.0) continue;
+      let tooClose = false;
+      for (let k = 0; k < props.length; k++) {
+        if (Math.hypot(props[k].x - c.x, props[k].z - c.z) < 2.0) { tooClose = true; break; }
+      }
+      if (tooClose) continue;
+      for (let k = 0; k < loot.length; k++) {
+        if (Math.hypot(loot[k].x - c.x, loot[k].z - c.z) < 3.2) { tooClose = true; break; }
+      }
+      if (tooClose) continue;
+      for (let k = 0; k < chests.length; k++) {
+        if (Math.hypot(chests[k].x - c.x, chests[k].z - c.z) < 3.4) { tooClose = true; break; }
+      }
+      if (tooClose) continue;
+      chests.push(makeWeaponCrate(c.x, c.z, Math.atan2(spawn.x - c.x, spawn.z - c.z), rnd));
+      weaponCrates++;
+    }
     return api;
   }
 
@@ -237,21 +367,10 @@ const World = (function () {
     const chestCells = [[8, 17], [15, 18], [14, 12], [21, 15]];
     for (let ci = 0; ci < chestCells.length; ci++) {
       const c = cellCenter(chestCells[ci][0], chestCells[ci][1]);
-      const ch = {
-        x: c.x, z: c.z,
-        yaw: Math.atan2(spawn.x - c.x, spawn.z - c.z),
-        cr: CFG.CHEST_R,
-        pried: false, prying: false, pryT: 0, pryBurst: 0, openDelay: 0,
-        search: null, inv: []
-      };
-      let g2 = 0;
-      while (ch.inv.length < CFG.CHEST_ITEMS && g2++ < 40) {
-        const raw = ITEMS.roll(null, rnd, 0.62);
-        const it = Grid.cloneItem(raw);
-        if (Grid.autoPlace(ch.inv, it, CFG.CHEST_COLS, CFG.CHEST_ROWS)) ch.inv.push(it);
-      }
-      chests.push(ch);
+      chests.push(makeChest(c.x, c.z, Math.atan2(spawn.x - c.x, spawn.z - c.z), 0.62));
     }
+    const wc = cellCenter(17, 12);
+    chests.push(makeWeaponCrate(wc.x, wc.z, Math.atan2(spawn.x - wc.x, spawn.z - wc.z), rnd));
 
     /* 5. 随机物资 */
     let guard = 0;
@@ -265,7 +384,7 @@ const World = (function () {
       if (Math.hypot(c.x - respawn.x, c.z - respawn.z) < respawn.r + 1) continue;
       let tooClose = false;
       for (let i = 0; i < chests.length; i++) {
-        if (Math.hypot(chests[i].x - c.x, chests[i].z - c.z) < 2.6) { tooClose = true; break; }
+        if (Math.hypot(chests[i].x - c.x, chests[i].z - c.z) < 3.2) { tooClose = true; break; }
       }
       if (tooClose) continue;
       for (let i = 0; i < loot.length; i++) {
@@ -385,6 +504,26 @@ const World = (function () {
   }
 
   /* ---------- 查询 ---------- */
+  /* 方形道具的碰撞：用带旋转的矩形而不是圆 */
+  function propHalf(p) {
+    return p.kind === 'crate' ? 0.60 : 0.33;
+  }
+
+  function rectOverlap(cx, cz, yaw, h, x, z, r) {
+    const c = Math.cos(yaw), s = Math.sin(yaw);
+    const dx = x - cx, dz = z - cz;
+    const lx = c * dx - s * dz;
+    const lz = s * dx + c * dz;
+    const qx = lx < -h ? -h : (lx > h ? h : lx);
+    const qz = lz < -h ? -h : (lz > h ? h : lz);
+    const ex = lx - qx, ez = lz - qz;
+    return ex * ex + ez * ez <= r * r + 1e-9;
+  }
+
+  function propOverlap(p, x, z, r) {
+    return rectOverlap(p.x, p.z, p.rot, propHalf(p), x, z, r);
+  }
+
   function blocked(x, z, r) {
     for (let dz = -1; dz <= 1; dz++) {
       for (let dx = -1; dx <= 1; dx++) {
@@ -392,32 +531,64 @@ const World = (function () {
         if (!isFloor(cc.cx, cc.cz)) return true;
       }
     }
-    /* 道具圆柱碰撞 */
+    /* 道具矩形碰撞 */
     for (let i = 0; i < props.length; i++) {
       const p = props[i];
-      if (Math.hypot(x - p.x, z - p.z) < r + p.cr) return true;
+      if (propOverlap(p, x, z, r)) return true;
     }
-    /* 物资箱碰撞 */
+    /* 物资箱碰撞（方形，随箱子朝向） */
     for (let i = 0; i < chests.length; i++) {
       const ch = chests[i];
-      if (Math.hypot(x - ch.x, z - ch.z) < r + ch.cr) return true;
+      if (ch.corpse || ch.cr <= 0) continue;
+      if (rectOverlap(ch.x, ch.z, ch.yaw || 0, 0.62, x, z, r)) return true;
     }
     return false;
   }
 
   /* 平滑移动：撞到障碍时沿墙/圆形障碍的切向滑动，而不是硬停。
      分小步推进，优先整步，其次单轴滑动，再尝试圆形障碍切线和角度偏转。 */
+  /* 子弹障碍：墙体 + 不可互动的场景道具；物资箱/武器箱/尸体不挡子弹 */
+  function bulletBlocked(x, z) {
+    const cc = worldToCell(x, z);
+    if (!isFloor(cc.cx, cc.cz)) return true;
+    for (let i = 0; i < props.length; i++) {
+      const p = props[i];
+      if (propOverlap(p, x, z, 0)) return true;
+    }
+    return false;
+  }
+
+  /* 玩家附近是否有墙（用于墙体透明） */
+  function nearWall(x, z, r) {
+    const c = worldToCell(x, z);
+    const n = Math.ceil(r / CELL) + 1;
+    for (let dz = -n; dz <= n; dz++) {
+      for (let dx = -n; dx <= n; dx++) {
+        if (isFloor(c.cx + dx, c.cz + dz)) continue;
+        const x0 = (c.cx + dx) * CELL, x1 = x0 + CELL;
+        const z0 = (c.cz + dz) * CELL, z1 = z0 + CELL;
+        const px = Math.max(x0, Math.min(x, x1));
+        const pz = Math.max(z0, Math.min(z, z1));
+        if (Math.hypot(x - px, z - pz) <= r) return true;
+      }
+    }
+    return false;
+  }
+
   function nearestObstacle(x, z, r) {
     let best = null, bd = Infinity;
     for (let i = 0; i < props.length; i++) {
       const p = props[i];
+      if (!propOverlap(p, x, z, r)) continue;
       const d = Math.hypot(x - p.x, z - p.z);
-      if (d < r + p.cr && d < bd) { bd = d; best = p; }
+      if (d < bd) { bd = d; best = p; }
     }
     for (let i = 0; i < chests.length; i++) {
       const ch = chests[i];
+      if (ch.corpse || ch.cr <= 0) continue;
+      if (!rectOverlap(ch.x, ch.z, ch.yaw || 0, 0.62, x, z, r)) continue;
       const d = Math.hypot(x - ch.x, z - ch.z);
-      if (d < r + ch.cr && d < bd) { bd = d; best = ch; }
+      if (d < bd) { bd = d; best = ch; }
     }
     return best;
   }
@@ -561,7 +732,27 @@ const World = (function () {
     const dx = x1 - x0, dz = z1 - z0;
     const d = Math.hypot(dx, dz);
     if (d < 0.001) return true;
-    return rayWall(x0, z0, dx / d, dz / d, d) >= d - 0.35;
+    const hit = rayWallHit(x0, z0, dx / d, dz / d, d);
+    return !hit.axis || hit.d >= d - 0.35;
+  }
+
+  /* 遮挡视线：墙 + 木箱/设备；物资箱/武器箱不遮挡视野 */
+  function sightBlocked(x0, z0, x1, z1, ignoreChest) {
+    if (!los(x0, z0, x1, z1)) return true;
+    const dx = x1 - x0, dz = z1 - z0;
+    const L2 = dx * dx + dz * dz;
+    for (let i = 0; i < props.length; i++) {
+      const p = props[i];
+      let t = 0;
+      if (L2 > 1e-6) {
+        t = ((p.x - x0) * dx + (p.z - z0) * dz) / L2;
+        t = t < 0 ? 0 : (t > 1 ? 1 : t);
+      }
+      const qx = x0 + dx * t, qz = z0 + dz * t;
+      const rr = p.kind === 'crate' ? 0.62 : 0.36;
+      if (Math.hypot(p.x - qx, p.z - qz) < rr) return true;
+    }
+    return false;
   }
 
   function randomFloorPoint(minDistFrom, minDist) {
@@ -588,10 +779,13 @@ const World = (function () {
     worldToCell: worldToCell,
     cellCenter: cellCenter,
     blocked: blocked,
+    bulletBlocked: bulletBlocked,
+    nearWall: nearWall,
     moveCircle: moveCircle,
     rayWall: rayWall,
     rayWallHit: rayWallHit,
     los: los,
+    sightBlocked: sightBlocked,
     randomFloorPoint: randomFloorPoint,
     get W() { return W; },
     get H() { return H; },

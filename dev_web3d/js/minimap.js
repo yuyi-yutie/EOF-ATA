@@ -178,6 +178,7 @@ const MINIMAP = (function () {
     /* 物资箱：未开为暗琥珀，开过后为亮琥珀 */
     if (World.chests) {
       for (const c of World.chests) {
+        if (c.corpse) continue;
         const q = w2s(c.x, c.z);
         if (Math.hypot(q.x - cx, q.y - cy) > R - 4) continue;
         const s = 3.4;
@@ -222,7 +223,7 @@ const MINIMAP = (function () {
     /* 敌人 */
     const pulse = 0.55 + 0.45 * Math.sin(blinkT * 5);
     for (const en of G.state.enemies) {
-      if (en.dead) continue;
+      if (en.dead || en.inVision !== true) continue;
       const q = w2s(en.x, en.z);
       if (Math.hypot(q.x - cx, q.y - cy) > R - 3) continue;
       const r = en.type === 'spitter' ? 2.6 : (en.type === 'gaunt' ? 2.2 : 2.0);
@@ -240,17 +241,19 @@ const MINIMAP = (function () {
       ctx.globalAlpha = 1;
     }
 
-    /* 玩家视锥 */
+    /* 玩家视野范围：24m 全向（360°），与 3D 遮罩一致 */
     const fx = Math.sin(p.yaw);
     const fz = Math.cos(p.yaw);
     const ang = Math.atan2(fz, fx);
-    const grd = ctx.createRadialGradient(cx, cy, 0, cx, cy, R);
+    const half = CFG.VISION.HALF_DEG * Math.PI / 180;
+    const vr = Math.min(R, CFG.VISION.RANGE * S);
+    const grd = ctx.createRadialGradient(cx, cy, 0, cx, cy, vr);
     grd.addColorStop(0, 'rgba(240,176,76,.16)');
     grd.addColorStop(1, 'rgba(240,176,76,0)');
     ctx.fillStyle = grd;
     ctx.beginPath();
     ctx.moveTo(cx, cy);
-    ctx.arc(cx, cy, R, ang - 0.5, ang + 0.5);
+    ctx.arc(cx, cy, vr, ang - half, ang + half);
     ctx.closePath();
     ctx.fill();
 

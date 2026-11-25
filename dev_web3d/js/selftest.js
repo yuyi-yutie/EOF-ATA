@@ -82,11 +82,20 @@
       eq('repack keeps items', Store.stashCount(), 2);
 
       /* ---------- 4. 大厅 DOM ---------- */
-      eq('tabs built', document.querySelectorAll('#lobbyTabs .tab').length, 5);
-      ['paneStash', 'paneShop', 'paneContracts', 'paneArchive'].forEach(function (id) {
+      eq('tabs built', document.querySelectorAll('#lobbyTabs .tab').length, 6);
+      ['paneStash', 'paneCraft', 'paneShop', 'paneContracts', 'paneArchive'].forEach(function (id) {
         check('pane ' + id, !!document.getElementById(id));
       });
       check('lobby visible', !document.getElementById('lobby').classList.contains('hidden'));
+      eq('char cards', document.querySelectorAll('#lobbyChars .char-card').length, 6);
+      check('tactical unit exists', !!MODELS.UNITS.tactical);
+      check('scav units exist', !!MODELS.UNITS.scav && !!MODELS.UNITS.raider && !!MODELS.UNITS.veteran);
+      check('weapon crate model ready', ASSETS.weaponcrate.ready);
+      Store.setChar(2);
+      eq('tactical char selectable', Store.char(), 2);
+      Store.setChar(5);
+      eq('veteran char selectable', Store.char(), 5);
+      Store.setChar(0);
 
       /* ---------- 5. 出击 ---------- */
       G.beginMission({ weapons: [3, 0], mags: [2, 1], data: 300, character: 1 });
@@ -95,10 +104,10 @@
       eq('mode mission', G.mode, 'mission');
       eq('carried 2', p.carried.length, 2);
       eq('weapon slot 0', p.weapon, 3);
-      eq('kinetic loaded', p.mags[3], WEAPONS[3].mag);
-      eq('kinetic spare 1', p.spares[3], 1);
-      eq('sonic loaded', p.mags[0], WEAPONS[0].mag);
-      eq('sonic spare 0', p.spares[0], 0);
+      eq('kinetic loaded', p.mags[0], WEAPONS[3].mag);
+      eq('kinetic spare 1', p.spares[0], 1);
+      eq('sonic loaded', p.mags[1], WEAPONS[0].mag);
+      eq('sonic spare 0', p.spares[1], 0);
       eq('carry data', p.data, 300);
       eq('character assault', p.charKey, 'assault');
       eq('hud slots', document.querySelectorAll('#slots .slot').length, 2);
@@ -106,6 +115,19 @@
       check('world has loot', World.loot.length >= 20, World.loot.length);
       check('loot near count', World.loot.length <= CFG.LOOT_COUNT + 8, World.loot.length);
       check('loot has item', !!(World.loot[0] && World.loot[0].item));
+      const gunners = G.state.enemies.filter(function (e) { return e.gunner; });
+      eq('gunner count', gunners.length, CFG.GUNNER_COUNT);
+      check('gunner armed', gunners.length > 0 && gunners[0].ammo === WEAPONS[CFG.GUNNER.weaponId].mag);
+      check('gunner has loot bag', gunners.length > 0 && Array.isArray(gunners[0].lootBag) && gunners[0].lootBag.length > 0);
+      const undead = G.state.enemies.filter(function (e) { return !e.gunner && !e.dead; });
+      check('enemy factions', gunners.length > 0 && undead.length > 0 &&
+        gunners[0].faction === 'scav' && undead[0].faction === 'undead');
+
+      /* 视野：360° + 24m + 墙体/木箱遮挡 */
+      check('vision all-round front', G.vision(p.x, p.z + 0.4));
+      check('vision all-round behind', G.vision(p.x, p.z - 0.4));
+      check('vision self', G.vision(p.x, p.z));
+      check('vision range', !G.vision(p.x, p.z + 25));
 
       /* 光学反射：任意方向撞墙后，反射起点必须仍在地板上（贴墙/墙角不丢反射） */
       let reflFail = 0, reflHits = 0;
@@ -196,16 +218,16 @@
 
       /* ---------- 7. 压装 / 治疗 ---------- */
       p.data = 200;
-      p.spares[3] = 0;
+      p.spares[0] = 0;
       Inventory.debugCraft(3);
       Inventory.debugComplete();
-      eq('craft spare', p.spares[3], 1);
+      eq('craft spare', p.spares[0], 1);
       eq('craft cost', p.data, 200 - WEAPONS[3].cost);
-      p.mags[3] = 3;
+      p.mags[0] = 3;
       G.debug.reload();
       G.debug.finishReload();
-      eq('reload fills whole mag', p.mags[3], WEAPONS[3].mag);
-      eq('reload consumes one spare', p.spares[3], 0);
+      eq('reload fills whole mag', p.mags[0], WEAPONS[3].mag);
+      eq('reload consumes one spare', p.spares[0], 0);
       p.hp = 40;
       p.data = 200;
       Inventory.debugHeal();
@@ -216,7 +238,14 @@
       /* ---------- 8. 拾取 + 站入撤离台（真实 update 循环） ---------- */
       Inventory.close();
       Inventory.addItem(ITEMS.roll('epic'));
-      const node = World.loot.filter(function (l) { return !l.taken; })[0];
+      const node = World.loot.filter(function (l) {
+        if (l.taken) return false;
+        for (let ci = 0; ci < World.chests.length; ci++) {
+          const c = World.chests[ci];
+          if (Math.hypot(c.x - l.x, c.z - l.z) < CFG.INTERACT_R + 1.2) return false;
+        }
+        return true;
+      })[0];
       check('found loot node', !!node);
       G.debug.teleport(node.x, node.z);
       const invBefore = p.inv.length;
@@ -284,7 +313,7 @@
       Store.load();
       eq('bank persisted', Store.bank(), bankSave);
       eq('stash persisted', Store.stashCount(), stashSave);
-      eq('loadout persisted', Store.loadout().weapons.join(','), '1,4');
+      eq('loadout persisted', Store.loadout().weapons.map(function (it) { return it ? it.weaponId : -1; }).join(','), '1,4');
       eq('loadout mags', Store.loadout().mags.join(','), '2,3');
       eq('char persisted', Store.char(), 1);
       eq('contracts persisted', Store.contracts().length, 3);
@@ -311,26 +340,21 @@
         eq('stash right click dismantles', Store.stashCount(), countS - 1);
         check('stash right click pays', Store.bank() > bankS);
       }
-      document.querySelector('#lobbyTabs .tab[data-tab="loadout"]').click();
-      check('loadout tab click', !document.getElementById('paneStash').classList.contains('on'));
+      document.querySelector('#lobbyTabs .tab[data-tab="home"]').click();
+      check('home tab click', !document.getElementById('paneStash').classList.contains('on'));
 
-      /* 武器卡：取消再选回（选共振霰弹，避免打乱弹夹槽位） */
-      const cardSonic = document.querySelectorAll('#lobbyWeapons .wc')[0];
-      const onBefore = document.querySelectorAll('#lobbyWeapons .wc.on').length;
-      cardSonic.click();
-      eq('weapon deselect', document.querySelectorAll('#lobbyWeapons .wc.on').length, onBefore - 1);
-      cardSonic.click();
-      eq('weapon reselect', document.querySelectorAll('#lobbyWeapons .wc.on').length, onBefore);
-
-      /* 弹夹 + / − */
+      /* 仓库内嵌配装槽：弹夹 + / − */
       const plus = document.querySelector('#lobbyLoad [data-a="+"]');
-      const n0 = parseInt(plus.closest('.load-row').querySelector('.lr-num').textContent, 10);
-      plus.click();
-      const plusN = parseInt(document.querySelector('#lobbyLoad .lr-num').textContent, 10);
-      eq('mag plus increments', plusN, n0 + 1);
-      document.querySelector('#lobbyLoad [data-a="-"]').click();
-      const minusN = parseInt(document.querySelector('#lobbyLoad .lr-num').textContent, 10);
-      eq('mag minus restores', minusN, n0);
+      check('stash loadout rendered', !!plus);
+      if (plus) {
+        const n0 = parseInt(plus.closest('.load-row').querySelector('.lr-num').textContent, 10);
+        plus.click();
+        const plusN = parseInt(document.querySelector('#lobbyLoad .lr-num').textContent, 10);
+        eq('mag plus increments', plusN, n0 + 1);
+        document.querySelector('#lobbyLoad [data-a="-"]').click();
+        const minusN = parseInt(document.querySelector('#lobbyLoad .lr-num').textContent, 10);
+        eq('mag minus restores', minusN, n0);
+      }
 
       /* ---------- 13. 补给购买 ---------- */
       Store.reset();
@@ -348,12 +372,145 @@
       eq('supply bank -90', Store.bank(), bankBuy - 90);
 
       /* ---------- 14. 大厅出击按钮 ---------- */
+      const wLaunch = ITEMS.makeWeaponItem(3);
+      Store.stashAdd(wLaunch);
+      const launchItem = Store.stash().filter(function (it) { return it.kind === 'weapon'; })[0];
+      Store.equipWeapon(0, launchItem);
+      Store.setLoadout({ weapons: Store.loadout().weapons, mags: [1, 0], carry: 100 });
+      Lobby.reloadFromSave();
+      Lobby.refresh();
+      Lobby.setTab('home');
       const bankLaunch = Store.bank();
       document.getElementById('lobbyStart').click();
       eq('launch button starts run', G.mode, 'mission');
       eq('launch deducts loadout cost', Store.bank(), bankLaunch - (WEAPONS[3].cost + 100));
       check('lobby hidden on launch', document.getElementById('lobby').classList.contains('hidden'));
       G.toLobby();
+      G.beginMission({ weapons: [], mags: [], data: 0, character: 0 });
+      check('zero weapon entry', G.state.player.carried.length === 0 && G.state.player.weapon === -1);
+      check('zero weapon hud empty', !!document.querySelector('#slots .slot-empty'));
+      G.toLobby();
+
+      G.beginMission({ weapons: [3], mags: [1], data: 0, character: 0 });
+      const dp = G.state.player;
+      const dupWeapon = ITEMS.makeWeaponItem(3);
+      dp.inv.push(dupWeapon);
+      const dupOk = G.equipWeaponItem(dupWeapon);
+      check('duplicate weapon equip', dupOk && dp.carried.length === 2 &&
+        dp.carried[0].weaponId === 3 && dp.carried[1].weaponId === 3);
+      dp.mags[0] = 5;
+      dp.mags[1] = 9;
+      G.switchSlot(1);
+      eq('per-slot mag slot 1', dp.mags[1], 9);
+      G.switchSlot(0);
+      eq('per-slot mag slot 0', dp.mags[0], 5);
+
+      /* 卸下/重新装备必须保留弹夹和备弹 */
+      dp.mags[0] = 4;
+      dp.spares[0] = 1;
+      const unequipped = G.unequipWeaponSlot(0);
+      const savedWeapon = dp.inv.filter(function (it) {
+        return it.kind === 'weapon' && it.mag === 4;
+      })[0];
+      check('unequip keeps mag', !!unequipped && !!savedWeapon &&
+        savedWeapon.spares === 1);
+      if (savedWeapon) G.equipWeaponItem(savedWeapon);
+      check('reequip keeps ammo', dp.mags[dp.slot] === 4 && dp.spares[dp.slot] === 1);
+      G.toLobby();
+
+      /* ---------- 15. 武器芯片 ---------- */
+      Store.reset();
+      const wChip = ITEMS.makeWeaponItem(0);
+      Store.stashAdd(wChip);
+      Store.equipWeapon(0, Store.stash().filter(function (it) { return it.kind === 'weapon'; })[0]);
+      const chip = ITEMS.rollChip(function () { return 0.2; }, 0.8);
+      eq('chip kind', chip.kind, 'chip');
+      eq('chip fixed size', chip.w + 'x' + chip.h, '1x1');
+      check('chip def valid', !!CHIP_BY_ID[chip.chipId]);
+      const qchip = ITEMS.makeChipItem({ chipId: 'power', tierId: 'epic', value: 200 });
+      eq('chip color uses quality', ITEMS.colorOf(qchip), TIER_BY_ID.epic.color);
+      const rolledChip = ITEMS.rollChip(function () { return 0.1; }, 0);
+      eq('chip type has one fixed quality', rolledChip.tierId, CHIP_BY_ID[rolledChip.chipId].tierId);
+      check('chip stash add', Store.stashAdd(chip));
+      const storedChip = Store.stash().filter(function (it) { return it.kind === 'chip'; })[0];
+      const chipInstall = Store.installChip(0, storedChip);
+      check('chip install', chipInstall.ok);
+      eq('weapon chip count', Store.weaponChips(0).length, 1);
+      const chipDef = CHIP_BY_ID[Store.weaponChips(0)[0].chipId];
+      near('chip mod applied', Store.weaponMods(0)[chipDef.stat], chipDef.pct, 1e-9);
+      const chipUninstall = Store.uninstallChip(0, 0);
+      check('chip uninstall', chipUninstall.ok);
+      eq('weapon chip count after', Store.weaponChips(0).length, 0);
+      eq('chip back in stash', Store.stash().filter(function (it) { return it.kind === 'chip'; }).length, 1);
+
+      /* 系列专属芯片：限定武器 + 独特加成 */
+      const series = [
+        { id: 'sonic_amp', wi: 0, field: 'coneRange', want: 0.30, other: 1 },
+        { id: 'laser_prism', wi: 1, field: 'bounce', want: 1, other: 0 },
+        { id: 'thermal_spread', wi: 2, field: 'zoneR', want: 0.25, other: 3 },
+        { id: 'kinetic_pierce', wi: 3, field: 'pierce', want: 1, other: 4 },
+        { id: 'voltaic_relay', wi: 4, field: 'chain', want: 1, other: 0 }
+      ];
+      for (let si = 0; si < series.length; si++) {
+        const sdef = series[si];
+        Store.clearLoadoutWeapons();
+        const seriesWeapon = ITEMS.makeWeaponItem(sdef.wi);
+        Store.stashAdd(seriesWeapon);
+        const equippedSeries = Store.stash().filter(function (it) {
+          return it.kind === 'weapon' && it.weaponId === sdef.wi;
+        })[0];
+        check('series weapon equipped ' + sdef.id, Store.equipWeapon(0, equippedSeries).ok);
+        const sitem = ITEMS.makeChipItem({ chipId: sdef.id, tierId: 'fine', value: 40 });
+        check('series def ' + sdef.id, !!sitem);
+        check('series fits own ' + sdef.id, ITEMS.chipFitsWeapon(sitem, sdef.wi));
+        check('series rejects other ' + sdef.id, !ITEMS.chipFitsWeapon(sitem, sdef.other));
+        Store.stashAdd(sitem);
+        const stored = Store.stash().filter(function (it) { return it.chipId === sdef.id; })[0];
+        check('series wrong weapon blocked ' + sdef.id, !Store.installChip(sdef.other, stored).ok);
+        check('series install ' + sdef.id, Store.installChip(sdef.wi, stored).ok);
+        near('series mod ' + sdef.id, Store.weaponMods(sdef.wi)[sdef.field], sdef.want, 1e-9);
+        Store.uninstallChip(sdef.wi, 0);
+      }
+
+      /* ---------- 16. 芯片工坊 ---------- */
+      Store.reset();
+      let allValued = true;
+      CHIP_TYPES.forEach(function (def) {
+        if (!(def.value > 0 && def.price > def.value)) allValued = false;
+      });
+      check('all chips have data value', allValued);
+      const craftBank = Store.bank();
+      const crafted = Store.craftChip('power');
+      check('craft chip ok', crafted.ok);
+      eq('craft chip cost', Store.bank(), craftBank - CHIP_BY_ID.power.price);
+      const craftedItem = Store.stash().filter(function (it) { return it.chipId === 'power'; })[0];
+      check('crafted chip in stash', !!craftedItem);
+      eq('crafted chip data value', craftedItem.value, CHIP_BY_ID.power.value);
+      eq('crafted chip tier', craftedItem.tierId, CHIP_BY_ID.power.tierId);
+      const dismantleValue = Store.stashDismantle(craftedItem);
+      eq('chip dismantle returns data value', dismantleValue, CHIP_BY_ID.power.value);
+      const weaponBank = Store.bank();
+      const craftedWeapon = Store.craftWeapon(3);
+      check('craft weapon ok', craftedWeapon.ok);
+      eq('craft weapon cost', Store.bank(), weaponBank - WEAPONS[3].craft);
+      const craftedWeaponItem = Store.stash().filter(function (it) { return it.kind === 'weapon'; })[0];
+      check('crafted weapon in stash', !!craftedWeaponItem);
+      eq('crafted weapon size', craftedWeaponItem.w + 'x' + craftedWeaponItem.h, '3x1');
+      Store.addBank(-Store.bank());
+      check('craft chip blocked when poor', !Store.craftChip('laser_prism').ok);
+
+      /* 武器箱：3×2，只出武器 / 芯片 */
+      World.gen(20261126);
+      const wcs = World.chests.filter(function (c) { return c.type === 'weapon'; });
+      check('weapon crates generated', wcs.length === (CFG.WEAPON_CHEST_COUNT || 2), wcs.length);
+      let wcValid = true;
+      wcs.forEach(function (c) {
+        if (c.cols !== 3 || c.rows !== 2) wcValid = false;
+        c.inv.forEach(function (it) {
+          if (it.kind !== 'weapon' && it.kind !== 'chip') wcValid = false;
+        });
+      });
+      check('weapon crate contents valid', wcValid);
 
       /* ---------- 收尾：恢复新档 ---------- */
       Store.reset();

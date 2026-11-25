@@ -31,6 +31,14 @@ const UI = (function () {
     return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
   }
 
+  /* 1×1 芯片小方块（武器槽内展示） */
+  function chipTile(entry) {
+    const def = (typeof CHIP_BY_ID !== 'undefined' && entry) ? CHIP_BY_ID[entry.chipId] : null;
+    if (!def) return '';
+    const tier = (typeof ITEMS !== 'undefined') ? ITEMS.tier(entry.tierId) : { color: '#9aa4ad' };
+    return '<span class="chip-tile" style="--qc:' + tier.color + ';--cc:' + def.color + '"><i></i></span>';
+  }
+
   let toastTimer = 0;
   function toast(text, type) {
     const node = $('toast');
@@ -41,5 +49,5 @@ const UI = (function () {
     toastTimer = setTimeout(function () { node.classList.remove('show'); }, 1900);
   }
 
-  return { $: $, el: el, esc: esc, fmt: fmt, time: time, toast: toast };
+  return { $: $, el: el, esc: esc, fmt: fmt, time: time, toast: toast, chipTile: chipTile };
 })();

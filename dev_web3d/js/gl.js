@@ -13,6 +13,11 @@ const R = (function () {
   let vpMat = new Float32Array(16);
   let viewMat = new Float32Array(16);
   let camPos = [0, 0, 0];
+  let camFwd = [0, 0, -1], camRight = [1, 0, 0], camUp = [0, 1, 0];
+  let camTan = 0.4, camAspect = 1;
+  let visionOn = false;
+  let visionPos = [0, 0], visionYaw = 0, visionHalf = Math.PI, visionRange = 24, visionSoft = 0.061;
+  let visionShade = 0.42;
   let sky = [0.26, 0.29, 0.33];
   let fogRange = [30, 78];
   const NEAR = 0.2, FAR = 260;
@@ -21,6 +26,7 @@ const R = (function () {
 
   let fbo = null, colTex = null, depTex = null, fboN = null, nrmTex = null, fboW = 0, fboH = 0;
   let fboM = null, maskTex = null;
+  let fboS = null, shadowTex = null;
   let quadBuf = null;
 
   /* ---------- 数学 ---------- */
@@ -162,7 +168,10 @@ const R = (function () {
     '    float d = max(dot(n, uL), 0.0);',
     '    vec3 sh = vCol * 0.50 + vec3(0.05, 0.07, 0.12);',
     '    vec3 hi = min(vCol * 1.14 + 0.02, vec3(1.0));',
-    '    c = d < 0.30 ? sh : (d < 0.74 ? vCol : hi);',
+    '    float a = smoothstep(0.24, 0.36, d);',
+    '    float b = smoothstep(0.68, 0.80, d);',
+    '    c = mix(sh, vCol, a);',
+    '    c = mix(c, hi, b);',
     '  }',
     '  float f = clamp((vDist - uFogRange.x) / (uFogRange.y - uFogRange.x), 0.0, 1.0);',
     '  c = mix(c, uFog, f * 0.85);',
@@ -209,11 +218,24 @@ const R = (function () {
     'uniform sampler2D uColor; uniform sampler2D uDepth; uniform sampler2D uNormal; uniform sampler2D uMask;',
     'uniform vec2 uTexel; uniform float uNear; uniform float uFar;',
     'uniform vec3 uInk; uniform float uThresh;',
+    'uniform vec3 uCamPos; uniform vec3 uCamFwd; uniform vec3 uCamRight; uniform vec3 uCamUp;',
+    'uniform float uTanHalf; uniform float uAspect;',
+    'uniform vec2 uVisionPos;',
+    'uniform float uVisionRange; uniform float uVisionOn;',
+    'uniform float uVisionShade;',
+    'uniform sampler2D uShadowTex;',
     'float lin(float d){',
     '  float z = d * 2.0 - 1.0;',
     '  return 2.0 * uNear * uFar / (uFar + uNear - z * (uFar - uNear));',
     '}',
     'float dep(vec2 uv){ return lin(texture2D(uDepth, uv).r); }',
+    'vec3 worldAt(vec2 uv){',
+    '  float vz = lin(texture2D(uDepth, uv).r);',
+    '  vec2 ndc = uv * 2.0 - 1.0;',
+    '  return uCamPos + uCamFwd * vz',
+    '    + uCamRight * (ndc.x * uTanHalf * uAspect * vz)',
+    '    + uCamUp * (ndc.y * uTanHalf * vz);',
+    '}',
     'void main(){',
     '  float d0 = dep(vUv);',
     '  vec2 t = uTexel;',
@@ -245,6 +267,17 @@ const R = (function () {
     '                 min(min(dot(n0, n5), dot(n0, n6)), min(dot(n0, n7), dot(n0, n8))) * 0.98);',
     '  float eN = smoothstep(0.99, 0.93, nd);',
     '  float e = max(eD, eN * 0.92);',
+    '  float un0 = texture2D(uMask, vUv).b;',
+    '  float un = un0;',
+    '  un = max(un, texture2D(uMask, vUv + vec2(t2.x, 0.0)).b);',
+    '  un = max(un, texture2D(uMask, vUv - vec2(t2.x, 0.0)).b);',
+    '  un = max(un, texture2D(uMask, vUv + vec2(0.0, t2.y)).b);',
+    '  un = max(un, texture2D(uMask, vUv - vec2(0.0, t2.y)).b);',
+    '  un = max(un, texture2D(uMask, vUv + vec2(t3.x, 0.0)).b);',
+    '  un = max(un, texture2D(uMask, vUv - vec2(t3.x, 0.0)).b);',
+    '  un = max(un, texture2D(uMask, vUv + vec2(0.0, t3.y)).b);',
+    '  un = max(un, texture2D(uMask, vUv - vec2(0.0, t3.y)).b);',
+    '  e *= 1.0 - un;',
     '  float im0 = texture2D(uMask, vUv).r;',
     '  float im = im0;',
     '  float block = 0.0;',
@@ -279,7 +312,23 @@ const R = (function () {
     '  float nearBand = band * (1.0 - mn);',
     '  vec3 ink = mix(uInk, vec3(0.97, 0.98, 1.0), band);',
     '  vec3 c = texture2D(uColor, vUv).rgb;',
-    '  gl_FragColor = vec4(mix(c, ink, max(e, nearBand * 0.92)), 1.0);',
+    '  c = mix(c, ink, max(e, nearBand * 0.92));',
+    '  float ux1 = texture2D(uMask, vUv + vec2(t1.x, 0.0)).b;',
+    '  float ux2 = texture2D(uMask, vUv - vec2(t1.x, 0.0)).b;',
+    '  float uy1 = texture2D(uMask, vUv + vec2(0.0, t1.y)).b;',
+    '  float uy2 = texture2D(uMask, vUv - vec2(0.0, t1.y)).b;',
+    '  float unitEdge = max(max(abs(un0 - ux1), abs(un0 - ux2)), max(abs(un0 - uy1), abs(un0 - uy2)));',
+    '  c = mix(c, uInk, clamp(unitEdge, 0.0, 1.0) * 0.92);',
+    '  if (uVisionOn > 0.5) {',
+    '    vec3 P = worldAt(vUv);',
+    '    vec2 rel = P.xz - uVisionPos;',
+    '    float vd = length(rel);',
+    '    float shadow = step(0.5, texture2D(uShadowTex, vUv).r);',
+    '    float inRange = step(vd, uVisionRange);',
+    '    float ground = smoothstep(0.55, 0.85, n0.y) * (1.0 - smoothstep(0.035, 0.10, P.y));',
+    '    c *= mix(1.0, uVisionShade, shadow * inRange * ground);',
+    '  }',
+    '  gl_FragColor = vec4(c, 1.0);',
     '}'
   ].join('\n');
 
@@ -485,7 +534,10 @@ const R = (function () {
 
   const staticGeo = new Geo();
   const dynGeo = new Geo();
+  const overlayGeo = new Geo();
   const maskGeo = new Geo();
+  const unitMaskGeo = new Geo();
+  const shadowGeo = new Geo();
   const dynXGeo = new Geo();   // 最后叠在画面上、忽略深度的效果层（声波穿墙）
 
   /* ---------- 离屏目标 ---------- */
@@ -499,6 +551,8 @@ const R = (function () {
       depTex = gl.createTexture();
       nrmTex = gl.createTexture();
       maskTex = gl.createTexture();
+      fboS = gl.createFramebuffer();
+      shadowTex = gl.createTexture();
     }
     gl.bindTexture(gl.TEXTURE_2D, colTex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
@@ -528,6 +582,13 @@ const R = (function () {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
+    gl.bindTexture(gl.TEXTURE_2D, shadowTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, colTex, 0);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, depTex, 0);
@@ -540,6 +601,9 @@ const R = (function () {
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, maskTex, 0);
     /* 复用主场景深度：遮罩只记录真正可见的交互物像素 */
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, depTex, 0);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fboS);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, shadowTex, 0);
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
@@ -586,6 +650,20 @@ const R = (function () {
 
   function setCamera(eye, target, fovDeg) {
     camPos = [eye[0], eye[1], eye[2]];
+    let fx = target[0] - eye[0], fy = target[1] - eye[1], fz = target[2] - eye[2];
+    let fl = Math.hypot(fx, fy, fz) || 1;
+    camFwd = [fx / fl, fy / fl, fz / fl];
+    /* right = cross(fwd, up)（与 lookAt 的相机基一致） */
+    let rx = -camFwd[2], ry = 0, rz = camFwd[0];
+    let rl = Math.hypot(rx, ry, rz) || 1;
+    camRight = [rx / rl, 0, rz / rl];
+    camUp = [
+      camRight[1] * camFwd[2] - camRight[2] * camFwd[1],
+      camRight[2] * camFwd[0] - camRight[0] * camFwd[2],
+      camRight[0] * camFwd[1] - camRight[1] * camFwd[0]
+    ];
+    camTan = Math.tan(fovDeg * Math.PI / 360);
+    camAspect = W / H;
     const proj = persp(mat4(), fovDeg, W / H, NEAR, FAR);
     lookAt(viewMat, eye, target, [0, 1, 0]);
     mul(vpMat, proj, viewMat);
@@ -598,6 +676,9 @@ const R = (function () {
     gl.clearColor(sky[0], sky[1], sky[2], 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     dynGeo.clear();
+    overlayGeo.clear();
+    unitMaskGeo.clear();
+    shadowGeo.clear();
     dynXGeo.clear();
     maskGeo.clear();
   }
@@ -637,8 +718,32 @@ const R = (function () {
     gl.depthMask(true);
     gl.enable(gl.CULL_FACE);
     gl.cullFace(gl.BACK);
+    /* 覆盖层必须画在动态几何之前：此时深度缓冲里只有墙体/地板，
+       纯色只会落在真正被墙挡住的人物像素上；人物自己可见的部分随后正常覆盖。 */
+    drawOverlay();
     useSolid();
     dynGeo.drawSolid();
+  }
+
+  /* 角色被墙挡住时：只把被墙遮住的部分用纯色覆盖出来 */
+  function drawOverlay() {
+    if (!overlayGeo.nS || overlayGeo.nS <= 0) return;
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.GREATER);
+    gl.depthMask(false);
+    gl.enable(gl.CULL_FACE);
+    gl.cullFace(gl.BACK);
+    gl.disable(gl.BLEND);
+    gl.useProgram(progShadow.p);
+    gl.uniformMatrix4fv(progShadow.u.uVP, false, vpMat);
+    gl.uniform3f(progShadow.u.uColor, 1.0, 0.56, 0.14);
+    gl.uniform1f(progShadow.u.uAlpha, 1.0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, overlayGeo.bufS);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 40, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, overlayGeo.nS / 10);
+    gl.depthFunc(gl.LEQUAL);
+    gl.depthMask(true);
   }
 
   /* 法线 pass：复用同一张深度纹理，只写最近层的法线 */
@@ -675,13 +780,61 @@ const R = (function () {
     gl.disable(gl.BLEND);
     gl.useProgram(progShadow.p);
     gl.uniformMatrix4fv(progShadow.u.uVP, false, vpMat);
-    gl.uniform3f(progShadow.u.uColor, 1, 1, 1);
+    gl.uniform3f(progShadow.u.uColor, 1, 0, 0);
     gl.uniform1f(progShadow.u.uAlpha, 1);
     gl.bindBuffer(gl.ARRAY_BUFFER, maskGeo.bufS);
     gl.enableVertexAttribArray(0);
     gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 40, 0);
     gl.drawArrays(gl.TRIANGLES, 0, maskGeo.nS / 10);
     gl.depthMask(true);
+    gl.enable(gl.DEPTH_TEST);
+    gl.enable(gl.CULL_FACE);
+    gl.cullFace(gl.BACK);
+  }
+
+  /* 单位遮罩：把可见人物写进 mask 的蓝色通道，用于去掉人物身上的后处理粗描边 */
+  function drawUnitMask() {
+    if (!unitMaskGeo.nS || unitMaskGeo.nS <= 0) return;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fboM);
+    gl.viewport(0, 0, W, H);
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LEQUAL);
+    gl.depthMask(false);
+    gl.enable(gl.CULL_FACE);
+    gl.cullFace(gl.BACK);
+    gl.disable(gl.BLEND);
+    gl.useProgram(progShadow.p);
+    gl.uniformMatrix4fv(progShadow.u.uVP, false, vpMat);
+    gl.uniform3f(progShadow.u.uColor, 0, 0, 1);
+    gl.uniform1f(progShadow.u.uAlpha, 1);
+    gl.bindBuffer(gl.ARRAY_BUFFER, unitMaskGeo.bufS);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 40, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, unitMaskGeo.nS / 10);
+    gl.depthMask(true);
+    gl.enable(gl.DEPTH_TEST);
+    gl.enable(gl.CULL_FACE);
+    gl.cullFace(gl.BACK);
+  }
+
+  /* 硬边地面阴影遮罩：把视野遮挡多边形画成 1-bit 屏幕遮罩 */
+  function drawShadowMask() {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fboS);
+    gl.viewport(0, 0, W, H);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    if (!shadowGeo.nS || shadowGeo.nS <= 0) return;
+    gl.disable(gl.DEPTH_TEST);
+    gl.disable(gl.CULL_FACE);
+    gl.disable(gl.BLEND);
+    gl.useProgram(progShadow.p);
+    gl.uniformMatrix4fv(progShadow.u.uVP, false, vpMat);
+    gl.uniform3f(progShadow.u.uColor, 1, 1, 1);
+    gl.uniform1f(progShadow.u.uAlpha, 1);
+    gl.bindBuffer(gl.ARRAY_BUFFER, shadowGeo.bufS);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 40, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, shadowGeo.nS / 10);
     gl.enable(gl.DEPTH_TEST);
     gl.enable(gl.CULL_FACE);
     gl.cullFace(gl.BACK);
@@ -724,11 +877,24 @@ const R = (function () {
     gl.activeTexture(gl.TEXTURE3);
     gl.bindTexture(gl.TEXTURE_2D, maskTex);
     gl.uniform1i(progPost.u.uMask, 3);
+    gl.activeTexture(gl.TEXTURE4);
+    gl.bindTexture(gl.TEXTURE_2D, shadowTex);
+    gl.uniform1i(progPost.u.uShadowTex, 4);
     gl.uniform2f(progPost.u.uTexel, 1 / W, 1 / H);
     gl.uniform1f(progPost.u.uNear, NEAR);
     gl.uniform1f(progPost.u.uFar, FAR);
     gl.uniform3f(progPost.u.uInk, INK[0], INK[1], INK[2]);
     gl.uniform1f(progPost.u.uThresh, 0.045);
+    gl.uniform3fv(progPost.u.uCamPos, camPos);
+    gl.uniform3fv(progPost.u.uCamFwd, camFwd);
+    gl.uniform3fv(progPost.u.uCamRight, camRight);
+    gl.uniform3fv(progPost.u.uCamUp, camUp);
+    gl.uniform1f(progPost.u.uTanHalf, camTan);
+    gl.uniform1f(progPost.u.uAspect, camAspect);
+    gl.uniform2f(progPost.u.uVisionPos, visionPos[0], visionPos[1]);
+    gl.uniform1f(progPost.u.uVisionRange, visionRange);
+    gl.uniform1f(progPost.u.uVisionShade, visionShade);
+    gl.uniform1f(progPost.u.uVisionOn, visionOn ? 1 : 0);
 
     gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
     gl.enableVertexAttribArray(0);
@@ -746,20 +912,38 @@ const R = (function () {
     begin: begin,
     end: function () {
       dynGeo.upload();
+      overlayGeo.upload();
+      unitMaskGeo.upload();
+      shadowGeo.upload();
       dynXGeo.upload();
       maskGeo.upload();
       drawScene();
       drawNormals();
       drawMask();
+      drawUnitMask();
+      drawShadowMask();
       post();
       drawXray();
     },
     buildStatic: buildStatic,
     dyn: dynGeo,
     xray: dynXGeo,
+    overlay: overlayGeo,
+    shadow: shadowGeo,
+    unitMask: unitMaskGeo,
     mask: maskGeo,
     stat: staticGeo,
     setSky: function (c) { sky = c; },
-    setFog: function (a, b) { fogRange = [a, b]; }
+    setFog: function (a, b) { fogRange = [a, b]; },
+    setVision: function (v) {
+      if (!v) { visionOn = false; return; }
+      visionOn = true;
+      visionPos = [v.x, v.z];
+      visionYaw = v.yaw;
+      visionHalf = v.half;
+      visionRange = v.range;
+      visionSoft = v.soft || 0.061;
+      visionShade = v.shade != null ? v.shade : 0.42;
+    }
   };
 })();

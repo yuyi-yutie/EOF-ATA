@@ -71,7 +71,7 @@ const Grid = (function () {
   }
 
   function cloneItem(it) {
-    return {
+    const out = {
       kind: it.kind || 'material',
       name: it.name,
       tierId: it.tierId,
@@ -80,6 +80,16 @@ const Grid = (function () {
       time: it.time || 1,
       gx: it.gx || 0, gy: it.gy || 0, rot: it.rot ? 1 : 0
     };
+    if (out.kind === 'chip') out.chipId = it.chipId;
+    if (out.kind === 'weapon') {
+      out.weaponId = it.weaponId;
+      out.chips = Array.isArray(it.chips) ? it.chips.map(function (c) {
+        return { chipId: c.chipId, tierId: c.tierId, value: c.value | 0 };
+      }) : [];
+      if (typeof it.mag === 'number') out.mag = it.mag;
+      if (typeof it.spares === 'number') out.spares = it.spares;
+    }
+    return out;
   }
 
   return {

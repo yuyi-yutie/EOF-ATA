@@ -7,6 +7,7 @@
    ============================================================ */
 
 const ASSETS = (function () {
+  const V = '20261128z10';
   const chest = {
     ready: false,
     body: null,
@@ -14,6 +15,15 @@ const ASSETS = (function () {
     hinge: [0, 0.615, -0.40],
     openAngle: -1.9,
     lidCenter: [0, 0.74, 0],
+    error: null
+  };
+  const weaponcrate = {
+    ready: false,
+    body: null,
+    lid: null,
+    hinge: [0, 0.405, -0.455],
+    openAngle: -1.72,
+    lidCenter: [0, 0.4525, -0.0163],
     error: null
   };
   let loading = null;
@@ -153,42 +163,60 @@ const ASSETS = (function () {
     };
   }
 
+  function get(url) { return fetch(url, { cache: 'no-cache' }); }
+
   function load() {
     if (loading) return loading;
     loading = Promise.all([
-      fetch('assets/chest/chest.obj').then(function (r) {
+      get('assets/chest/chest.obj?v=' + V).then(function (r) {
         if (!r.ok) throw new Error('chest.obj ' + r.status);
         return r.text();
       }),
-      fetch('assets/chest/chest.mtl').then(function (r) {
+      get('assets/chest/chest.mtl?v=' + V).then(function (r) {
         return r.ok ? r.text() : '';
       }).catch(function () { return ''; }),
-      fetch('assets/chest/chest.json').then(function (r) {
+      get('assets/chest/chest.json?v=' + V).then(function (r) {
+        return r.ok ? r.json() : null;
+      }).catch(function () { return null; }),
+      get('assets/weaponcrate/weaponcrate.obj?v=' + V).then(function (r) {
+        if (!r.ok) throw new Error('weaponcrate.obj ' + r.status);
+        return r.text();
+      }),
+      get('assets/weaponcrate/weaponcrate.mtl?v=' + V).then(function (r) {
+        return r.ok ? r.text() : '';
+      }).catch(function () { return ''; }),
+      get('assets/weaponcrate/weaponcrate.json?v=' + V).then(function (r) {
         return r.ok ? r.json() : null;
       }).catch(function () { return null; })
     ]).then(function (res) {
-      const mtl = parseMtl(res[1]);
-      const groups = parseObj(res[0], mtl);
-      chest.body = groups.body;
-      chest.lid = groups.lid;
-      if (chest.body && chest.body.length) {
-        chest.bodyCenter = boundsOf(chest.body).center;
+      function assign(target, objText, mtlText, json) {
+        const mtl = parseMtl(mtlText);
+        const groups = parseObj(objText, mtl);
+        target.body = groups.body;
+        target.lid = groups.lid;
+        if (target.body && target.body.length) target.bodyCenter = boundsOf(target.body).center;
+        if (target.lid && target.lid.length) {
+          const lb = boundsOf(target.lid);
+          target.lidCenter = lb.center;
+          target.lidSize = lb.size;
+        }
+        if (json) {
+          if (Array.isArray(json.hinge) && json.hinge.length === 3) target.hinge = json.hinge;
+          if (typeof json.openAngle === 'number') target.openAngle = json.openAngle;
+          if (Array.isArray(json.lidCenter) && json.lidCenter.length === 3) target.lidCenter = json.lidCenter;
+        }
+        target.ready = !!(target.body && target.body.length && target.lid && target.lid.length);
+        return target;
       }
-      if (chest.lid && chest.lid.length) {
-        const lb = boundsOf(chest.lid);
-        chest.lidCenter = lb.center;
-        chest.lidSize = lb.size;
-      }
-      if (res[2]) {
-        if (Array.isArray(res[2].hinge) && res[2].hinge.length === 3) chest.hinge = res[2].hinge;
-        if (typeof res[2].openAngle === 'number') chest.openAngle = res[2].openAngle;
-      }
-      chest.ready = !!(chest.body && chest.body.length && chest.lid && chest.lid.length);
-      return chest;
+      assign(chest, res[0], res[1], res[2]);
+      assign(weaponcrate, res[3], res[4], res[5]);
+      return { chest: chest, weaponcrate: weaponcrate };
     }).catch(function (err) {
       chest.error = String(err);
+      weaponcrate.error = String(err);
       chest.ready = false;
-      return chest;
+      weaponcrate.ready = false;
+      return { chest: chest, weaponcrate: weaponcrate };
     });
     return loading;
   }
@@ -200,6 +228,7 @@ const ASSETS = (function () {
 
   return {
     chest: chest,
+    weaponcrate: weaponcrate,
     load: load
   };
 })();

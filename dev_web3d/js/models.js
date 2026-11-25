@@ -55,7 +55,237 @@ const MODELS = (function () {
     return { parts: parts, height: 1.73, eye: 1.41, style: { cadence: 9.0, swing: 0.52, bob: 0.05, lean: 0.07 } };
   }
 
-  /* ---------------- 僵尸 ---------------- */
+  /* ---------------- 人类：战术干员 ---------------- */
+  function tactical() {
+    const parts = [];
+    const T = P.tactical, TL = P.tacticalL, TD = P.tacticalD;
+    const V = P.tacticalVest, TAN = P.tacticalTan, CY = P.tacticalCyan;
+
+    /* 腿 / 护膝 / 战术靴 */
+    parts.push(part(-0.115, 0.29, 0, 0.18, 0.58, 0.21, TD, { leg: 'L' }));
+    parts.push(part(0.115, 0.29, 0, 0.18, 0.58, 0.21, TD, { leg: 'R' }));
+    parts.push(part(-0.115, 0.42, 0.115, 0.19, 0.16, 0.05, TL));
+    parts.push(part(0.115, 0.42, 0.115, 0.19, 0.16, 0.05, TL));
+    parts.push(part(-0.115, 0.055, 0.015, 0.20, 0.11, 0.28, TD));
+    parts.push(part(0.115, 0.055, 0.015, 0.20, 0.11, 0.28, TD));
+    parts.push(part(-0.115, 0.012, 0.02, 0.21, 0.025, 0.30, P.ink, { outline: 0 }));
+    parts.push(part(0.115, 0.012, 0.02, 0.21, 0.025, 0.30, P.ink, { outline: 0 }));
+
+    /* 腰带 / 腰包 */
+    parts.push(part(0, 0.61, 0, 0.52, 0.08, 0.36, P.ink));
+    parts.push(part(0, 0.61, 0.19, 0.07, 0.06, 0.03, P.steel, { outline: 0 }));
+    parts.push(part(-0.245, 0.61, 0.11, 0.10, 0.14, 0.09, TAN));
+    parts.push(part(0.245, 0.61, 0.11, 0.10, 0.14, 0.09, TAN));
+
+    /* 躯干 / 防弹背心 */
+    parts.push(part(0, 0.86, 0, 0.48, 0.48, 0.34, T));
+    parts.push(part(0, 0.86, 0.18, 0.38, 0.34, 0.035, V));
+    parts.push(part(0, 0.86, -0.18, 0.38, 0.32, 0.035, V));
+    parts.push(part(-0.30, 0.97, 0, 0.12, 0.20, 0.28, TD));
+    parts.push(part(0.30, 0.97, 0, 0.12, 0.20, 0.28, TD));
+    parts.push(part(-0.315, 0.82, 0, 0.11, 0.30, 0.17, T));
+    parts.push(part(0.315, 0.82, 0, 0.11, 0.30, 0.17, T));
+
+    /* 胸前弹匣包 / 织带 / 电台 */
+    for (let i = -1; i <= 1; i++) {
+      parts.push(part(i * 0.11, 0.765, 0.205, 0.09, 0.105, 0.055, TAN));
+      parts.push(part(i * 0.11, 0.812, 0.235, 0.075, 0.025, 0.02, P.ink, { outline: 0 }));
+    }
+    parts.push(part(-0.13, 0.96, 0.205, 0.035, 0.24, 0.02, TD));
+    parts.push(part(0.13, 0.96, 0.205, 0.035, 0.24, 0.02, TD));
+    parts.push(part(0, 0.965, 0.207, 0.22, 0.028, 0.02, TD));
+    parts.push(part(0.19, 0.93, 0.19, 0.10, 0.14, 0.04, TD));
+    parts.push(part(0.225, 1.04, 0.185, 0.018, 0.20, 0.018, TD));
+    parts.push(part(-0.19, 0.94, 0.208, 0.08, 0.055, 0.016, TAN));
+    parts.push(part(0.22, 0.705, 0.205, 0.032, 0.075, 0.025, P.amber, { outline: 0, emis: true }));
+
+    /* 背包 */
+    parts.push(part(0, 0.88, -0.235, 0.36, 0.34, 0.14, TD));
+    parts.push(part(0, 0.98, -0.31, 0.26, 0.06, 0.02, TAN));
+    parts.push(part(0, 0.79, -0.31, 0.26, 0.06, 0.02, TAN));
+
+    /* 颈 / 头 / 面罩 */
+    parts.push(part(0, 1.10, 0, 0.16, 0.08, 0.16, TD, { outline: 0 }));
+    parts.push(part(0, 1.38, 0, 0.50, 0.50, 0.44, TD));
+    parts.push(part(0, 1.36, 0.225, 0.34, 0.22, 0.02, T, { outline: 0 }));
+    parts.push(part(0, 1.42, 0.236, 0.25, 0.10, 0.02, P.ink, { outline: 0 }));
+    parts.push(part(-0.10, 1.45, 0.248, 0.11, 0.065, 0.015, P.ink, { outline: 0, emis: true }));
+    parts.push(part(0.10, 1.45, 0.248, 0.11, 0.065, 0.015, P.ink, { outline: 0, emis: true }));
+    parts.push(part(-0.10, 1.45, 0.257, 0.075, 0.025, 0.008, CY, { outline: 0, emis: true }));
+    parts.push(part(0.10, 1.45, 0.257, 0.075, 0.025, 0.008, CY, { outline: 0, emis: true }));
+    parts.push(part(0, 1.29, 0.236, 0.11, 0.025, 0.02, P.ink, { outline: 0 }));
+
+    /* 头盔 / 耳机 / NOD / 天线 */
+    parts.push(part(0, 1.63, 0, 0.58, 0.17, 0.50, TD));
+    parts.push(part(0, 1.72, 0, 0.48, 0.055, 0.38, T));
+    parts.push(part(0, 1.555, 0.245, 0.52, 0.06, 0.10, TL));
+    parts.push(part(-0.28, 1.50, 0, 0.08, 0.13, 0.18, TD));
+    parts.push(part(0.28, 1.50, 0, 0.08, 0.13, 0.18, TD));
+    parts.push(part(0, 1.685, 0.265, 0.12, 0.09, 0.08, TD));
+    parts.push(part(0, 1.685, 0.31, 0.07, 0.055, 0.02, CY, { outline: 0, emis: true }));
+    parts.push(part(0, 1.73, 0.10, 0.10, 0.025, 0.05, P.amber, { outline: 0, emis: true }));
+
+    parts.push(part(0, 0.30, 0, 0.60, 0.60, 0.58, P.ink, { castOnly: true }));
+    return { parts: parts, height: 1.78, eye: 1.45, style: { cadence: 8.6, swing: 0.46, bob: 0.055, lean: 0.08 } };
+  }
+
+  /* ---------------- 人类：拾荒者 · 灰鼠 ---------------- */
+  function scav() {
+    const parts = [];
+    const B = P.ragBrown, BL = P.ragBrownL, G = P.ragGrey, O = P.ragOlive;
+    const R = P.ragRust, SK = P.ragSkin, H = P.ragHair, L = P.ragLeather;
+    parts.push(part(-0.105, 0.28, 0, 0.17, 0.56, 0.20, G, { leg: 'L' }));
+    parts.push(part(0.105, 0.28, 0, 0.17, 0.56, 0.20, O, { leg: 'R' }));
+    parts.push(part(0.105, 0.32, 0.105, 0.15, 0.10, 0.015, BL, { outline: 0 }));
+    parts.push(part(-0.105, 0.055, 0.01, 0.19, 0.11, 0.27, L));
+    parts.push(part(0.105, 0.055, 0.01, 0.19, 0.11, 0.27, G));
+    parts.push(part(0, 0.60, 0, 0.47, 0.07, 0.32, L));
+    parts.push(part(0, 0.60, 0.17, 0.10, 0.035, 0.03, P.steel, { outline: 0 }));
+
+    parts.push(part(0, 0.84, 0, 0.44, 0.48, 0.30, B));
+    parts.push(part(-0.08, 0.80, 0.16, 0.20, 0.22, 0.025, BL));
+    parts.push(part(0.12, 0.92, 0.16, 0.13, 0.13, 0.02, R));
+    parts.push(part(0.04, 0.70, 0.16, 0.15, 0.10, 0.02, G));
+    parts.push(part(-0.29, 0.83, 0, 0.10, 0.30, 0.15, B));
+    parts.push(part(0.29, 0.83, 0, 0.10, 0.28, 0.15, SK));
+    parts.push(part(0.29, 0.70, 0, 0.11, 0.10, 0.16, BL, { outline: 0 }));
+    parts.push(part(0, 0.86, -0.22, 0.36, 0.32, 0.12, G));
+    parts.push(part(0, 1.02, -0.27, 0.28, 0.10, 0.10, BL));
+    parts.push(part(0.19, 0.72, 0.15, 0.08, 0.12, 0.07, O));
+
+    /* 破烂下摆、破袖与蓬乱头发 */
+    parts.push(part(-0.16, 0.585, 0.13, 0.09, 0.13, 0.025, BL, { outline: 0 }));
+    parts.push(part(0.02, 0.565, 0.14, 0.07, 0.17, 0.025, O, { outline: 0 }));
+    parts.push(part(0.18, 0.595, 0.12, 0.06, 0.10, 0.02, R, { outline: 0 }));
+    parts.push(part(-0.05, 0.56, -0.15, 0.10, 0.16, 0.02, G, { outline: 0 }));
+    parts.push(part(-0.29, 0.675, 0.02, 0.105, 0.09, 0.15, BL, { outline: 0 }));
+    parts.push(part(-0.20, 0.62, 0.055, 0.035, 0.10, 0.035, R, { outline: 0 }));
+    parts.push(part(-0.07, 1.65, 0.12, 0.09, 0.08, 0.06, H, { outline: 0 }));
+    parts.push(part(0.03, 1.66, 0.02, 0.08, 0.10, 0.08, H, { outline: 0 }));
+    parts.push(part(-0.20, 1.58, 0.05, 0.07, 0.14, 0.07, H, { outline: 0 }));
+    parts.push(part(0, 1.24, 0.222, 0.26, 0.10, 0.015, H, { outline: 0 }));
+
+    parts.push(part(0, 1.10, 0, 0.15, 0.08, 0.15, SK, { outline: 0 }));
+    parts.push(part(0, 1.36, 0, 0.48, 0.48, 0.44, SK));
+    parts.push(part(0, 1.34, -0.16, 0.58, 0.54, 0.22, G));
+    parts.push(part(0, 1.60, -0.02, 0.56, 0.12, 0.46, G));
+    parts.push(part(0, 1.28, 0.225, 0.38, 0.14, 0.02, O, { outline: 0 }));
+    parts.push(part(0, 1.125, 0.21, 0.40, 0.16, 0.03, G, { outline: 0 }));
+    parts.push(part(-0.10, 1.42, 0.235, 0.075, 0.05, 0.02, P.ink, { outline: 0 }));
+    parts.push(part(0.10, 1.42, 0.235, 0.075, 0.05, 0.02, P.ink, { outline: 0 }));
+    parts.push(part(0.11, 1.42, 0.248, 0.075, 0.055, 0.015, P.ink, { outline: 0, emis: true }));
+    parts.push(part(0, 1.30, 0.236, 0.12, 0.025, 0.02, P.ink, { outline: 0 }));
+    parts.push(part(-0.14, 1.62, 0.03, 0.10, 0.10, 0.10, H, { outline: 0 }));
+    parts.push(part(0.10, 1.63, -0.04, 0.12, 0.12, 0.10, H, { outline: 0 }));
+    parts.push(part(0.18, 1.56, -0.08, 0.08, 0.16, 0.08, H, { outline: 0 }));
+    parts.push(part(0, 0.30, 0, 0.56, 0.60, 0.56, P.ink, { castOnly: true }));
+    return { parts: parts, height: 1.72, eye: 1.42, style: { cadence: 8.8, swing: 0.50, bob: 0.055, lean: 0.12 } };
+  }
+
+  /* ---------------- 人类：拾荒者 · 暴徒 ---------------- */
+  function raider() {
+    const parts = [];
+    const B = P.ragBrown, BL = P.ragBrownL, G = P.ragGrey, O = P.ragOlive;
+    const R = P.ragRust, SK = P.ragSkin, H = P.ragHair, L = P.ragLeather;
+    parts.push(part(-0.13, 0.29, 0, 0.20, 0.58, 0.23, G, { leg: 'L' }));
+    parts.push(part(0.13, 0.29, 0, 0.20, 0.58, 0.23, B, { leg: 'R' }));
+    parts.push(part(-0.13, 0.42, 0.12, 0.21, 0.15, 0.04, R));
+    parts.push(part(-0.13, 0.055, 0.01, 0.22, 0.11, 0.30, L));
+    parts.push(part(0.13, 0.055, 0.01, 0.22, 0.11, 0.30, G));
+    parts.push(part(0, 0.61, 0, 0.56, 0.08, 0.38, L));
+    parts.push(part(0, 0.61, 0.20, 0.10, 0.07, 0.03, P.steel, { outline: 0 }));
+
+    parts.push(part(0, 0.86, 0, 0.56, 0.50, 0.34, O));
+    parts.push(part(0, 0.88, 0.19, 0.40, 0.30, 0.03, L));
+    parts.push(part(0, 0.86, 0.21, 0.34, 0.045, 0.02, R));
+    parts.push(part(-0.34, 0.84, 0, 0.13, 0.34, 0.17, SK));
+    parts.push(part(0.34, 0.84, 0, 0.13, 0.34, 0.17, SK));
+    parts.push(part(-0.34, 0.69, 0, 0.14, 0.10, 0.18, L, { outline: 0 }));
+    parts.push(part(0.34, 0.69, 0, 0.14, 0.10, 0.18, L, { outline: 0 }));
+    parts.push(part(-0.36, 0.99, 0, 0.18, 0.16, 0.32, L));
+    parts.push(part(-0.36, 1.00, 0.02, 0.15, 0.10, 0.26, R, { outline: 0 }));
+    parts.push(part(0.34, 0.98, 0, 0.16, 0.12, 0.28, L));
+    parts.push(part(0, 0.86, -0.22, 0.42, 0.30, 0.13, G));
+    parts.push(part(0.20, 0.72, 0.16, 0.10, 0.13, 0.08, B));
+
+    /* 破裤脚、下摆与围巾 */
+    parts.push(part(-0.13, 0.14, 0.095, 0.21, 0.10, 0.03, BL, { outline: 0 }));
+    parts.push(part(0.13, 0.18, 0.10, 0.20, 0.08, 0.03, R, { outline: 0 }));
+    parts.push(part(-0.15, 0.585, 0.155, 0.10, 0.14, 0.025, G, { outline: 0 }));
+    parts.push(part(0.12, 0.595, 0.155, 0.08, 0.10, 0.02, B, { outline: 0 }));
+    parts.push(part(0, 1.17, 0.20, 0.34, 0.10, 0.06, R));
+    parts.push(part(-0.08, 1.10, 0.235, 0.10, 0.12, 0.03, R, { outline: 0 }));
+    parts.push(part(-0.06, 1.67, 0.03, 0.09, 0.06, 0.12, H, { outline: 0 }));
+    parts.push(part(0.05, 1.67, -0.05, 0.08, 0.08, 0.10, H, { outline: 0 }));
+    parts.push(part(0.16, 1.61, 0.04, 0.06, 0.10, 0.06, H, { outline: 0 }));
+
+    parts.push(part(0, 1.11, 0, 0.17, 0.08, 0.17, SK, { outline: 0 }));
+    parts.push(part(0, 1.38, 0, 0.52, 0.52, 0.46, SK));
+    parts.push(part(0, 1.29, 0.235, 0.40, 0.16, 0.02, G, { outline: 0 }));
+    parts.push(part(-0.12, 1.44, 0.235, 0.10, 0.06, 0.02, P.ink, { outline: 0 }));
+    parts.push(part(0.12, 1.44, 0.235, 0.10, 0.06, 0.02, P.ink, { outline: 0 }));
+    parts.push(part(0.12, 1.44, 0.248, 0.08, 0.04, 0.015, R, { outline: 0, emis: true }));
+    parts.push(part(0, 1.30, 0.236, 0.14, 0.025, 0.02, P.ink, { outline: 0 }));
+    parts.push(part(0, 1.66, 0, 0.10, 0.14, 0.38, H));
+    parts.push(part(-0.11, 1.64, -0.01, 0.06, 0.12, 0.26, H));
+    parts.push(part(0.12, 1.64, -0.02, 0.06, 0.10, 0.24, H));
+    parts.push(part(-0.18, 1.57, -0.10, 0.07, 0.16, 0.07, H, { outline: 0 }));
+    parts.push(part(0, 0.30, 0, 0.62, 0.60, 0.60, P.ink, { castOnly: true }));
+    return { parts: parts, height: 1.80, eye: 1.44, style: { cadence: 8.2, swing: 0.56, bob: 0.06, lean: 0.14 } };
+  }
+
+  /* ---------------- 人类：拾荒者 · 老油条 ---------------- */
+  function veteran() {
+    const parts = [];
+    const B = P.ragBrown, BL = P.ragBrownL, G = P.ragGrey, O = P.ragOlive;
+    const R = P.ragRust, SK = P.ragSkin, H = P.ragHair, L = P.ragLeather;
+    parts.push(part(-0.11, 0.28, 0, 0.18, 0.56, 0.21, G, { leg: 'L' }));
+    parts.push(part(0.11, 0.28, 0, 0.18, 0.56, 0.21, O, { leg: 'R' }));
+    parts.push(part(0, 0.56, -0.14, 0.52, 0.22, 0.12, BL));
+    parts.push(part(-0.105, 0.055, 0.01, 0.20, 0.11, 0.28, L));
+    parts.push(part(0.105, 0.055, 0.01, 0.20, 0.11, 0.28, L));
+    parts.push(part(0, 0.62, 0, 0.52, 0.08, 0.36, L));
+    parts.push(part(0, 0.86, 0, 0.48, 0.48, 0.32, BL));
+    parts.push(part(0, 0.86, 0.18, 0.36, 0.26, 0.025, B));
+    parts.push(part(-0.10, 0.77, 0.19, 0.16, 0.10, 0.02, G));
+    parts.push(part(0.13, 0.93, 0.19, 0.12, 0.12, 0.02, R));
+    parts.push(part(-0.29, 0.84, 0, 0.11, 0.32, 0.16, B));
+    parts.push(part(0.29, 0.84, 0, 0.11, 0.32, 0.16, B));
+    parts.push(part(0.29, 0.70, 0, 0.12, 0.10, 0.17, L, { outline: 0 }));
+    parts.push(part(0, 0.88, -0.23, 0.40, 0.38, 0.15, G));
+    parts.push(part(0, 1.08, -0.30, 0.30, 0.12, 0.10, L));
+    parts.push(part(-0.23, 0.72, 0.15, 0.10, 0.14, 0.08, O));
+
+    /* 风衣破下摆、袖口补丁与乱发 */
+    parts.push(part(-0.18, 0.47, -0.17, 0.10, 0.18, 0.025, BL, { outline: 0 }));
+    parts.push(part(0.03, 0.45, -0.18, 0.08, 0.22, 0.025, BL, { outline: 0 }));
+    parts.push(part(0.20, 0.49, -0.16, 0.07, 0.14, 0.02, G, { outline: 0 }));
+    parts.push(part(-0.29, 0.68, 0.02, 0.12, 0.09, 0.16, G, { outline: 0 }));
+    parts.push(part(0.28, 0.75, 0.10, 0.04, 0.08, 0.05, R, { outline: 0 }));
+    parts.push(part(-0.20, 1.66, 0.06, 0.07, 0.10, 0.07, H, { outline: 0 }));
+    parts.push(part(0.18, 1.63, -0.02, 0.07, 0.12, 0.08, H, { outline: 0 }));
+
+    /* 叼着的烟：烟身 + 燃烧的烟头 */
+    parts.push(part(0.062, 1.287, 0.315, 0.018, 0.018, 0.150, [0.86, 0.84, 0.78], { outline: 0 }));
+    parts.push(part(0.062, 1.287, 0.392, 0.021, 0.021, 0.018, P.amber, { outline: 0, emis: true }));
+
+    parts.push(part(0, 1.10, 0, 0.16, 0.08, 0.16, SK, { outline: 0 }));
+    parts.push(part(0, 1.37, 0, 0.50, 0.50, 0.45, SK));
+    parts.push(part(0, 1.26, 0.23, 0.36, 0.17, 0.02, G, { outline: 0 }));
+    parts.push(part(0, 1.31, 0.24, 0.30, 0.10, 0.02, P.ink, { outline: 0 }));
+    parts.push(part(-0.11, 1.47, 0.24, 0.10, 0.06, 0.02, P.ink, { outline: 0 }));
+    parts.push(part(0.11, 1.47, 0.24, 0.10, 0.06, 0.02, P.ink, { outline: 0 }));
+    parts.push(part(0, 1.58, 0.20, 0.52, 0.08, 0.08, G));
+    parts.push(part(-0.15, 1.59, 0.22, 0.10, 0.07, 0.03, P.ink, { outline: 0, emis: true }));
+    parts.push(part(0.15, 1.59, 0.22, 0.10, 0.07, 0.03, P.ink, { outline: 0, emis: true }));
+    parts.push(part(0, 1.68, -0.05, 0.46, 0.10, 0.34, G));
+    parts.push(part(0, 1.21, 0.235, 0.20, 0.08, 0.02, H, { outline: 0 }));
+    parts.push(part(-0.13, 1.62, -0.08, 0.12, 0.12, 0.12, H, { outline: 0 }));
+    parts.push(part(0, 0.30, 0, 0.58, 0.60, 0.58, P.ink, { castOnly: true }));
+    return { parts: parts, height: 1.76, eye: 1.47, style: { cadence: 8.0, swing: 0.48, bob: 0.05, lean: 0.10 } };
+  }
+
+  /* 僵尸 */
   function zombie() {
     const parts = [];
     parts.push(part(-0.13, 0.27, 0, 0.19, 0.54, 0.22, P.oliveD, { leg: 'L' }));
@@ -139,6 +369,10 @@ const MODELS = (function () {
   const UNITS = {
     scout: squash(scout()),
     assault: squash(assault()),
+    tactical: squash(tactical()),
+    scav: squash(scav()),
+    raider: squash(raider()),
+    veteran: squash(veteran()),
     zombie: squash(zombie()),
     spitter: squash(spitter()),
     gaunt: squash(gaunt())
@@ -240,7 +474,9 @@ const MODELS = (function () {
       const p = model.parts[i];
       let lx = p.x * sc;
       let ly = p.y * sc;
-      let lz = p.z * sc;
+      /* 面部细节（眼/嘴/面罩）稍微前移，避免和头部正面相交产生闪烁 */
+      const faceOut = (!p.castOnly && p.y > 0.86 && p.z > 0.18 && p.sz < 0.13) ? 0.014 : 0;
+      let lz = (p.z + faceOut) * sc;
       let rotX = 0, pvx = 0, pvy = 0, pvz = 0;
       let yaw = o.yaw;
       let deadX = 0, deadZ = 0;
