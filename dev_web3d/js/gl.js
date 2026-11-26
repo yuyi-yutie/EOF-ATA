@@ -533,6 +533,7 @@ const R = (function () {
   };
 
   const staticGeo = new Geo();
+  const sceneGeo = new Geo();   // 动态场景物品：先于人物写入深度，供纯色遮挡填充使用
   const dynGeo = new Geo();
   const overlayGeo = new Geo();
   const maskGeo = new Geo();
@@ -675,6 +676,7 @@ const R = (function () {
     gl.viewport(0, 0, W, H);
     gl.clearColor(sky[0], sky[1], sky[2], 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    sceneGeo.clear();
     dynGeo.clear();
     overlayGeo.clear();
     unitMaskGeo.clear();
@@ -705,6 +707,9 @@ const R = (function () {
     gl.cullFace(gl.BACK);
     useSolid();
     staticGeo.drawSolid();
+    /* 动态场景物品先写深度：这样人物被箱子 / 门 / 屋顶 / 地面物资挡住时，
+       后面的纯色覆盖层也能检测到遮挡。 */
+    sceneGeo.drawSolid();
 
     gl.depthMask(false);
     gl.disable(gl.CULL_FACE);
@@ -713,13 +718,14 @@ const R = (function () {
     gl.uniform3f(progShadow.u.uColor, SHADOW_COL[0], SHADOW_COL[1], SHADOW_COL[2]);
     gl.uniform1f(progShadow.u.uAlpha, 1.0);
     staticGeo.drawShadow();
+    sceneGeo.drawShadow();
     dynGeo.drawShadow();
 
     gl.depthMask(true);
     gl.enable(gl.CULL_FACE);
     gl.cullFace(gl.BACK);
-    /* 覆盖层必须画在动态几何之前：此时深度缓冲里只有墙体/地板，
-       纯色只会落在真正被墙挡住的人物像素上；人物自己可见的部分随后正常覆盖。 */
+    /* 覆盖层必须画在人物之前：此时深度缓冲里已有静态场景 + 动态场景物品，
+       纯色只会落在真正被场景物品挡住的人物像素上；人物自己可见的部分随后正常覆盖。 */
     drawOverlay();
     useSolid();
     dynGeo.drawSolid();
@@ -760,6 +766,7 @@ const R = (function () {
     gl.useProgram(progNormal.p);
     gl.uniformMatrix4fv(progNormal.u.uVP, false, vpMat);
     staticGeo.drawSolid();
+    sceneGeo.drawSolid();
     dynGeo.drawSolid();
     gl.depthMask(true);
   }
@@ -911,6 +918,7 @@ const R = (function () {
     setCamera: setCamera,
     begin: begin,
     end: function () {
+      sceneGeo.upload();
       dynGeo.upload();
       overlayGeo.upload();
       unitMaskGeo.upload();
@@ -926,6 +934,7 @@ const R = (function () {
       drawXray();
     },
     buildStatic: buildStatic,
+    scene: sceneGeo,
     dyn: dynGeo,
     xray: dynXGeo,
     overlay: overlayGeo,

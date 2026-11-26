@@ -98,6 +98,23 @@ const CFG = {
   EXTRACT_HOLD: 6.0,
   INTERACT_R: 2.2,
 
+  /* 模块化安全屋：Blender 组件按 2m 模块拼装。
+     尺寸用模块数表示；门占一个整模块并居中；屋顶整栋统一隐藏。 */
+  HOUSE: {
+    MODULE: 2.0,
+    MIN_MODULES: 2,
+    MAX_MODULES: 12,
+    WALL_H: 2.72,
+    WALL_T: 0.26,
+    DOOR_W: 1.36,
+    DOOR_H: 2.16,
+    DOOR_T: 0.10,
+    DOOR_INTERACT_R: 2.7,
+    ROOF_HIDE_DIST: 10.0,
+    ROOF_Y: 2.72,
+    ROOF_TOP: 3.01
+  },
+
   LOOT_COUNT: 26,
 
   /* 可开启物资箱（训练场） */
@@ -129,8 +146,7 @@ const CFG = {
 
   HEAL_COST: 50,
   HEAL_TIME: 3.0,
-  MAG_TIME: 1.5,
-  KIT_TIME: 0.7
+  MAG_TIME: 1.5
 };
 
 /* ------------------------------------------------------------

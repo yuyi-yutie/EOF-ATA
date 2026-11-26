@@ -50,21 +50,35 @@ const TIERS = [
 const TIER_BY_ID = {};
 TIERS.forEach(function (t) { TIER_BY_ID[t.id] = t; });
 
-/* 战术补给：买一次，带进局，用掉才消失 */
-const SUPPLIES = [
+/* 战术道具：局外配置，最多携带两种；局内用 Q / E 长按瞄准、松手使用。
+   - cost 为每次使用立刻扣除的局内数据
+   - cooldown 为使用后的冷却秒数
+   - 道具不是收集物，不会进入背包 / 仓库，也不能在局内更换 */
+const GADGETS = [
   {
-    id: 'medkit', name: '应急医疗针', price: 90, max: 6,
-    heal: 60, time: 0.8, color: '#e2604f',
-    desc: '立即回复 60 生命，不消耗数据'
+    id: 'knife', name: '飞刀', tag: '力学', color: '#e8e8e8', accent: '#DDE3EA',
+    cost: 60, cooldown: 7,
+    damage: 55, range: 16, speed: 36,
+    desc: '向前投出飞刀，直线贯穿命中的敌人'
   },
   {
-    id: 'battery', name: '护盾电池', price: 70, max: 9,
-    shield: 45, time: 0.5, color: '#6fd8ef',
-    desc: '立即回复 45 护盾，不消耗数据'
+    id: 'grenade', name: '手榴弹', tag: '力学', color: '#ffb648', accent: '#F0B04C',
+    cost: 120, cooldown: 18,
+    damage: 110, radius: 4.2, range: 18, flight: 0.62,
+    desc: '越过墙体投掷，落点爆炸造成范围伤害；落点不能进入有屋顶的房屋'
+  },
+  {
+    id: 'radiation', name: '辐射场', tag: '热学', color: '#ff7043', accent: '#F0703C',
+    cost: 100, cooldown: 26,
+    radius: 4.0, duration: 8, dps: 16,
+    desc: '在脚下放置装置，持续灼烧附近敌人'
   }
 ];
-const SUPPLY_BY_ID = {};
-SUPPLIES.forEach(function (s) { SUPPLY_BY_ID[s.id] = s; });
+const GADGET_BY_ID = {};
+GADGETS.forEach(function (g) {
+  g.rgb = hexRgb(g.color);
+  GADGET_BY_ID[g.id] = g;
+});
 
 /* 永久强化：只能在大厅用数据购买 */
 const AUGMENTS = [
@@ -275,8 +289,7 @@ const ITEMS = (function () {
     if (item.kind === 'material') {
       return tier(item.tierId).name + ' · ' + item.w + '×' + item.h;
     }
-    const s = SUPPLY_BY_ID[item.supplyId];
-    return s ? s.name : '补给';
+    return '物资';
   }
 
   return {

@@ -1,0 +1,14 @@
+{
+  "module": 2.0,
+  "wallHeight": 2.72,
+  "wallThickness": 0.26,
+  "doorWidth": 1.36,
+  "doorHeight": 2.16,
+  "doorThickness": 0.10,
+  "doorHinge": [-0.68, 0.0, 0.0],
+  "doorOpenAngle": 1.76,
+  "roofY": 2.72,
+  "roofThickness": 0.29,
+  "front": "+z",
+  "eaves": false
+}

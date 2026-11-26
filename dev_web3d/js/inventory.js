@@ -4,7 +4,7 @@
    局内背包
    - 6×N 网格，物品按尺寸占格，左键拖动、R 旋转
    - 右键分解（需要读条，移动会中断）
-   - 弹药压装 / 数据治疗 / 战术补给
+   - 弹药压装 / 数据治疗
    - 背包打开时世界不暂停，移速降到 55%
    ============================================================ */
 
@@ -56,7 +56,6 @@ const Inventory = (function () {
     el.detail = UI.$('invDetail');
     el.weapons = UI.$('invWeapons');
     el.craft = UI.$('craftList');
-    el.kit = UI.$('kitList');
     el.heal = UI.$('healBtn');
     el.prog = UI.$('actionProg');
     el.progLabel = UI.$('apLabel');
@@ -1196,22 +1195,8 @@ const Inventory = (function () {
     if (!p.carried.length) el.craft.innerHTML = '<div class="side-empty">没有携带武器</div>';
   }
 
-  function renderKit() {
+  function renderHeal() {
     const p = P();
-    el.kit.innerHTML = '';
-    for (let i = 0; i < SUPPLIES.length; i++) {
-      const s = SUPPLIES[i];
-      const n = p.kit[s.id] || 0;
-      const row = UI.el('div', 'kit-row' + (n <= 0 ? ' dis' : ''));
-      row.style.setProperty('--kc', s.color);
-      row.innerHTML =
-        '<span class="ki"></span>' +
-        '<span class="kn">' + s.name + '</span>' +
-        '<span class="kd">' + s.desc + '</span>' +
-        '<span class="kc">×' + n + '</span>';
-      row.addEventListener('click', function () { useSupply(s.id); });
-      el.kit.appendChild(row);
-    }
     const canHeal = p.hp < p.maxHp && p.data >= CFG.HEAL_COST;
     el.heal.className = 'action-btn' + (canHeal ? '' : ' dis');
     el.heal.innerHTML =
@@ -1227,11 +1212,11 @@ const Inventory = (function () {
     renderWeaponBar();
     renderDetail();
     renderCraft();
-    renderKit();
+    renderHeal();
     if (chest) renderChest();
     el.count.textContent = usedCells();
     el.cap.textContent = cols() * rows();
-    el.data.textContent = UI.fmt(p.data);
+    el.data.textContent = p.infiniteData ? '∞' : UI.fmt(p.data);
   }
 
   /* ---------------- 拖拽 ---------------- */
@@ -1916,8 +1901,7 @@ const Inventory = (function () {
     const data = {
       dismantle: { dur: it.time, label: '分解 ' + it.name },
       heal: { dur: CFG.HEAL_TIME, label: '再生治疗' },
-      mag: { dur: CFG.MAG_TIME, label: '压制弹夹' },
-      supply: { dur: CFG.KIT_TIME, label: '使用补给' }
+      mag: { dur: CFG.MAG_TIME, label: '压制弹夹' }
     }[type];
     if (!data) return;
     action = { type: type, item: it, t: 0, dur: data.dur, label: data.label, from: src };
@@ -1954,20 +1938,6 @@ const Inventory = (function () {
     if (p.hp >= p.maxHp) { HUD.toast('生命值已满', 'warn'); return; }
     if (p.data < CFG.HEAL_COST) { HUD.toast('数据不足 · 需要 ' + CFG.HEAL_COST + ' NB', 'warn'); return; }
     action = { type: 'heal', t: 0, dur: CFG.HEAL_TIME, label: '再生治疗' };
-    el.prog.classList.remove('hidden');
-    el.progFill.style.width = '0%';
-    el.progLabel.textContent = action.label + ' · 0%';
-  }
-
-  function useSupply(id) {
-    const p = P();
-    if (!isOpen() || busy()) return;
-    const s = SUPPLY_BY_ID[id];
-    if (!s) return;
-    if ((p.kit[id] || 0) <= 0) { HUD.toast('没有' + s.name, 'warn'); return; }
-    if (id === 'medkit' && p.hp >= p.maxHp) { HUD.toast('生命值已满', 'warn'); return; }
-    if (id === 'battery' && p.shield >= p.maxShield) { HUD.toast('护盾已满', 'warn'); return; }
-    action = { type: 'supply', supplyId: id, t: 0, dur: s.time, label: '使用 ' + s.name };
     el.prog.classList.remove('hidden');
     el.progFill.style.width = '0%';
     el.progLabel.textContent = action.label + ' · 0%';
@@ -2016,14 +1986,6 @@ const Inventory = (function () {
       p.hp = p.maxHp;
       HUD.toast('生命值已回复', 'good');
       refresh();
-    } else if (a.type === 'supply') {
-      const s = SUPPLY_BY_ID[a.supplyId];
-      if (!s || (p.kit[s.id] || 0) <= 0) { HUD.toast('补给不足', 'warn'); return; }
-      p.kit[s.id]--;
-      if (s.heal) p.hp = Math.min(p.maxHp, p.hp + s.heal);
-      if (s.shield) p.shield = Math.min(p.maxShield, p.shield + s.shield);
-      HUD.toast(s.name + ' 已使用', 'good');
-      refresh();
     }
   }
 
@@ -2066,7 +2028,7 @@ const Inventory = (function () {
     currentChest: function () { return chest; },
     rotate: rotate, update: update, cancelAction: cancelAction,
     startAction: startAction, debugComplete: complete,
-    debugCraft: tryCraft, debugHeal: tryHeal, debugUse: useSupply,
+    debugCraft: tryCraft, debugHeal: tryHeal,
     actionType: function () { return action ? action.type : ''; }
   };
 })();

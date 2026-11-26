@@ -25,7 +25,8 @@ const MINIMAP = (function () {
     playerEdge: 'rgba(6,9,11,.85)',
     enemy: '#e2604f',
     pad: '#f0b04c',
-    respawn: '#6fd8ef'
+    respawn: '#6fd8ef',
+    loadout: '#b7f3ff'
   };
 
   let cv = null, ctx = null;
@@ -79,6 +80,30 @@ const MINIMAP = (function () {
         const h = ((cx * 73856093) ^ (cz * 19349663)) >>> 0;
         g.fillStyle = (h % 7 === 0) ? COL.floorAlt : COL.floor;
         g.fillRect(cx * TEX_CELL, cz * TEX_CELL, TEX_CELL, TEX_CELL);
+      }
+    }
+
+    /* 安全屋墙体烘焙到静态地图：门洞会自然留下地板色缺口 */
+    const houses = World.houses || [];
+    g.fillStyle = COL.wall;
+    for (let hi = 0; hi < houses.length; hi++) {
+      const walls = houses[hi].walls;
+      for (let i = 0; i < walls.length; i++) {
+        const w = walls[i];
+        const c = Math.cos(w.yaw), s = Math.sin(w.yaw);
+        const pts = [
+          [-w.hx, -w.hz], [w.hx, -w.hz], [w.hx, w.hz], [-w.hx, w.hz]
+        ];
+        g.beginPath();
+        for (let k = 0; k < pts.length; k++) {
+          const wx = w.x + c * pts[k][0] + s * pts[k][1];
+          const wz = w.z - s * pts[k][0] + c * pts[k][1];
+          const px = wx / CELL * TEX_CELL;
+          const py = wz / CELL * TEX_CELL;
+          if (k === 0) g.moveTo(px, py); else g.lineTo(px, py);
+        }
+        g.closePath();
+        g.fill();
       }
     }
 
@@ -162,9 +187,9 @@ const MINIMAP = (function () {
       ctx.fillRect(q.x - s * 0.5, q.y - s * 0.5, s, s);
     }
 
-    /* 物资 */
+    /* 物资：只显示玩家视野内的收集物 */
     for (const l of World.loot) {
-      if (l.taken) continue;
+      if (l.taken || !l.inVision) continue;
       const q = w2s(l.x, l.z);
       if (Math.hypot(q.x - cx, q.y - cy) > R - 3) continue;
       ctx.fillStyle = tierColor(l.item);
@@ -194,6 +219,9 @@ const MINIMAP = (function () {
     const marks = [];
     if (World.pad) marks.push({ x: World.pad.x, z: World.pad.z, c: COL.pad });
     if (World.respawn) marks.push({ x: World.respawn.x, z: World.respawn.z, c: COL.respawn });
+    if (World.test && World.test.loadout) {
+      marks.push({ x: World.test.loadout.x, z: World.test.loadout.z, c: COL.loadout });
+    }
     for (const m of marks) {
       const q = w2s(m.x, m.z);
       const dx = q.x - cx, dy = q.y - cy;

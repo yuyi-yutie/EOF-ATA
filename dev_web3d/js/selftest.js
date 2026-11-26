@@ -41,7 +41,8 @@
       Store.reset();
       eq('bank default', Store.bank(), CFG.START_BANK);
       eq('stash empty', Store.stashCount(), 0);
-      eq('kit starter medkit', Store.kit().medkit, 1);
+      eq('gadget starter', Store.loadout().gadgets.join(','), 'knife,grenade');
+      eq('gadget slots', Store.loadout().gadgets.length, 2);
       eq('augment zero', Store.aug('armor'), 0);
       eq('invRows default', Store.invRows(), 4);
       eq('maxHp default', Store.maxHp(), CFG.PLAYER.hp);
@@ -277,13 +278,13 @@
       /* ---------- 9. 阵亡丢失 ---------- */
       const bankDeath = Store.bank();
       const stashDeath = Store.stashCount();
-      Store.setKit({ medkit: 3, battery: 2 });
+      const gadgetsDeath = Store.loadout().gadgets.join(',');
       G.beginMission({ weapons: [3, 0], mags: [1, 1], data: 300, character: 0 });
       Inventory.addItem(ITEMS.roll('epic'));
       G.finishRun(false, 'death');
       eq('bank unchanged on death', Store.bank(), bankDeath);
       eq('stash unchanged on death', Store.stashCount(), stashDeath);
-      eq('kit lost on death', Store.kit().medkit, 0);
+      eq('gadgets persist on death', Store.loadout().gadgets.join(','), gadgetsDeath);
       eq('stats deaths', Store.stats().deaths, 1);
       document.getElementById('againBtn').click();
       eq('back to lobby after death', G.mode, 'lobby');
@@ -304,7 +305,7 @@
       eq('bank claim math', Store.bank(), beforeClaim + reward);
 
       /* ---------- 11. 存档往返 ---------- */
-      Store.setLoadout({ weapons: [1, 4], mags: [2, 3], carry: 200 });
+      Store.setLoadout({ weapons: [1, 4], mags: [2, 3], carry: 200, gadgets: ['radiation', 'knife'] });
       Store.setChar(1);
       Store.addBank(77);
       const bankSave = Store.bank();
@@ -315,6 +316,7 @@
       eq('stash persisted', Store.stashCount(), stashSave);
       eq('loadout persisted', Store.loadout().weapons.map(function (it) { return it ? it.weaponId : -1; }).join(','), '1,4');
       eq('loadout mags', Store.loadout().mags.join(','), '2,3');
+      eq('loadout gadgets', Store.loadout().gadgets.join(','), 'radiation,knife');
       eq('char persisted', Store.char(), 1);
       eq('contracts persisted', Store.contracts().length, 3);
 
@@ -356,20 +358,22 @@
         eq('mag minus restores', minusN, n0);
       }
 
-      /* ---------- 13. 补给购买 ---------- */
+      /* ---------- 13. 道具配置 ---------- */
       Store.reset();
       Lobby.reloadFromSave();
       G.toLobby();
       Lobby.refresh();
       Lobby.setTab('stash');
       check('stash tab active', document.getElementById('paneStash').classList.contains('on'));
-      Lobby.setTab('loadout');
-      const bankBuy = Store.bank();
-      const medBefore = Store.kit().medkit;
-      const buy = Store.buySupply('medkit');
-      check('buy supply ok', buy.ok);
-      eq('supply kit +1', Store.kit().medkit, medBefore + 1);
-      eq('supply bank -90', Store.bank(), bankBuy - 90);
+      Lobby.setTab('home');
+      const gadgetSet = Store.setGadgets(['grenade', 'radiation']);
+      eq('gadgets set', gadgetSet.join(','), 'grenade,radiation');
+      const dedupe = Store.setGadgets(['knife', 'knife']);
+      eq('gadgets unique', dedupe.join(','), 'knife,');
+      Store.setGadgets(['knife', 'grenade']);
+      Lobby.refresh();
+      eq('gadget cards rendered', document.querySelectorAll('#lobbyGadgets .gadget-config').length, 2);
+      check('gadget config persists', Store.loadout().gadgets.join(',') === 'knife,grenade');
 
       /* ---------- 14. 大厅出击按钮 ---------- */
       const wLaunch = ITEMS.makeWeaponItem(3);
@@ -383,6 +387,7 @@
       const bankLaunch = Store.bank();
       document.getElementById('lobbyStart').click();
       eq('launch button starts run', G.mode, 'mission');
+      eq('launch carries gadgets', G.state.player.gadgets.join(','), 'knife,grenade');
       eq('launch deducts loadout cost', Store.bank(), bankLaunch - (WEAPONS[3].cost + 100));
       check('lobby hidden on launch', document.getElementById('lobby').classList.contains('hidden'));
       G.toLobby();
@@ -416,6 +421,20 @@
         savedWeapon.spares === 1);
       if (savedWeapon) G.equipWeaponItem(savedWeapon);
       check('reequip keeps ammo', dp.mags[dp.slot] === 4 && dp.spares[dp.slot] === 1);
+      G.toLobby();
+
+      /* ---------- 14b. 道具使用 ---------- */
+      G.beginMission({ weapons: [3], mags: [1], data: 500, character: 0, gadgets: ['knife', 'grenade'] });
+      G.setPaused(false);
+      const gp = G.state.player;
+      const okKnife = G.debug.useGadget(0);
+      check('knife used', okKnife);
+      eq('gadget data cost', gp.data, 500 - GADGET_BY_ID.knife.cost);
+      eq('gadget cooldown value', gp.gadgetCd[0], GADGET_BY_ID.knife.cooldown);
+      check('knife projectile spawned', G.state.knives.length === 1, G.state.knives.length);
+      gp.gadgetCd[0] = 0;
+      gp.data = 0;
+      check('gadget blocked without data', !G.debug.useGadget(0));
       G.toLobby();
 
       /* ---------- 15. 武器芯片 ---------- */
@@ -511,6 +530,26 @@
         });
       });
       check('weapon crate contents valid', wcValid);
+
+      /* ---------- 17. 训练场配装台 ---------- */
+      G.beginTestMap();
+      G.setPaused(false);
+      const tp = G.state.player;
+      eq('training starts empty weapons', tp.carried.length, 0);
+      eq('training starts empty gadgets', tp.gadgets.join(','), ',');
+      const lp = World.test.loadout;
+      G.debug.teleport(lp.x, lp.z);
+      G.tryLoot();
+      check('training loadout opens', !document.getElementById('trainingLoadout').classList.contains('hidden'));
+      document.querySelectorAll('#trainWeapons .train-card')[3].click();
+      document.querySelectorAll('#trainGadgets .train-card')[0].click();
+      check('training weapon equipped', tp.carried.length === 1 && tp.carried[0].weaponId === 3);
+      check('training gadget equipped', tp.gadgets[0] === 'knife');
+      document.getElementById('trainClose').click();
+      check('training loadout closes', document.getElementById('trainingLoadout').classList.contains('hidden'));
+      G.debug.useGadget(0);
+      eq('training gadget no cooldown', tp.gadgetCd[0], 0);
+      G.toLobby();
 
       /* ---------- 收尾：恢复新档 ---------- */
       Store.reset();

@@ -8,6 +8,11 @@
    ============================================================ */
 
 const G = (function () {
+  window.__gameBuild = '20261126d21';
+  if (typeof console !== 'undefined') console.info('EOFATA game ' + window.__gameBuild);
+  if (typeof document !== 'undefined') {
+    document.title = 'EOFATA 3D — End of Future : ATA · ' + window.__gameBuild;
+  }
   let canvas;
   let running = false, last = 0;
   let time = 0;
@@ -19,6 +24,9 @@ const G = (function () {
   let mode = 'lobby';           // 'lobby' | 'mission'
   let endReason = '';
   let testMap = false;
+  let trainingOpen = false;     // 训练场配装台界面
+  let trainingWeapons = [];     // 训练场当前选择的武器 id
+  let trainingGadgets = [];     // 训练场当前选择的道具 id
 
   const CAM = {
     pitch: CFG.CAM.PITCH,
@@ -40,8 +48,10 @@ const G = (function () {
     weaponChips: [], weaponMods: [],
     shieldTimer: 0, stamTimer: 0, dead: false, deadT: 0,
     mags: [], spares: [],
-    data: 0, inv: [], sel: null, invRows: CFG.INV_ROWS,
-    kit: { medkit: 0, battery: 0 },
+    data: 0, infiniteData: false, inv: [], sel: null, invRows: CFG.INV_ROWS,
+    gadgets: [], gadgetCd: [0, 0], gadgetAim: -1,
+    gadgetTarget: { x: 0, z: 0 },
+    gadgetAimOffset: { x: 0, z: 0 },
     looted: 0, dismantledValue: 0,
     extractT: 0, extracted: false, reloadMul: 1,
     respawnT: 0, respawnDone: false,
@@ -60,6 +70,10 @@ const G = (function () {
   let bolts = [];         // 电弧链
   let sonicWaves = [];         // 声学冲击锥
   let rings = [];         // 开场冲击环
+  let knives = [];        // 道具：飞刀
+  let grenades = [];      // 道具：手榴弹投掷物
+  let blasts = [];        // 道具：手榴弹爆炸
+  let radFields = [];     // 道具：辐射场
   let aim = { x: 0, z: -1 };
   let shake = 0;
   let fovPunch = 0;
@@ -75,7 +89,12 @@ const G = (function () {
   let touchInvSuspended = false;
 
   const keys = {};
-  const mouse = { x: 0, y: 0, down: false };
+  const mouse = {
+    x: 0, y: 0, down: false,
+    locked: false,
+    autoLockPending: false,
+    lastUiLock: false
+  };
 
   function $(id) { return document.getElementById(id); }
   function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
@@ -91,6 +110,32 @@ const G = (function () {
   function isPortrait() {
     if (window.matchMedia) return window.matchMedia('(orientation: portrait)').matches;
     return window.innerWidth < window.innerHeight;
+  }
+
+  /* 可选鼠标锁定：真实指针被浏览器锁在窗口中心，游戏用相对位移维持虚拟准星。
+     按 L 切换；打开背包 / 暂停 / 结算时自动解除，避免无法操作 UI。 */
+  /* 需要在用户手势里重新请求锁定：解除 UI 后调用 */
+  function armMouseLock() {
+    if (TOUCH_MODE) return;
+    mouse.autoLockPending = true;
+    setMouseLock(true);
+  }
+
+  function setMouseLock(on) {
+    if (TOUCH_MODE || !canvas) return;
+    if (on) {
+      if (mode !== 'mission' || paused || ended || Inventory.isOpen()) return;
+      if (canvas.requestPointerLock) {
+        const p = canvas.requestPointerLock();
+        if (p && p.catch) {
+          p.catch(function () {
+            HUD.toast('无法锁定鼠标 · 点击画面或按 L 重试', 'warn');
+          });
+        }
+      }
+    } else if (document.exitPointerLock && document.pointerLockElement) {
+      document.exitPointerLock();
+    }
   }
 
   /* 品质色 → 渲染器数值数组 */
@@ -231,19 +276,83 @@ const G = (function () {
         return;
       }
 
+      /* 训练配装台界面：F / TAB / ESC 关闭，P 暂停 */
+      if (trainingOpen) {
+        if (e.code === 'Escape' || e.code === 'Tab' || e.code === 'KeyF') {
+          e.preventDefault();
+          closeTrainingLoadout();
+          armMouseLock();
+          return;
+        }
+        if (e.code === 'KeyP') {
+          e.preventDefault();
+          closeTrainingLoadout();
+          setPause(true);
+          return;
+        }
+        return;
+      }
+
       if (e.code === 'Escape') {
-        if (Inventory.isOpen()) { Inventory.close(); e.preventDefault(); return; }
-        if (paused) { setPause(false); e.preventDefault(); return; }
+        if (Inventory.isOpen()) {
+          Inventory.close();
+          e.preventDefault();
+          armMouseLock();
+          return;
+        }
+        if (paused) {
+          setPause(false);
+          e.preventDefault();
+          armMouseLock();
+          return;
+        }
         setPause(true);
         e.preventDefault();
         return;
       }
-      if (e.code === 'KeyP') { setPause(!paused); e.preventDefault(); return; }
+      if (e.code === 'KeyP') {
+        e.preventDefault();
+        if (paused) { setPause(false); armMouseLock(); }
+        else setPause(true);
+        return;
+      }
       if (paused) return;
 
+      if (e.code === 'KeyL') {
+        e.preventDefault();
+        if (mouse.locked) {
+          mouse.autoLockPending = false;
+          setMouseLock(false);
+        } else {
+          mouse.autoLockPending = true;
+          setMouseLock(true);
+        }
+        return;
+      }
       if (e.code === 'BracketLeft') { setPitch(-1); e.preventDefault(); }
       if (e.code === 'BracketRight') { setPitch(1); e.preventDefault(); }
-      if (e.code === 'Tab') { e.preventDefault(); Inventory.toggle(); return; }
+      if (e.code === 'Tab') {
+        e.preventDefault();
+        cancelGadgetAim();
+        if (Inventory.isOpen()) {
+          Inventory.close();
+          armMouseLock();
+        } else {
+          setMouseLock(false);
+          Inventory.open();
+        }
+        return;
+      }
+      if (e.code === 'KeyQ') {
+        if (!e.repeat) startGadgetAim(0);
+        e.preventDefault();
+        return;
+      }
+      if (e.code === 'KeyE') {
+        if (!e.repeat) startGadgetAim(1);
+        e.preventDefault();
+        return;
+      }
       if (e.code === 'KeyR') {
         if (Inventory.isOpen()) Inventory.rotate();
         else startReload();
@@ -260,22 +369,60 @@ const G = (function () {
         e.preventDefault();
       }
     });
-    window.addEventListener('keyup', function (e) { keys[e.code] = false; });
-    canvas.addEventListener('mousemove', function (e) {
+    window.addEventListener('keyup', function (e) {
+      keys[e.code] = false;
+      if (mode !== 'mission') return;
+      if (e.code === 'KeyQ' && player.gadgetAim === 0) { e.preventDefault(); useGadget(0); }
+      else if (e.code === 'KeyE' && player.gadgetAim === 1) { e.preventDefault(); useGadget(1); }
+    });
+    window.addEventListener('mousemove', function (e) {
       if (TOUCH_MODE) return;
-      const r = canvas.getBoundingClientRect();
-      mouse.x = e.clientX - r.left;
-      mouse.y = e.clientY - r.top;
+      if (mouse.locked) {
+        /* 指针锁定后 clientX/Y 固定在中心，用相对位移驱动虚拟准星 */
+        const w = canvas.clientWidth, h = canvas.clientHeight;
+        mouse.x = clamp(mouse.x + (e.movementX || 0), 0, w);
+        mouse.y = clamp(mouse.y + (e.movementY || 0), 0, h);
+      } else {
+        const r = canvas.getBoundingClientRect();
+        mouse.x = e.clientX - r.left;
+        mouse.y = e.clientY - r.top;
+      }
+      addGrenadeAimDelta(e.movementX || 0, e.movementY || 0);
       HUD.aimAt(mouse.x, mouse.y);
+    });
+    document.addEventListener('pointerlockchange', function () {
+      mouse.locked = document.pointerLockElement === canvas;
+      if (mouse.locked) {
+        mouse.autoLockPending = false;
+        HUD.toast('鼠标已锁定 · 移动鼠标瞄准 · L 解除', 'good');
+      } else {
+        /* 解除锁定后系统指针回到窗口中心：同步一下虚拟指针，方便操作 UI */
+        mouse.x = canvas.clientWidth * 0.5;
+        mouse.y = canvas.clientHeight * 0.5;
+        HUD.aimAt(mouse.x, mouse.y);
+      }
+    });
+    document.addEventListener('pointerlockerror', function () {
+      mouse.locked = false;
+      HUD.toast('浏览器拒绝锁定鼠标 · 点击画面或按 L 重试', 'warn');
     });
     canvas.addEventListener('mousedown', function (e) {
       if (TOUCH_MODE) return;
-      if (e.button === 0 && mode === 'mission' && !paused && !ended && !Inventory.isOpen()) {
-        mouse.down = true;
+      if (e.button !== 0 || mode !== 'mission' || paused || ended || Inventory.isOpen()) return;
+      /* 系统指针未锁定：第一次点击用来请求锁定，不误开火 */
+      if (!mouse.locked && mouse.autoLockPending) {
+        mouse.autoLockPending = false;
+        setMouseLock(true);
+        e.preventDefault();
+        return;
       }
+      mouse.down = true;
     });
     window.addEventListener('mouseup', function (e) { if (e.button === 0) mouse.down = false; });
-    window.addEventListener('blur', function () { mouse.down = false; });
+    window.addEventListener('blur', function () {
+      mouse.down = false;
+      cancelGadgetAim();
+    });
     canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
     /* 机库：鼠标左键/手指拖动角色旋转检视 */
     function beginInspect(e) {
@@ -338,7 +485,13 @@ const G = (function () {
   function setPause(v) {
     if (mode !== 'mission' || ended) return;
     paused = !!v;
+    if (paused) {
+      cancelGadgetAim();
+      closeTrainingLoadout();
+      setMouseLock(false);
+    }
     mouse.down = false;
+    HUD.setCursorVisible(paused && !TOUCH_MODE);
     if (TOUCH_MODE) TOUCH.setEnabled(!paused);
     const box = $('pause');
     if (box) box.classList.toggle('hidden', !paused);
@@ -509,6 +662,311 @@ const G = (function () {
     };
   }
 
+  /* ---------- 战术道具 ---------- */
+  function gadgetDef(slot) {
+    const id = player.gadgets[slot];
+    return id ? GADGET_BY_ID[id] : null;
+  }
+
+  function startGadgetAim(slot) {
+    if (mode !== 'mission' || ended || paused || player.dead) return;
+    if (Inventory.isOpen() || trainingOpen) return;
+    const g = gadgetDef(slot);
+    if (!g) {
+      HUD.toast('未配置' + (slot === 0 ? 'Q' : 'E') + '槽道具 · 在机库配置', 'warn');
+      return;
+    }
+    if (player.gadgetCd[slot] > 0) {
+      HUD.toast(g.name + ' 冷却中 · ' + player.gadgetCd[slot].toFixed(1) + 's', 'warn');
+      return;
+    }
+    if (player.data < g.cost) {
+      HUD.toast('数据不足 · ' + g.name + ' 需要 ' + g.cost + ' NB', 'warn');
+      return;
+    }
+    if (player.gadgetAim === slot) return;
+    cancelGadgetAim();
+    player.gadgetAim = slot;
+    /* 手榴弹初始落点为自身中心；之后累加鼠标相对位移 */
+    player.gadgetAimOffset = { x: 0, z: 0 };
+    player.gadgetTarget = { x: player.x, z: player.z };
+    HUD.updateGadgets(player);
+  }
+
+  function cancelGadgetAim() {
+    if (player.gadgetAim < 0) return;
+    player.gadgetAim = -1;
+    player.gadgetAimOffset = { x: 0, z: 0 };
+    player.gadgetTarget = { x: player.x, z: player.z };
+    HUD.updateGadgets(player);
+  }
+
+  /* 手榴弹瞄准：直接累加鼠标 movementX / movementY，
+     不依赖虚拟指针在屏幕上的绝对位置，因此指针被锁在屏幕边缘或中心都不会丢位移。 */
+  function addGrenadeAimDelta(dx, dy) {
+    if (player.gadgetAim < 0 || !dx && !dy) return;
+    const g = gadgetDef(player.gadgetAim);
+    if (!g || g.id !== 'grenade') return;
+    const scale = 0.045 * (CAM.dist / CFG.CAM.DIST);
+    let ox = player.gadgetAimOffset.x + (dx || 0) * scale;
+    let oz = player.gadgetAimOffset.z + (dy || 0) * scale;
+    const d = Math.hypot(ox, oz);
+    if (d > g.range) {
+      ox = ox / d * g.range;
+      oz = oz / d * g.range;
+    }
+    player.gadgetAimOffset = { x: ox, z: oz };
+  }
+
+  function houseLocalPoint(h, x, z) {
+    const c = Math.cos(h.yaw), s = Math.sin(h.yaw);
+    const dx = x - h.x, dz = z - h.z;
+    return { x: c * dx - s * dz, z: s * dx + c * dz };
+  }
+
+  /* 手榴弹落点：不能落进有屋顶的房屋内部。
+     从玩家到鼠标落点做线段求交，落点夹在屋顶外沿（沿投掷方向），
+     而不是简单推到最近的墙边。玩家本人在屋内时允许落在该房屋内。 */
+  function clampOutOfRoof(x, z) {
+    const houses = World.houses || [];
+    for (let i = 0; i < houses.length; i++) {
+      const h = houses[i];
+      const pl = houseLocalPoint(h, player.x, player.z);
+      const playerInside = Math.abs(pl.x) <= h.halfW && Math.abs(pl.z) <= h.halfD;
+      if (playerInside) continue;
+      const l = houseLocalPoint(h, x, z);
+      const mx = h.halfW + 0.30, mz = h.halfD + 0.30;
+      if (Math.abs(l.x) >= mx || Math.abs(l.z) >= mz) continue;
+
+      const dx = l.x - pl.x, dz = l.z - pl.z;
+      let entry = 0;
+      let ok = true;
+      if (Math.abs(dx) < 1e-9) {
+        if (pl.x < -mx || pl.x > mx) ok = false;
+      } else {
+        let t1 = (-mx - pl.x) / dx, t2 = (mx - pl.x) / dx;
+        if (t1 > t2) { const tmp = t1; t1 = t2; t2 = tmp; }
+        entry = Math.max(entry, t1);
+      }
+      if (ok) {
+        if (Math.abs(dz) < 1e-9) {
+          if (pl.z < -mz || pl.z > mz) ok = false;
+        } else {
+          let t1 = (-mz - pl.z) / dz, t2 = (mz - pl.z) / dz;
+          if (t1 > t2) { const tmp = t1; t1 = t2; t2 = tmp; }
+          entry = Math.max(entry, t1);
+        }
+      }
+      let lx, lz;
+      if (ok && entry < 1) {
+        const t = Math.max(0, Math.min(0.999, entry - 0.03));
+        lx = pl.x + dx * t;
+        lz = pl.z + dz * t;
+      } else {
+        /* 兜底：沿最近的轴推出屋顶 */
+        lx = l.x; lz = l.z;
+        const px = mx - Math.abs(l.x);
+        const pz = mz - Math.abs(l.z);
+        if (px < pz) lx = (l.x >= 0 ? 1 : -1) * mx;
+        else lz = (l.z >= 0 ? 1 : -1) * mz;
+      }
+      const c = Math.cos(h.yaw), s = Math.sin(h.yaw);
+      x = h.x + c * lx + s * lz;
+      z = h.z - s * lx + c * lz;
+    }
+    return { x: x, z: z };
+  }
+
+  function clampGrenadeTarget(x, z, range) {
+    let dx = x - player.x, dz = z - player.z;
+    const d = Math.hypot(dx, dz);
+    if (d > range && d > 0.0001) {
+      dx = dx / d * range;
+      dz = dz / d * range;
+      x = player.x + dx;
+      z = player.z + dz;
+    }
+    return clampOutOfRoof(x, z);
+  }
+
+  function updateGadgetAim() {
+    if (player.gadgetAim < 0) return;
+    if (paused || ended || player.dead || Inventory.isOpen() || trainingOpen) {
+      cancelGadgetAim();
+      return;
+    }
+    const g = gadgetDef(player.gadgetAim);
+    if (!g) { cancelGadgetAim(); return; }
+    if (g.id === 'grenade') {
+      player.gadgetTarget = clampGrenadeTarget(
+        player.x + player.gadgetAimOffset.x,
+        player.z + player.gadgetAimOffset.z,
+        g.range
+      );
+    } else {
+      player.gadgetTarget = { x: player.x, z: player.z };
+    }
+  }
+
+  function throwKnife(g) {
+    const dx = Math.sin(player.yaw), dz = Math.cos(player.yaw);
+    const sx = player.x + dx * 0.45, sz = player.z + dz * 0.45;
+    let len = g.range;
+    const hit = World.rayWallHit(sx, sz, dx, dz, g.range);
+    if (hit && hit.axis && hit.d < len) len = Math.max(0.4, hit.d - 0.10);
+    knives.push({
+      x: sx, z: sz, dx: dx, dz: dz, dist: 0, len: len,
+      speed: g.speed, dmg: g.damage, c: g.rgb,
+      hit: [], seed: Math.random() * 10
+    });
+    noise(player.x, player.z, 10);
+  }
+
+  function throwGrenade(g) {
+    const t = clampGrenadeTarget(player.gadgetTarget.x, player.gadgetTarget.z, g.range);
+    const d = Math.hypot(t.x - player.x, t.z - player.z);
+    grenades.push({
+      x: player.x, z: player.z, sx: player.x, sz: player.z,
+      tx: t.x, tz: t.z, t: 0, dur: Math.max(0.32, g.flight + d * 0.012),
+      g: g, c: g.rgb, seed: Math.random() * 10
+    });
+    noise(player.x, player.z, 12);
+  }
+
+  function explodeGrenade(gr) {
+    const g = gr.g;
+    blasts.push({
+      x: gr.tx, z: gr.tz, r: g.radius, t: 0.55, life: 0.55,
+      c: g.rgb, seed: Math.random() * 10
+    });
+    for (let i = 0; i < enemies.length; i++) {
+      const e = enemies[i];
+      if (e.dead) continue;
+      const d = Math.hypot(e.x - gr.tx, e.z - gr.tz);
+      if (d > g.radius) continue;
+      const mul = 1 - 0.45 * (d / g.radius);
+      damageEnemy(e, g.damage * mul, Math.atan2(e.x - gr.tx, e.z - gr.tz),
+        g.rgb, false, true, gr.tx, gr.tz);
+    }
+    for (let i = 0; i < 14; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const rr = Math.random() * g.radius * 0.85;
+      sparks.push({
+        x: gr.tx + Math.sin(a) * rr, y: 0.25 + Math.random() * 1.0,
+        z: gr.tz + Math.cos(a) * rr, t: 0.25 + Math.random() * 0.25,
+        c: i % 3 === 0 ? [1, 0.95, 0.8] : g.rgb, s: 0.28 + Math.random() * 0.35
+      });
+    }
+    noise(gr.tx, gr.tz, 24);
+  }
+
+  function placeRadiation(g) {
+    radFields.push({
+      x: player.x, z: player.z, r: g.radius,
+      life: g.duration, maxLife: g.duration, tick: 0,
+      dps: g.dps, c: g.rgb, seed: Math.random() * 10
+    });
+    noise(player.x, player.z, 8);
+  }
+
+  function useGadget(slot) {
+    if (player.gadgetAim !== slot) return false;
+    player.gadgetAim = -1;
+    player.gadgetAimOffset = { x: 0, z: 0 };
+    if (mode !== 'mission' || ended || paused || player.dead) {
+      HUD.updateGadgets(player);
+      return false;
+    }
+    const g = gadgetDef(slot);
+    if (!g) { HUD.updateGadgets(player); return false; }
+    if (player.gadgetCd[slot] > 0) {
+      HUD.toast(g.name + ' 冷却中 · ' + player.gadgetCd[slot].toFixed(1) + 's', 'warn');
+      HUD.updateGadgets(player);
+      return false;
+    }
+    if (player.data < g.cost) {
+      HUD.toast('数据不足 · ' + g.name + ' 需要 ' + g.cost + ' NB', 'warn');
+      HUD.updateGadgets(player);
+      return false;
+    }
+
+    player.data -= g.cost;
+    /* 训练场不进入冷却 */
+    player.gadgetCd[slot] = testMap ? 0 : g.cooldown;
+    if (g.id === 'knife') throwKnife(g);
+    else if (g.id === 'grenade') throwGrenade(g);
+    else if (g.id === 'radiation') placeRadiation(g);
+
+    HUD.data(player.data);
+    HUD.updateGadgets(player);
+    HUD.toast(g.name + ' 已使用' + (player.infiniteData ? ' · 数据无限' : ' · -' + g.cost + ' NB'), 'good');
+    return true;
+  }
+
+  function updateGadgetState(dt) {
+    for (let i = 0; i < 2; i++) {
+      if (player.gadgetCd[i] > 0) player.gadgetCd[i] = Math.max(0, player.gadgetCd[i] - dt);
+    }
+    updateGadgetAim();
+
+    for (let i = 0; i < knives.length; i++) {
+      const k = knives[i];
+      if (k.done) continue;
+      let step = Math.min(k.speed * dt, k.len - k.dist);
+      if (step <= 0) { k.done = true; continue; }
+      const n = Math.max(1, Math.ceil(step / 0.35));
+      const sx = k.dx * step / n, sz = k.dz * step / n;
+      for (let s = 0; s < n; s++) {
+        k.x += sx; k.z += sz; k.dist += step / n;
+        for (let e = 0; e < enemies.length; e++) {
+          const en = enemies[e];
+          if (en.dead || k.hit.indexOf(en) >= 0) continue;
+          if (Math.hypot(en.x - k.x, en.z - k.z) > en.r + 0.30) continue;
+          k.hit.push(en);
+          damageEnemy(en, k.dmg, Math.atan2(k.dx, k.dz), k.c);
+          HUD.hit();
+          sparks.push({ x: en.x, y: 1.0, z: en.z, t: 0.18, c: [1, 1, 1], s: 0.22 });
+        }
+      }
+      if (k.dist >= k.len - 1e-4) k.done = true;
+    }
+    knives = knives.filter(function (k) { return !k.done; });
+
+    for (let i = 0; i < grenades.length; i++) {
+      const gr = grenades[i];
+      gr.t += dt;
+      const p = Math.min(1, gr.t / gr.dur);
+      gr.x = lerp(gr.sx, gr.tx, p);
+      gr.z = lerp(gr.sz, gr.tz, p);
+      if (p >= 1) {
+        explodeGrenade(gr);
+        gr.done = true;
+      }
+    }
+    grenades = grenades.filter(function (g) { return !g.done; });
+
+    for (let i = 0; i < radFields.length; i++) {
+      const f = radFields[i];
+      f.life -= dt;
+      f.tick -= dt;
+      if (f.tick <= 0) {
+        /* 每 0.5s 结算一次并显示伤害跳字；总 DPS 不变，避免 0.25s 跳字刷屏 */
+        f.tick = 0.5;
+        for (let e = 0; e < enemies.length; e++) {
+          const en = enemies[e];
+          if (en.dead) continue;
+          if (Math.hypot(en.x - f.x, en.z - f.z) <= f.r) {
+            damageEnemy(en, f.dps * 0.5, Math.atan2(en.x - f.x, en.z - f.z), f.c, false, true);
+          }
+        }
+      }
+    }
+    radFields = radFields.filter(function (f) { return f.life > 0; });
+
+    for (let i = 0; i < blasts.length; i++) blasts[i].t -= dt;
+    blasts = blasts.filter(function (b) { return b.t > 0; });
+  }
+
   function fire() {
     if (player.weapon < 0 || player.slot < 0) return;
     const wi = player.weapon;
@@ -627,11 +1085,21 @@ const G = (function () {
          3) 万一落在墙角缝隙里，再沿入射方向退回上一格；
          4) 在撞点放一个明显的棱镜闪光，垂直入射时也能看出确实弹了。 */
       let nx = dx, nz = dz;
-      if (hit.axis === 'x' || hit.axis === 'both') nx = -nx;
-      if (hit.axis === 'z' || hit.axis === 'both') nz = -nz;
-      let ox = ex, oz = ez;
-      if (hit.axis === 'x' || hit.axis === 'both') ox = ex - Math.sign(dx) * 0.012;
-      if (hit.axis === 'z' || hit.axis === 'both') oz = ez - Math.sign(dz) * 0.012;
+      let ox, oz;
+      if (hit.axis === 'house') {
+        /* 安全屋墙面是旋转矩形，按命中法线做镜面反射 */
+        const dn = dx * hit.nx + dz * hit.nz;
+        nx = dx - 2 * dn * hit.nx;
+        nz = dz - 2 * dn * hit.nz;
+        ox = ex + hit.nx * 0.022;
+        oz = ez + hit.nz * 0.022;
+      } else {
+        if (hit.axis === 'x' || hit.axis === 'both') nx = -nx;
+        if (hit.axis === 'z' || hit.axis === 'both') nz = -nz;
+        ox = ex; oz = ez;
+        if (hit.axis === 'x' || hit.axis === 'both') ox = ex - Math.sign(dx) * 0.012;
+        if (hit.axis === 'z' || hit.axis === 'both') oz = ez - Math.sign(dz) * 0.012;
+      }
       if (!World.isFloorAt(ox, oz)) {
         const back = Math.min(0.06, d);
         ox = ex - dx * back;
@@ -641,7 +1109,8 @@ const G = (function () {
       a = Math.atan2(nx, nz);
       px = ox;
       pz = oz;
-      const fyaw = hit.axis === 'x' ? 0 : (hit.axis === 'z' ? Math.PI / 2 : Math.atan2(dx, dz));
+      const fyaw = hit.axis === 'house' ? Math.atan2(hit.nx, hit.nz) :
+        (hit.axis === 'x' ? 0 : (hit.axis === 'z' ? Math.PI / 2 : Math.atan2(dx, dz)));
       flashes.push({ x: ex, y: 1.05, z: ez, yaw: fyaw, t: 0.3, s: 0.66, c: w.rgb2 });
       flashes.push({ x: ex, y: 1.05, z: ez, yaw: fyaw, t: 0.14, s: 0.3, c: [1, 1, 1] });
     }
@@ -943,7 +1412,25 @@ const G = (function () {
 
   function tryLoot() {
     if (mode !== 'mission' || ended || paused) return;
+    if (nearTrainingPad()) {
+      openTrainingLoadout();
+      return;
+    }
     const chest = nearestChest();
+    const door = World.nearestDoor(player.x, player.z);
+    if (door) {
+      const dd = Math.hypot(door.x - player.x, door.z - player.z);
+      const cd = chest ? Math.hypot(chest.x - player.x, chest.z - player.z) : Infinity;
+      if (dd <= cd) {
+        if (door.open && World.doorOccupied(door, player.x, player.z, 0.50)) {
+          HUD.toast('先离开门口再关门', 'warn');
+          return;
+        }
+        const opened = World.toggleDoor(door);
+        HUD.toast(opened ? '安全屋门已打开' : '安全屋门已关闭', 'good');
+        return;
+      }
+    }
     if (chest) {
       if (chest.corpse) {
         chest.autoSearch = false;
@@ -1673,7 +2160,28 @@ const G = (function () {
     if (promptT > 0) return;
     promptT = 0.12;
 
+    if (trainingOpen) {
+      HUD.prompt(null);
+      return;
+    }
+
+    if (nearTrainingPad()) {
+      HUD.objective('训练配装 · 切换武器 / 道具', true);
+      HUD.prompt((TOUCH_MODE ? '' : '[F] ') + '打开训练配装台');
+      return;
+    }
+
     const nearChest = nearestChest();
+    const nearDoor = World.nearestDoor(player.x, player.z);
+    if (nearDoor) {
+      const dd = Math.hypot(nearDoor.x - player.x, nearDoor.z - player.z);
+      const cd = nearChest ? Math.hypot(nearChest.x - player.x, nearChest.z - player.z) : Infinity;
+      if (dd <= cd) {
+        HUD.prompt((TOUCH_MODE ? '' : '[F] ') + (nearDoor.open ? '关闭安全屋门' : '打开安全屋门'));
+        return;
+      }
+    }
+
     if (nearChest) {
       const cn = nearChest.name || '物资箱';
       if (nearChest.corpse) HUD.prompt((TOUCH_MODE ? '搜刮' : '[F] 搜刮') + ' ' + cn);
@@ -1743,7 +2251,10 @@ const G = (function () {
     if (!sg) return;
     const px = player.x, pz = player.z;
     const RANGE = CFG.VISION.RANGE;
-    const FAR = RANGE + 10;
+    /* 阴影射线要远到让“远端连线”落在视野半径之外：
+       贴墙时两面墙的夹角可能接近 166°，连线若只用 24m+10 会切进视野内，
+       墙外会出现一块本应被遮挡的亮区。 */
+    const FAR = RANGE + 600;
 
     function addRect(cx, cz, yaw, h) {
       const c = Math.cos(yaw), s = Math.sin(yaw);
@@ -1775,6 +2286,25 @@ const G = (function () {
       sg.tri(A.x, A.z, B2x, B2z, A2x, A2z, Y, [1, 1, 1]);
     }
 
+    /* 线段阴影：用于安全屋外墙。相邻墙段共用端点，阴影在墙角严丝合缝；
+       门洞处不补线段，开着的门会自然漏出一道光楔。 */
+    function addWallShadow(ax, az, bx, bz) {
+      const aa = Math.atan2(ax - px, az - pz);
+      const ba = Math.atan2(bx - px, bz - pz);
+      let d = Math.abs(aa - ba);
+      if (d > Math.PI) d = Math.PI * 2 - d;
+      if (d < 0.02) return;
+      const al = Math.hypot(ax - px, az - pz) || 1;
+      const bl = Math.hypot(bx - px, bz - pz) || 1;
+      const A2x = ax + (ax - px) / al * FAR;
+      const A2z = az + (az - pz) / al * FAR;
+      const B2x = bx + (bx - px) / bl * FAR;
+      const B2z = bz + (bz - pz) / bl * FAR;
+      const Y = 0.045;
+      sg.tri(ax, az, bx, bz, B2x, B2z, Y, [1, 1, 1]);
+      sg.tri(ax, az, B2x, B2z, A2x, A2z, Y, [1, 1, 1]);
+    }
+
     /* 墙体：只取靠近地板的实心格，避免把地图外的虚空当墙 */
     const CELL = CFG.CELL;
     const reach = Math.ceil((RANGE + CELL) / CELL);
@@ -1803,12 +2333,62 @@ const G = (function () {
       if (Math.hypot(p.x - px, p.z - pz) > RANGE + 2) continue;
       addRect(p.x, p.z, p.rot, p.kind === 'crate' ? 0.6 : 0.33);
     }
+
+    /* 模块化安全屋：按每格外墙的外沿线段投射视野阴影。
+       相邻模块共用外沿端点，门洞只在门开着时留空。 */
+    const HOUSES = World.houses || [];
+    const MH = CFG.HOUSE;
+    for (let hi = 0; hi < HOUSES.length; hi++) {
+      const h = HOUSES[hi];
+      if (Math.hypot(h.x - px, h.z - pz) > RANGE + 12) continue;
+      for (let mi = 0; mi < h.modules.length; mi++) {
+        const m = h.modules[mi];
+        const c = Math.cos(m.yaw), s = Math.sin(m.yaw);
+        const oz = MH.WALL_T * 0.5;
+        function seg(x0, x1) {
+          const ax = m.cx + c * x0 + s * oz;
+          const az = m.cz - s * x0 + c * oz;
+          const bx = m.cx + c * x1 + s * oz;
+          const bz = m.cz - s * x1 + c * oz;
+          addWallShadow(ax, az, bx, bz);
+        }
+        if (m.type === 'door') {
+          seg(-MH.MODULE * 0.5, -MH.DOOR_W * 0.5);
+          seg( MH.DOOR_W * 0.5,  MH.MODULE * 0.5);
+          if (m.door && m.door.t < 0.35) seg(-MH.DOOR_W * 0.5, MH.DOOR_W * 0.5);
+        } else {
+          seg(-MH.MODULE * 0.5, MH.MODULE * 0.5);
+        }
+      }
+
+      /* 室内隔断也要挡视野：沿墙中心线投射，门洞只在门开着时留空 */
+      for (let mi = 0; mi < h.interiorModules.length; mi++) {
+        const m = h.interiorModules[mi];
+        const c = Math.cos(m.yaw), s = Math.sin(m.yaw);
+        function iseg(x0, x1) {
+          addWallShadow(
+            m.cx + c * x0, m.cz - s * x0,
+            m.cx + c * x1, m.cz - s * x1
+          );
+        }
+        if (m.type === 'door') {
+          iseg(-MH.MODULE * 0.5, -MH.DOOR_W * 0.5);
+          iseg( MH.DOOR_W * 0.5,  MH.MODULE * 0.5);
+          if (m.door && m.door.t < 0.35) iseg(-MH.DOOR_W * 0.5, MH.DOOR_W * 0.5);
+        } else {
+          iseg(-MH.MODULE * 0.5, MH.MODULE * 0.5);
+        }
+      }
+    }
   }
 
   function update(dt) {
     if (mode !== 'mission' || ended) return;
     if (paused) return;
     time += dt;
+    /* 训练场数据无限：每帧回填，所有消耗都可以正常扣除但不会耗尽 */
+    if (player.infiniteData) player.data = 999999;
+    World.updateHouses(dt, player.x, player.z);
 
     /* 靠近物资箱自动开始撬箱；箱盖撬飞后由 F 主动搜索 */
     const autoChest = nearestChest();
@@ -1835,7 +2415,7 @@ const G = (function () {
       if (c.pryBurst > 0) c.pryBurst = Math.max(0, c.pryBurst - dt);
       if (c.openDelay > 0) c.openDelay = Math.max(0, c.openDelay - dt);
       /* 撬开后自动进入搜索；若当时不在附近或正在查看其它箱子，等条件满足时再自动打开 */
-      if (c.autoSearch && c.openDelay <= 0 && !Inventory.isOpen()) {
+      if (c.autoSearch && c.openDelay <= 0 && !Inventory.isOpen() && !trainingOpen) {
         const d = Math.hypot(c.x - player.x, c.z - player.z) - (c.cr || 0);
         if (d <= (CFG.CHEST_INTERACT_R || 1.8) + 0.9) {
           c.autoSearch = false;
@@ -1846,6 +2426,14 @@ const G = (function () {
     updateLidDebris(dt);
 
     const invOpen = Inventory.isOpen();
+    const uiLock = invOpen || trainingOpen;
+    if (mouse.locked && uiLock) setMouseLock(false);
+    if (!TOUCH_MODE) HUD.setCursorVisible(uiLock);
+    /* UI 关闭后，下一次点击画面先重新锁定系统指针 */
+    if (mouse.lastUiLock && !uiLock && !TOUCH_MODE && !player.dead && !ended) {
+      mouse.autoLockPending = true;
+    }
+    mouse.lastUiLock = uiLock;
     if (TOUCH_MODE) {
       if (invOpen && !touchInvSuspended) {
         touchInvSuspended = true;
@@ -1897,7 +2485,7 @@ const G = (function () {
       if (keys.KeyD) ix += 1;
     }
     /* 打开转移界面时锁住角色移动（世界照常运行） */
-    if (invOpen) { ix = 0; iz = 0; touchRun = false; }
+    if (uiLock) { ix = 0; iz = 0; touchRun = false; }
     const mag = Math.hypot(ix, iz);
     player.moving = (mag > 0 || WALK) && !player.dead;
     if (mag > 0) player.moveYaw = Math.atan2(ix, iz);
@@ -1948,7 +2536,7 @@ const G = (function () {
     }
     const curW = player.weapon >= 0 ? WEAPONS[player.weapon] : null;
     if (TOUCH_MODE && curW) {
-      if (!invOpen) {
+      if (!uiLock) {
         if (curW.auto) {
           if (TOUCH.right.firing) fire();
         } else if (TOUCH.takeSemiShot()) {
@@ -1957,12 +2545,13 @@ const G = (function () {
           fire();
         }
       }
-    } else if ((mouse.down || AUTO) && !invOpen) {
+    } else if ((mouse.down || AUTO) && !uiLock) {
       fire();
     }
 
     updateEnemies(dt);
     updateVision();
+    updateLootVision();
 
     /* 弹体 */
     for (const p of projectiles) {
@@ -2088,6 +2677,8 @@ const G = (function () {
     }
     zones = zones.filter(function (z) { return z.life > 0; });
 
+    updateGadgetState(dt);
+
     for (const t of tracers) t.t -= dt;
     tracers = tracers.filter(function (t) { return t.t > 0; });
     for (const f of flashes) f.t -= dt;
@@ -2155,8 +2746,52 @@ const G = (function () {
   }
 
   /* ---------- 渲染 ---------- */
+  /* 视野亮区：24m 内且没有被墙 / 木箱等挡住（与地面阴影使用同一套视线） */
+  function isVisionLit(x, z) {
+    const dx = x - player.x, dz = z - player.z;
+    if (dx * dx + dz * dz > CFG.VISION.RANGE * CFG.VISION.RANGE) return false;
+    return !World.sightBlocked(player.x, player.z, x, z);
+  }
+
+  /* 只有“部分可见、且部分被墙挡住”的可互动物品才加纯色填充。
+     完全在阴影里 / 完全可见的物品都不加。 */
+  /* 地面收集物是否至少有一部分处于视野亮区（24m + 墙体/木箱视线） */
+  function lootVisible(l) {
+    const s = 0.24;
+    const pts = [
+      { x: l.x, z: l.z },
+      { x: l.x + s, z: l.z }, { x: l.x - s, z: l.z },
+      { x: l.x, z: l.z + s }, { x: l.x, z: l.z - s }
+    ];
+    for (let i = 0; i < pts.length; i++) {
+      if (isVisionLit(pts[i].x, pts[i].z)) return true;
+    }
+    return false;
+  }
+
+  function updateLootVision() {
+    for (let i = 0; i < World.loot.length; i++) {
+      const l = World.loot[i];
+      l.inVision = !l.taken && lootVisible(l);
+    }
+  }
+
+  function needsObjectSilhouette(cx, cz, samples) {
+    const dx = cx - player.x, dz = cz - player.z;
+    if (dx * dx + dz * dz > CFG.VISION.RANGE * CFG.VISION.RANGE) return false;
+    let visible = false, wallBlocked = false;
+    for (let i = 0; i < samples.length; i++) {
+      const s = samples[i];
+      if (isVisionLit(s.x, s.z)) visible = true;
+      if (!World.los(player.x, player.z, s.x, s.z)) wallBlocked = true;
+      if (visible && wallBlocked) return true;
+    }
+    return false;
+  }
+
   function drawLoot(geo) {
     const mask = R.mask;
+    const ov = R.overlay;
     function put(o) {
       geo.box(o);
       if (mask) {
@@ -2169,6 +2804,9 @@ const G = (function () {
     }
     for (const l of World.loot) {
       if (l.taken) continue;
+      /* 不在视野亮区的地面收集物不绘制 3D，也不进入遮挡 / 描边遮罩 */
+      if (l.inVision === undefined) l.inVision = lootVisible(l);
+      if (!l.inVision) continue;
       const col = tierRgb(l.item ? l.item.tierId : 'common');
       const bob = Math.sin(time + l.x * 0.7) * 0.03;
       if (l.kind === 'case') {
@@ -2178,6 +2816,26 @@ const G = (function () {
         put({ x: l.x, y: 0.3 + bob, z: l.z, sx: 0.36, sy: 0.6, sz: 0.36, yaw: 0.2, color: PAL.gunL, outline: 0.014, shadow: true });
         put({ x: l.x, y: 0.62 + bob, z: l.z, sx: 0.30, sy: 0.06, sz: 0.30, yaw: 0.2, color: col, outline: 0, emis: true });
       }
+      if (!ov) continue;
+      const s = 0.24;
+      const samples = [
+        { x: l.x, z: l.z },
+        { x: l.x + s, z: l.z }, { x: l.x - s, z: l.z },
+        { x: l.x, z: l.z + s }, { x: l.x, z: l.z - s }
+      ];
+      if (!needsObjectSilhouette(l.x, l.z, samples)) continue;
+      /* 单个外包盒：保证不会出现物体自己遮挡自己的橙色补片 */
+      if (l.kind === 'case') {
+        ov.box({
+          x: l.x, y: 0.27 + bob, z: l.z, sx: 0.66, sy: 0.56, sz: 0.54,
+          yaw: 0.4, color: [1, 1, 1], outline: 0
+        });
+      } else {
+        ov.box({
+          x: l.x, y: 0.33 + bob, z: l.z, sx: 0.40, sy: 0.70, sz: 0.40,
+          yaw: 0.2, color: [1, 1, 1], outline: 0
+        });
+      }
     }
   }
 
@@ -2185,6 +2843,7 @@ const G = (function () {
     const list = World.chests;
     if (!list || !list.length) return;
     const mask = R.mask;
+    const ov = R.overlay;
     function maskBox(o) {
       if (!mask) return;
       const m = {};
@@ -2197,8 +2856,29 @@ const G = (function () {
       const c = list[i];
       if (c.corpse) continue;
       const isW = c.type === 'weapon';
-      const A = (typeof ASSETS !== 'undefined') ? (c.type === 'weapon' ? ASSETS.weaponcrate : ASSETS.chest) : null;
       const bx = c.x, bz = c.z;
+      let near = false;
+      if (ov) {
+        const hx = isW ? 0.78 : 0.60;
+        const hz = isW ? 0.46 : 0.38;
+        const cs = Math.cos(c.yaw), sn = Math.sin(c.yaw);
+        const offs = [[0, 0], [hx, 0], [-hx, 0], [0, hz], [0, -hz]];
+        const samples = [];
+        for (let k = 0; k < offs.length; k++) {
+          samples.push({
+            x: bx + cs * offs[k][0] + sn * offs[k][1],
+            z: bz - sn * offs[k][0] + cs * offs[k][1]
+          });
+        }
+        near = needsObjectSilhouette(bx, bz, samples);
+        if (near) {
+          /* 单个外包盒：避免箱盖 / 箱体互相遮挡造成自身纯色补片 */
+          ov.box(isW
+            ? { x: bx, y: 0.34, z: bz, sx: 1.70, sy: 0.68, sz: 1.04, yaw: c.yaw, color: [1, 1, 1], outline: 0 }
+            : { x: bx, y: 0.44, z: bz, sx: 1.28, sy: 0.88, sz: 0.90, yaw: c.yaw, color: [1, 1, 1], outline: 0 });
+        }
+      }
+      const A = (typeof ASSETS !== 'undefined') ? (c.type === 'weapon' ? ASSETS.weaponcrate : ASSETS.chest) : null;
       /* 简易落地阴影 */
       geo.box({
         x: bx, y: 0.03, z: bz, sx: isW ? 1.58 : 1.24, sy: 0.05, sz: isW ? 0.99 : 0.90, yaw: c.yaw,
@@ -2238,16 +2918,17 @@ const G = (function () {
             };
             putLid(0, 0.334, 0, 1.42, 0.010, 0.80, [0.43, 0.465, 0.50]);
             putLid(0, 0.340, 0, 1.18, 0.008, 0.58, [0.040, 0.048, 0.056]);
-            putLid(0.17, 0.346, -0.10, 0.64, 0.014, 0.040, [1.0, 0.56, 0.12], true);
-            putLid(-0.04, 0.346, -0.10, 0.30, 0.016, 0.115, [1.0, 0.56, 0.12], true);
-            putLid(-0.33, 0.346, -0.10, 0.24, 0.014, 0.095, [1.0, 0.56, 0.12], true);
-            putLid(-0.17, 0.346, -0.015, 0.065, 0.016, 0.115, [0.93, 0.51, 0.165]);
-            putLid(-0.03, 0.346, 0.020, 0.10, 0.018, 0.135, [0.93, 0.51, 0.165]);
-            putLid(0.10, 0.346, -0.035, 0.16, 0.014, 0.045, [0.93, 0.51, 0.165]);
+            /* 武器剪影保留，但按普通受光材质绘制，不再使用发光纯色 */
+            putLid(0.17, 0.346, -0.10, 0.64, 0.014, 0.040, [0.56, 0.59, 0.63]);
+            putLid(-0.04, 0.346, -0.10, 0.30, 0.016, 0.115, [0.56, 0.59, 0.63]);
+            putLid(-0.33, 0.346, -0.10, 0.24, 0.014, 0.095, [0.56, 0.59, 0.63]);
+            putLid(-0.17, 0.346, -0.015, 0.065, 0.016, 0.115, [0.44, 0.47, 0.51]);
+            putLid(-0.03, 0.346, 0.020, 0.10, 0.018, 0.135, [0.44, 0.47, 0.51]);
+            putLid(0.10, 0.346, -0.035, 0.16, 0.014, 0.045, [0.44, 0.47, 0.51]);
+            putLid(0, 0.334, -0.34, 1.24, 0.008, 0.045, [0.44, 0.47, 0.51]);
             putLid(0.22, 0.348, -0.155, 0.10, 0.016, 0.030, [1.0, 0.72, 0.26], true);
             putLid(-0.06, 0.350, -0.175, 0.14, 0.020, 0.050, [1.0, 0.72, 0.26], true);
             putLid(0.50, 0.348, -0.10, 0.05, 0.018, 0.060, [1.0, 0.72, 0.26], true);
-            putLid(0, 0.334, -0.34, 1.24, 0.008, 0.045, [0.93, 0.51, 0.165]);
           }
         }
         geo.box({
@@ -2322,6 +3003,180 @@ const G = (function () {
     }
   }
 
+  /* 道具瞄准预览：飞刀直线 / 手榴弹落点圆 / 辐射场范围圆 */
+  function drawGadgetAim(geo) {
+    if (mode !== 'mission' || player.gadgetAim < 0 || player.dead) return;
+    const g = gadgetDef(player.gadgetAim);
+    if (!g) return;
+    const c = g.rgb;
+    const pulse = 0.65 + Math.sin(time * 9) * 0.35;
+
+    if (g.id === 'knife') {
+      const dx = Math.sin(player.yaw), dz = Math.cos(player.yaw);
+      let len = g.range;
+      const hit = World.rayWallHit(player.x, player.z, dx, dz, g.range);
+      if (hit && hit.axis && hit.d < len) len = Math.max(0.4, hit.d - 0.10);
+      /* 虚线固定长度：距离越远虚线数量越多，不拉伸单段 */
+      const dash = 0.62, gap = 0.34, pitch = dash + gap;
+      for (let d = 0; d < len; d += pitch) {
+        const dl = Math.min(dash, len - d);
+        if (dl < 0.05) break;
+        const mid = d + dl * 0.5;
+        geo.box({
+          x: player.x + dx * mid, y: 0.055, z: player.z + dz * mid,
+          sx: 0.30, sy: 0.012, sz: dl,
+          yaw: player.yaw, color: c, outline: 0, emis: true
+        });
+      }
+      geo.box({
+        x: player.x + dx * len, y: 0.07, z: player.z + dz * len,
+        sx: 0.12 + pulse * 0.08, sy: 0.02, sz: 0.55,
+        yaw: player.yaw + Math.PI / 2, color: [1, 1, 1], outline: 0, emis: true
+      });
+    } else if (g.id === 'grenade') {
+      const t = player.gadgetTarget;
+      /* 最远投掷范围：虚线细环，避免和落点伤害圈混淆 */
+      for (let i = 0; i < 48; i += 2) {
+        const a0 = i / 48 * Math.PI * 2;
+        const a1 = (i + 1) / 48 * Math.PI * 2;
+        geo.arc(player.x, player.z, g.range - 0.035, g.range, a0, a1, 0.04,
+          [0.46, 0.35, 0.19], 3);
+      }
+      /* 落点伤害范围 */
+      geo.arc(t.x, t.z, g.radius - 0.10, g.radius, 0, Math.PI * 2, 0.07, c, 64);
+      geo.arc(t.x, t.z, g.radius * 0.55, g.radius * 0.55 + 0.055, 0, Math.PI * 2, 0.045,
+        [0.60, 0.42, 0.20], 48);
+      geo.box({
+        x: t.x, y: 0.08, z: t.z, sx: 0.22 + pulse * 0.10, sy: 0.02, sz: 0.22 + pulse * 0.10,
+        yaw: Math.PI / 4, color: [1, 0.92, 0.70], outline: 0, emis: true
+      });
+    } else if (g.id === 'radiation') {
+      const t = player.gadgetTarget;
+      geo.arc(t.x, t.z, g.radius - 0.10, g.radius, 0, Math.PI * 2, 0.07, c, 64);
+      geo.arc(t.x, t.z, g.radius * 0.55, g.radius * 0.55 + 0.05, 0, Math.PI * 2, 0.045,
+        [0.55, 0.32, 0.20], 48);
+    }
+  }
+
+  function drawGadgetEffects(geo) {
+    for (let i = 0; i < knives.length; i++) {
+      const k = knives[i];
+      const yaw = Math.atan2(k.dx, k.dz);
+      geo.box({
+        x: k.x, y: 0.92, z: k.z, sx: 0.055, sy: 0.055, sz: 0.52,
+        yaw: yaw, color: k.c, outline: 0, emis: true
+      });
+      geo.box({
+        x: k.x, y: 0.92, z: k.z, sx: 0.16, sy: 0.16, sz: 0.13,
+        yaw: yaw, color: [1, 1, 1], outline: 0, emis: true
+      });
+      geo.box({
+        x: k.x - k.dx * 0.45, y: 0.92, z: k.z - k.dz * 0.45,
+        sx: 0.035, sy: 0.035, sz: 0.45, yaw: yaw, color: k.c, outline: 0, emis: true
+      });
+    }
+
+    for (let i = 0; i < grenades.length; i++) {
+      const gr = grenades[i];
+      const p = Math.min(1, gr.t / gr.dur);
+      const y = 0.72 + Math.sin(p * Math.PI) * 1.7;
+      geo.box({
+        x: gr.x, y: y, z: gr.z, sx: 0.20, sy: 0.24, sz: 0.20,
+        yaw: p * 7 + gr.seed, color: [0.26, 0.29, 0.22], outline: 0.012, emis: false
+      });
+      geo.box({
+        x: gr.x, y: y + 0.14, z: gr.z, sx: 0.09, sy: 0.09, sz: 0.09,
+        yaw: p * 9, color: gr.c, outline: 0, emis: true
+      });
+      geo.box({
+        x: gr.x - (gr.tx - gr.sx) * 0.04, y: y - 0.08, z: gr.z - (gr.tz - gr.sz) * 0.04,
+        sx: 0.10, sy: 0.10, sz: 0.10, yaw: p * 9 + 0.4,
+        color: [1, 0.80, 0.38], outline: 0, emis: true
+      });
+    }
+
+    for (let i = 0; i < blasts.length; i++) {
+      const b = blasts[i];
+      const fade = Math.max(0, b.t / b.life);
+      const burst = 1 - fade;
+      const col = [
+        b.c[0] * (0.30 + fade * 0.70),
+        b.c[1] * (0.30 + fade * 0.70),
+        b.c[2] * (0.30 + fade * 0.70)
+      ];
+
+      /* 中心爆闪：只做一次短促的方块闪光，不扩散成圆环 */
+      const flash = Math.max(0, 1 - burst * 2.8);
+      if (flash > 0) {
+        const s = 0.35 + flash * 0.85;
+        geo.box({
+          x: b.x, y: 0.55, z: b.z, sx: s, sy: s * 0.85, sz: s,
+          yaw: b.seed, color: [1, 0.94, 0.74], outline: 0, emis: true
+        });
+      }
+
+      /* 整体外圆：固定半径完整一圈，只淡出，不扩张 */
+      geo.arc(b.x, b.z, b.r - 0.10, b.r, 0, Math.PI * 2, 0.065, col, 64);
+
+      /* 火舌 / 碎片柱：位置固定在爆炸范围内，只改变高度和亮度 */
+      for (let k = 0; k < 12; k++) {
+        const a = b.seed + k * 2.399;
+        const rr = b.r * (0.28 + 0.68 * ((k * 0.41) % 1));
+        const flick = 0.78 + 0.22 * Math.sin(time * 21 + k * 1.7 + b.seed);
+        const h = (0.22 + 1.05 * fade * ((k * 0.23) % 1)) * flick;
+        if (h < 0.06) continue;
+        geo.box({
+          x: b.x + Math.sin(a) * rr, y: 0.05 + h * 0.5, z: b.z + Math.cos(a) * rr,
+          sx: 0.18 + (k % 2) * 0.05, sy: h, sz: 0.18 + (k % 2) * 0.05,
+          yaw: a, color: k % 2 ? [1, 0.52, 0.20] : b.c, outline: 0, emis: true
+        });
+      }
+
+      /* 边缘碎屑，固定落点 */
+      for (let k = 0; k < 8; k++) {
+        const a = b.seed + 0.8 + k * 1.71;
+        const rr = b.r * (0.72 + 0.22 * ((k * 0.53) % 1));
+        geo.box({
+          x: b.x + Math.sin(a) * rr, y: 0.12 + fade * 0.22, z: b.z + Math.cos(a) * rr,
+          sx: 0.13, sy: 0.13, sz: 0.13, yaw: a,
+          color: k % 2 ? [1, 0.45, 0.16] : [0.95, 0.72, 0.32], outline: 0, emis: true
+        });
+      }
+    }
+
+    for (let i = 0; i < radFields.length; i++) {
+      const f = radFields[i];
+      const k = Math.max(0.12, Math.min(1, f.life / f.maxLife));
+      const pulse = 0.5 + 0.5 * Math.sin(time * 7 + f.seed);
+      /* 装置本体 */
+      geo.box({
+        x: f.x, y: 0.16, z: f.z, sx: 0.30, sy: 0.26, sz: 0.30,
+        yaw: f.seed, color: [0.22, 0.25, 0.24], outline: 0.014, emis: false
+      });
+      geo.box({
+        x: f.x, y: 0.34, z: f.z, sx: 0.20, sy: 0.16, sz: 0.20,
+        yaw: f.seed, color: f.c, outline: 0, emis: true
+      });
+      geo.box({
+        x: f.x, y: 0.44 + pulse * 0.10, z: f.z, sx: 0.10, sy: 0.10, sz: 0.10,
+        yaw: f.seed * 2, color: [1, 0.85, 0.55], outline: 0, emis: true
+      });
+      /* 范围环 + 上升的辐射粒子 */
+      geo.arc(f.x, f.z, f.r - 0.07, f.r, 0, Math.PI * 2, 0.055,
+        [f.c[0] * k, f.c[1] * k, f.c[2] * k], 64);
+      for (let j = 0; j < 10; j++) {
+        const a = f.seed + j * 2.399;
+        const rr = f.r * (0.25 + 0.7 * ((j * 0.37 + f.seed * 0.1) % 1));
+        const h = (0.20 + 0.65 * ((j * 0.29 + pulse) % 1)) * k;
+        geo.box({
+          x: f.x + Math.sin(a) * rr, y: 0.05 + h * 0.5, z: f.z + Math.cos(a) * rr,
+          sx: 0.13, sy: h, sz: 0.13, yaw: a,
+          color: j % 2 ? [0.55, 1.0, 0.52] : f.c, outline: 0, emis: true
+        });
+      }
+    }
+  }
+
   function render() {
     R.setVision({
       x: player.x, z: player.z, yaw: player.yaw,
@@ -2333,9 +3188,12 @@ const G = (function () {
     R.begin();
     buildShadowGeo();
     const geo = R.dyn;
+    const scene = R.scene || R.dyn;
     const xray = R.xray;
     const ov = R.overlay;
     const um = R.unitMask;
+
+    drawGadgetAim(geo);
 
     MODELS.drawUnit(geo, player.charKey, {
       x: player.x, y: 0, z: player.z, yaw: player.yaw,
@@ -2479,8 +3337,10 @@ const G = (function () {
       }
     }
 
-    drawLoot(geo);
-    drawChests(geo);
+    drawLoot(scene);
+    drawChests(scene);
+    drawGadgetEffects(geo);
+    World.drawHouseScene(scene);
 
     for (const p of projectiles) {
       geo.box({ x: p.x, y: p.y, z: p.z, sx: 0.16, sy: 0.16, sz: 0.16, color: [0.73, 0.55, 1.0], outline: 0, emis: true });
@@ -2742,6 +3602,132 @@ const G = (function () {
     R.end();
   }
 
+  /* ---------- 训练场配装台 ---------- */
+  function trainingPad() {
+    return (testMap && World.test && World.test.loadout) ? World.test.loadout : null;
+  }
+
+  function nearTrainingPad() {
+    const p = trainingPad();
+    if (!p) return null;
+    const d = Math.hypot(player.x - p.x, player.z - p.z);
+    return d <= p.r + 0.7 ? p : null;
+  }
+
+  function openTrainingLoadout() {
+    if (mode !== 'mission' || ended || !testMap) return;
+    Inventory.close();
+    cancelGadgetAim();
+    setMouseLock(false);
+    HUD.setCursorVisible(!TOUCH_MODE);
+    trainingOpen = true;
+    trainingWeapons = [];
+    for (let i = 0; i < player.carried.length && trainingWeapons.length < 2; i++) {
+      const wi = player.carried[i].weaponId;
+      if (trainingWeapons.indexOf(wi) < 0) trainingWeapons.push(wi);
+    }
+    trainingGadgets = player.gadgets.filter(Boolean).slice(0, 2);
+    player.moving = false;
+    mouse.down = false;
+    renderTrainingLoadout();
+    const box = $('trainingLoadout');
+    if (box) box.classList.remove('hidden');
+  }
+
+  function closeTrainingLoadout() {
+    trainingOpen = false;
+    const box = $('trainingLoadout');
+    if (box) box.classList.add('hidden');
+    HUD.setCursorVisible(false);
+  }
+
+  function toggleTrainingWeapon(wi) {
+    const at = trainingWeapons.indexOf(wi);
+    if (at >= 0) trainingWeapons.splice(at, 1);
+    else {
+      if (trainingWeapons.length >= 2) trainingWeapons.shift();
+      trainingWeapons.push(wi);
+    }
+    applyTrainingLoadout();
+    renderTrainingLoadout();
+  }
+
+  function toggleTrainingGadget(id) {
+    const at = trainingGadgets.indexOf(id);
+    if (at >= 0) trainingGadgets.splice(at, 1);
+    else {
+      if (trainingGadgets.length >= 2) trainingGadgets.shift();
+      trainingGadgets.push(id);
+    }
+    applyTrainingLoadout();
+    renderTrainingLoadout();
+  }
+
+  function applyTrainingLoadout() {
+    player.carried = trainingWeapons.map(function (wi) {
+      return ITEMS.makeWeaponItem(wi);
+    }).filter(Boolean);
+    player.mags = [];
+    player.spares = [];
+    for (let i = 0; i < player.carried.length; i++) {
+      const w = WEAPONS[player.carried[i].weaponId];
+      player.mags.push(w.mag);
+      player.spares.push(9);
+    }
+    player.slot = player.carried.length ? 0 : -1;
+    player.weapon = player.carried.length ? player.carried[0].weaponId : -1;
+    player.weaponChips = WEAPONS.map(function () { return []; });
+    recalcWeaponMods();
+    player.cool = 0;
+    player.reload = 0;
+    player.gadgets = [trainingGadgets[0] || null, trainingGadgets[1] || null];
+    player.gadgetCd = [0, 0];
+    player.gadgetAim = -1;
+    player.gadgetAimOffset = { x: 0, z: 0 };
+    player.gadgetTarget = { x: player.x, z: player.z };
+    HUD.buildSlots(player);
+    HUD.buildGadgets(player);
+    if (player.weapon >= 0) HUD.mag(player.weapon);
+    if (TOUCH_MODE && player.weapon >= 0) TOUCH.setAuto(!!WEAPONS[player.weapon].auto);
+  }
+
+  function renderTrainingLoadout() {
+    const wbox = $('trainWeapons');
+    const gbox = $('trainGadgets');
+    if (wbox) {
+      wbox.innerHTML = '';
+      WEAPONS.forEach(function (w, wi) {
+        const on = trainingWeapons.indexOf(wi) >= 0;
+        const b = UI.el('button', 'train-card' + (on ? ' on' : ''));
+        b.type = 'button';
+        b.style.setProperty('--tc', w.color);
+        b.innerHTML =
+          '<span class="tc-tag">' + w.tag + '</span>' +
+          '<span class="tc-name">' + w.name + '</span>' +
+          '<span class="tc-meta">' + w.mag + ' 发 · ' + w.desc + '</span>' +
+          '<span class="tc-state">' + (on ? '已装备' : '装备') + '</span>';
+        b.addEventListener('click', function () { toggleTrainingWeapon(wi); });
+        wbox.appendChild(b);
+      });
+    }
+    if (gbox) {
+      gbox.innerHTML = '';
+      GADGETS.forEach(function (g) {
+        const on = trainingGadgets.indexOf(g.id) >= 0;
+        const b = UI.el('button', 'train-card' + (on ? ' on' : ''));
+        b.type = 'button';
+        b.style.setProperty('--tc', g.color);
+        b.innerHTML =
+          '<span class="tc-tag">' + g.tag + '</span>' +
+          '<span class="tc-name">' + g.name + '</span>' +
+          '<span class="tc-meta">训练场无冷却 · ' + g.desc + '</span>' +
+          '<span class="tc-state">' + (on ? '已装备' : '装备') + '</span>';
+        b.addEventListener('click', function () { toggleTrainingGadget(g.id); });
+        gbox.appendChild(b);
+      });
+    }
+  }
+
   /* ---------- 出击 / 结算 / 回大厅 ---------- */
   function beginMission(cfg) {
     if (mode === 'mission') return;
@@ -2751,16 +3737,16 @@ const G = (function () {
     document.body.classList.toggle('test-map', isTest);
     let entries;
     if (isTest) {
-      entries = WEAPONS.map(function (_, wi) {
-        return { item: ITEMS.makeWeaponItem(wi), mags: 9 };
-      });
+      /* 训练场初始空手、无道具；通过配装台选择 */
+      entries = [];
     } else if (cfg.weapons !== undefined) {
       const list = Array.isArray(cfg.weapons) ? cfg.weapons : [];
       const mags = Array.isArray(cfg.mags) ? cfg.mags : [];
       entries = list.slice(0, 2).map(function (x, i) {
+        if (x === null || x === undefined) return null;
         const item = (typeof x === 'number') ? ITEMS.makeWeaponItem(x) : Grid.cloneItem(x);
         return { item: item, mags: clamp(mags[i] | 0, 0, CFG.CARRY_MAX_MAGS) };
-      }).filter(function (e) { return e.item && e.item.kind === 'weapon'; });
+      }).filter(function (e) { return e && e.item && e.item.kind === 'weapon'; });
     } else {
       const lo = Store.loadout();
       entries = [];
@@ -2775,6 +3761,16 @@ const G = (function () {
     else World.gen(seed);
     R.buildStatic(function (geo) { World.buildStatic(geo); });
     if (typeof MINIMAP !== 'undefined') MINIMAP.build();
+
+    /* 房屋资产如果晚于场景静态几何加载完成，补一次静态重建 */
+    if (typeof ASSETS !== 'undefined' && ASSETS.house && !ASSETS.house.ready) {
+      ASSETS.load().then(function () {
+        if (mode === 'mission' && World.houses && World.houses.length) {
+          R.buildStatic(function (geo) { World.buildStatic(geo); });
+          if (typeof MINIMAP !== 'undefined') MINIMAP.build();
+        }
+      });
+    }
 
     const aug = Store.augments();
     player.maxHp = Store.maxHp();
@@ -2819,17 +3815,32 @@ const G = (function () {
         player.spares[e] = n > 0 ? Math.min(w.maxSpare, n - 1) : 0;
       }
     }
-    player.data = isTest ? 3000 : (cfg.data || 0);
+    player.infiniteData = isTest;
+    player.data = isTest ? 999999 : (cfg.data || 0);
     player.inv = [];
     player.sel = null;
     player.looted = 0;
     player.dismantledValue = 0;
-    player.kit = isTest ? { medkit: 6, battery: 9 } : {
-      medkit: Store.kit().medkit, battery: Store.kit().battery
-    };
+
+    /* 道具只在局外配置；训练场初始不携带，通过配装台选择 */
+    const gadgetSrc = isTest
+      ? []
+      : (Array.isArray(cfg.gadgets) ? cfg.gadgets : Store.loadout().gadgets);
+    player.gadgets = [null, null];
+    for (let i = 0; i < 2 && i < (gadgetSrc || []).length; i++) {
+      const id = gadgetSrc[i];
+      if (GADGET_BY_ID[id] && player.gadgets.indexOf(id) < 0) player.gadgets[i] = id;
+    }
+    player.gadgetCd = [0, 0];
+    player.gadgetAim = -1;
+    player.gadgetAimOffset = { x: 0, z: 0 };
+    trainingWeapons = [];
+    trainingGadgets = [];
+    closeTrainingLoadout();
 
     player.x = World.spawn.x;
     player.z = World.spawn.z;
+    player.gadgetTarget = { x: player.x, z: player.z };
     player.yaw = TOUCH_MODE ? Math.PI : 0;
     player.moveYaw = player.yaw;
     player.cool = 0;
@@ -2848,6 +3859,7 @@ const G = (function () {
     kills = 0; looted = 0; spittersKilled = 0; time = 0;
     tracers = []; flashes = []; sparks = []; projectiles = [];
     bullets = []; zones = []; beams = []; bolts = []; sonicWaves = []; rings = [];
+    knives = []; grenades = []; blasts = []; radFields = [];
     lidDebris = [];
     CAM.pitch = (Q_PITCH >= 30 && Q_PITCH <= 90)
       ? Q_PITCH
@@ -2904,14 +3916,15 @@ const G = (function () {
     HUD.reset();
     HUD.buildSlots(player);
     HUD.setCombatMode(true);
+    HUD.setCursorVisible(false);
     HUD.hideEnd();
     HUD.data(player.data);
     HUD.prompt(null);
     const d0 = Math.hypot(World.spawn.x - World.pad.x, World.spawn.z - World.pad.z);
     HUD.objective('撤离点 · ' + Math.round(d0) + ' m', false);
     if (isTest) {
-      HUD.objective('测试场 · 撤离台 ' + Math.round(d0) + ' m', false);
-      HUD.toast('测试场 · 1-5 切换武器 · 蓝色刷新点站 1 秒', 'good');
+      HUD.objective('测试场 · 靠近配装台按 F 选择装备', false);
+      HUD.toast('训练场 · 初始空手 · 配装台按 F 切换武器 / 道具', 'good');
     } else {
       HUD.toast('进入设施 · 搜刮物资并寻找撤离台', 'good');
     }
@@ -2922,12 +3935,18 @@ const G = (function () {
       TOUCH.setAuto(player.weapon >= 0 && !!WEAPONS[player.weapon].auto);
       if (!SELFTEST && isPortrait()) setPause(true);
     }
+    mouse.lastUiLock = false;
+    mouse.autoLockPending = !TOUCH_MODE;
+    armMouseLock();
     if (QS.get('die') === '1') { player.dead = true; player.deadT = 0.5; }
     flash(380);
   }
 
   function finishRun(win, reason) {
     if (ended || mode !== 'mission') return;
+    closeTrainingLoadout();
+    setMouseLock(false);
+    mouse.autoLockPending = false;
     for (let i = 0; i < World.chests.length; i++) {
       World.chests[i].prying = false;
       World.chests[i].pryT = 0;
@@ -2956,6 +3975,7 @@ const G = (function () {
     if (pauseBox) pauseBox.classList.add('hidden');
     Inventory.close();
     HUD.setCombatMode(true);
+    HUD.setCursorVisible(!TOUCH_MODE);
 
     const haul = player.inv.reduce(function (s, it) { return s + (it.value || 0); }, 0);
     const itemCount = player.inv.length;
@@ -2977,11 +3997,10 @@ const G = (function () {
       overflow = r.overflowCount;
       overflowValue = r.overflowValue;
       Store.addBank(player.data);
-      Store.setKit(player.kit);
     } else {
       Store.clearLoadoutWeapons();
-      Store.setKit({ medkit: 0, battery: 0 });
     }
+    cancelGadgetAim();
 
     const before = Store.contracts().map(function (c) { return c.progress; });
     Contracts.applyRun({
@@ -3028,6 +4047,12 @@ const G = (function () {
 
   function toLobby() {
     if (mode === 'lobby') return;
+    closeTrainingLoadout();
+    setMouseLock(false);
+    mouse.autoLockPending = false;
+    mouse.lastUiLock = false;
+    cancelGadgetAim();
+    knives = []; grenades = []; blasts = []; radFields = [];
     mode = 'lobby';
     ended = false;
     paused = false;
@@ -3040,6 +4065,7 @@ const G = (function () {
     HUD.respawn(0);
     Inventory.reset();
     HUD.setCombatMode(false);
+    HUD.setCursorVisible(false);
     HUD.hideEnd();
     const pauseBox = $('pause');
     if (pauseBox) pauseBox.classList.add('hidden');
@@ -3139,8 +4165,16 @@ const G = (function () {
 
   function bindUi() {
     $('againBtn').addEventListener('click', toLobby);
-    $('resumeBtn').addEventListener('click', function () { setPause(false); });
+    $('resumeBtn').addEventListener('click', function () {
+      setPause(false);
+      armMouseLock();
+    });
     $('abandonBtn').addEventListener('click', function () { finishRun(false, 'abandon'); });
+    const trainClose = $('trainClose');
+    if (trainClose) trainClose.addEventListener('click', function () {
+      closeTrainingLoadout();
+      armMouseLock();
+    });
 
     const actions = document.querySelectorAll('[data-touch-act]');
     for (let i = 0; i < actions.length; i++) {
@@ -3299,13 +4333,26 @@ const G = (function () {
         if (e) damageEnemy(e, dmg || 1, 0, [1, 1, 1], true);
       },
       reload: startReload,
-      finishReload: finishReload
+      finishReload: finishReload,
+      aimGadget: startGadgetAim,
+      useGadget: function (slot) {
+        if (player.gadgetAim !== slot) startGadgetAim(slot);
+        return player.gadgetAim === slot ? useGadget(slot) : false;
+      },
+      screenGround: function (x, y) { return screenToGround(x, y, 0); },
+      clampGrenade: function (x, z) {
+        return clampGrenadeTarget(x, z, GADGET_BY_ID.grenade.range);
+      }
     },
     state: {
       player: player,
       cam: CAM,
       get enemies() { return enemies; },
       get beams() { return beams; },
+      get knives() { return knives; },
+      get grenades() { return grenades; },
+      get radFields() { return radFields; },
+      get blasts() { return blasts; },
       get lidDebris() { return lidDebris; },
       get time() { return time; },
       get kills() { return kills; },

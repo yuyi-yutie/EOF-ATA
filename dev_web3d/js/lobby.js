@@ -32,6 +32,7 @@ const Lobby = (function () {
   let character = 0;
   let chipPicker = -1;
   let weaponPicker = -1;
+  let gadgetPick = -1;
   let msgTimer = 0;
   let chipDrag = null, chipGhost = null, chipDragMovedAt = 0;
 
@@ -43,7 +44,7 @@ const Lobby = (function () {
     el.chars = UI.$('lobbyChars');
     el.charName = UI.$('lobbyCharName');
     el.load = UI.$('lobbyLoad');
-    el.kit = UI.$('lobbyKit');
+    el.gadgets = UI.$('lobbyGadgets');
     el.carry = UI.$('lobbyCarry');
     el.carryMax = UI.$('lobbyCarryMax');
     el.cost = UI.$('lobbyCost');
@@ -144,6 +145,7 @@ const Lobby = (function () {
       panes[i].classList.toggle('on', name !== 'home' && panes[i].id === 'pane' + name.charAt(0).toUpperCase() + name.slice(1));
     }
     if (name !== 'stash') { chipPicker = -1; weaponPicker = -1; }
+    gadgetPick = -1;
     if (name === 'stash') Stash.refresh();
     if (name === 'craft') ChipShop.refresh();
     if (name === 'shop') Shop.refresh();
@@ -181,7 +183,7 @@ const Lobby = (function () {
 
   function persistLoadout() {
     const lo = Store.loadout();
-    Store.setLoadout({ weapons: lo.weapons, mags: mags, carry: carry });
+    Store.setLoadout({ weapons: lo.weapons, mags: mags, carry: carry, gadgets: lo.gadgets });
   }
 
   function setMag(slot, d) {
@@ -237,10 +239,7 @@ const Lobby = (function () {
     el.stashCount.textContent = Store.stashCount();
     el.stashValue.textContent = UI.fmt(Store.stashValue());
 
-    const kit = Store.kit();
-    el.kit.innerHTML =
-      '<span class="kit-chip"><i style="--kc:#e2604f"></i>医疗针 <b>' + (kit.medkit || 0) + '</b></span>' +
-      '<span class="kit-chip"><i style="--kc:#6fd8ef"></i>护盾电池 <b>' + (kit.battery || 0) + '</b></span>';
+    renderGadgets();
 
     el.start.classList.toggle('dis', cost > bank);
 
@@ -374,6 +373,90 @@ const Lobby = (function () {
       '</div>';
     }
     el.summary.innerHTML = html;
+  }
+
+  /* ---------------- 战术道具配置 ---------------- */
+  const GADGET_KEYS = ['Q', 'E'];
+
+  function renderGadgets() {
+    if (!el.gadgets) return;
+    const list = Store.loadout().gadgets || [null, null];
+    el.gadgets.innerHTML = '';
+    for (let slot = 0; slot < 2; slot++) {
+      const id = list[slot];
+      const g = id ? GADGET_BY_ID[id] : null;
+      const b = UI.el('button', 'gadget-config' + (g ? '' : ' empty') +
+        (gadgetPick === slot ? ' picking' : ''));
+      b.type = 'button';
+      if (g) b.style.setProperty('--gc', g.color);
+      b.innerHTML = g
+        ? '<span class="gc-key">' + GADGET_KEYS[slot] + '</span>' +
+          '<span class="gc-body">' +
+            '<span class="gc-name">' + g.name + '</span>' +
+            '<span class="gc-meta">' + g.tag + ' · ' + g.cost + ' NB · 冷却 ' + g.cooldown + 's</span>' +
+          '</span>'
+        : '<span class="gc-key">' + GADGET_KEYS[slot] + '</span>' +
+          '<span class="gc-body">' +
+            '<span class="gc-name">空道具槽</span>' +
+            '<span class="gc-meta">点击选择道具</span>' +
+          '</span>';
+      (function (s) {
+        b.addEventListener('click', function () {
+          gadgetPick = gadgetPick === s ? -1 : s;
+          refresh();
+        });
+      })(slot);
+      el.gadgets.appendChild(b);
+    }
+    if (gadgetPick >= 0) el.gadgets.appendChild(buildGadgetPicker(gadgetPick));
+  }
+
+  function buildGadgetPicker(slot) {
+    const box = UI.el('div', 'gadget-picker');
+    const cur = (Store.loadout().gadgets || [])[slot] || null;
+    box.appendChild(UI.el('div', 'gp-head', '选择 ' + GADGET_KEYS[slot] + ' 槽道具'));
+    GADGETS.forEach(function (g) {
+      const b = UI.el('button', 'gadget-pick' + (cur === g.id ? ' on' : ''));
+      b.type = 'button';
+      b.style.setProperty('--gc', g.color);
+      b.innerHTML =
+        '<i></i>' +
+        '<span class="gp-name">' + g.name + '</span>' +
+        '<span class="gp-meta">' + g.tag + ' · 使用 ' + g.cost + ' NB · 冷却 ' + g.cooldown + 's</span>' +
+        '<span class="gp-desc">' + g.desc + '</span>';
+      b.addEventListener('click', function (e) {
+        e.stopPropagation();
+        assignGadget(slot, g.id);
+      });
+      box.appendChild(b);
+    });
+    const none = UI.el('button', 'gadget-pick none' + (cur ? '' : ' on'), '不携带道具');
+    none.type = 'button';
+    none.addEventListener('click', function (e) {
+      e.stopPropagation();
+      assignGadget(slot, null);
+    });
+    box.appendChild(none);
+    return box;
+  }
+
+  function assignGadget(slot, id) {
+    const next = (Store.loadout().gadgets || [null, null]).slice();
+    if (id) {
+      /* 同一种道具只能占一个槽：配置到新槽时清掉旧槽 */
+      for (let i = 0; i < 2; i++) {
+        if (i !== slot && next[i] === id) next[i] = null;
+      }
+    }
+    next[slot] = id || null;
+    Store.setGadgets(next);
+    gadgetPick = -1;
+    refresh();
+    if (id && GADGET_BY_ID[id]) {
+      msg(GADGET_BY_ID[id].name + ' 已配置到 ' + GADGET_KEYS[slot] + ' 槽');
+    } else {
+      msg(GADGET_KEYS[slot] + ' 槽已清空');
+    }
   }
 
   function chipSlotsHtml(wi, chips) {
@@ -572,6 +655,7 @@ const Lobby = (function () {
     character = Store.char();
     chipPicker = -1;
     weaponPicker = -1;
+    gadgetPick = -1;
     refresh();
   }
 
@@ -631,10 +715,11 @@ const Lobby = (function () {
 
     const kitBox = UI.$('arcKit');
     if (kitBox) {
-      const kit = Store.kit();
-      kitBox.innerHTML =
-        '<span>医疗针 <b>' + kit.medkit + '</b></span>' +
-        '<span>护盾电池 <b>' + kit.battery + '</b></span>';
+      const list = Store.loadout().gadgets || [null, null];
+      kitBox.innerHTML = [0, 1].map(function (slot) {
+        const g = list[slot] ? GADGET_BY_ID[list[slot]] : null;
+        return '<span>' + GADGET_KEYS[slot] + ' <b>' + (g ? g.name : '空') + '</b></span>';
+      }).join('');
     }
     const stashLabel = UI.$('arcStashLabel');
     if (stashLabel) {

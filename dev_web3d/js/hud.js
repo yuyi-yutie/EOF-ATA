@@ -24,6 +24,7 @@ const HUD = (function () {
       camInfo: $('camInfo'),
       objective: $('objective'), objText: $('objText'),
       slots: $('slots'),
+      gadgets: $('gadgets'),
       prompt: $('prompt'),
       exWrap: $('extractWrap'), exFill: $('exFill'),
       respawnWrap: $('respawnWrap'), respawnFill: $('respawnFill'),
@@ -33,6 +34,7 @@ const HUD = (function () {
       endBody: $('endBody'), endNote: $('endNote'), endContracts: $('endContracts'),
       reload: $('reloadWrap'), reloadFill: $('reloadFill'),
       hitmark: $('hitmark'),
+      cursor: $('gameCursor'),
       reloadBtn: document.querySelector('[data-touch-act="reload"]')
     };
     buildDmgPool();
@@ -118,7 +120,9 @@ const HUD = (function () {
   }
 
   function data(n) {
-    if (el.data) el.data.textContent = UI.fmt(n);
+    if (!el.data) return;
+    const p = (typeof G !== 'undefined' && G.state && G.state.player) ? G.state.player : null;
+    el.data.textContent = (p && p.infiniteData) ? '∞' : UI.fmt(n);
   }
 
   function mag(i) {
@@ -190,6 +194,62 @@ const HUD = (function () {
     }
   }
 
+  /* 左下角 Q / E 道具槽：显示数据消耗、冷却与瞄准状态 */
+  function buildGadgets(p) {
+    if (!el.gadgets) return;
+    p = p || G.state.player;
+    el.gadgets.innerHTML = '';
+    for (let slot = 0; slot < 2; slot++) {
+      const id = p.gadgets ? p.gadgets[slot] : null;
+      const g = id ? GADGET_BY_ID[id] : null;
+      const d = UI.el('div', 'gadget-slot' + (g ? '' : ' empty'));
+      d.dataset.gslot = slot;
+      if (g) d.style.setProperty('--gc', g.color);
+      d.innerHTML = g
+        ? '<div class="g-top"><span class="g-key">' + (slot === 0 ? 'Q' : 'E') + '</span>' +
+            '<span class="g-tag">' + g.tag + '</span></div>' +
+          '<div class="g-name">' + g.name + '</div>' +
+          '<div class="g-foot"><span class="g-cost">' + g.cost + ' NB</span>' +
+            '<span class="g-state">就绪</span></div>' +
+          '<i class="g-cdbar"></i>'
+        : '<div class="g-top"><span class="g-key">' + (slot === 0 ? 'Q' : 'E') + '</span></div>' +
+          '<div class="g-name">空道具槽</div>' +
+          '<div class="g-foot"><span class="g-state">机库配置</span></div>';
+      el.gadgets.appendChild(d);
+    }
+    updateGadgets(p);
+  }
+
+  function updateGadgets(p) {
+    if (!el.gadgets) return;
+    p = p || G.state.player;
+    const list = el.gadgets.querySelectorAll('.gadget-slot');
+    for (let slot = 0; slot < list.length; slot++) {
+      const node = list[slot];
+      const id = p.gadgets ? p.gadgets[slot] : null;
+      const g = id ? GADGET_BY_ID[id] : null;
+      if (!g) {
+        node.className = 'gadget-slot empty';
+        continue;
+      }
+      const cd = (p.gadgetCd && p.gadgetCd[slot]) || 0;
+      const poor = p.data < g.cost;
+      const aiming = p.gadgetAim === slot;
+      node.className = 'gadget-slot' +
+        (aiming ? ' aim' : '') +
+        (cd > 0 ? ' cooling' : '') +
+        (poor ? ' no-data' : '') +
+        (cd <= 0 && !poor ? ' ready' : '');
+      const st = node.querySelector('.g-state');
+      if (st) {
+        st.textContent = cd > 0 ? '冷却 ' + cd.toFixed(1) + 's'
+          : (poor ? '数据不足' : (aiming ? '瞄准中' : '就绪'));
+      }
+      const bar = node.querySelector('.g-cdbar');
+      if (bar) bar.style.width = cd > 0 ? (cd / g.cooldown * 100).toFixed(1) + '%' : '0%';
+    }
+  }
+
   function reset() {
     const p = G.state.player;
     vitals();
@@ -213,6 +273,7 @@ const HUD = (function () {
     el.hpNum.textContent = Math.ceil(p.maxHp);
     el.shdNum.textContent = Math.ceil(p.maxShield);
     updateSlots(p);
+    buildGadgets(p);
   }
 
   function kills(n) { el.kills.textContent = n; }
@@ -268,6 +329,7 @@ const HUD = (function () {
     if (el.hud) el.hud.classList.toggle('hidden', !on);
     if (el.hitmark) el.hitmark.classList.toggle('hidden', !on);
     if (el.dmg) el.dmg.style.display = on ? '' : 'none';
+    if (!on) setCursorVisible(false);
     document.body.classList.toggle('combat', !!on);
   }
 
@@ -275,8 +337,18 @@ const HUD = (function () {
     if (el.hitmark) el.hitmark.classList.toggle('hidden', !on);
   }
 
-  /* 命中标记跟随鼠标位置 */
+  /* 游戏内鼠标指针：跟随虚拟鼠标坐标 */
+  function setCursorVisible(on) {
+    if (el.cursor) el.cursor.classList.toggle('hidden', !on);
+    document.body.classList.toggle('show-game-cursor', !!on);
+  }
+
+  /* 命中标记 / 游戏内鼠标跟随鼠标位置 */
   function aimAt(x, y) {
+    if (el.cursor) {
+      el.cursor.style.left = x + 'px';
+      el.cursor.style.top = y + 'px';
+    }
     if (!el.hitmark) return;
     el.hitmark.style.left = x + 'px';
     el.hitmark.style.top = y + 'px';
@@ -345,8 +417,9 @@ const HUD = (function () {
     if (typeof MINIMAP !== 'undefined') MINIMAP.draw(dt);
     updateDamageNumbers(dt);
     el.camInfo.textContent = Math.round(G.state.cam.pitch) + '° · ' + fps + 'fps';
-    el.data.textContent = UI.fmt(p.data);
+    el.data.textContent = p.infiniteData ? '∞' : UI.fmt(p.data);
     updateSlots(p);
+    updateGadgets(p);
 
     if (hitT > 0) {
       hitT -= dt;
@@ -378,9 +451,11 @@ const HUD = (function () {
   return {
     vitals: vitals, mag: mag, reset: reset, kills: kills, loot: loot,
     data: data, prompt: prompt, setCombatMode: setCombatMode, setAimVisible: setAimVisible,
+    setCursorVisible: setCursorVisible,
     aimAt: aimAt,
     objective: objective,
     buildSlots: buildSlots, updateSlots: updateSlots,
+    buildGadgets: buildGadgets, updateGadgets: updateGadgets,
     extract: extract, respawn: respawn, damage: damage, toast: toast, hit: hit,
     damageNumber: damageNumber,
     end: end, hideEnd: hideEnd, tick: tick

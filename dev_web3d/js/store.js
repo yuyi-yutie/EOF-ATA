@@ -2,13 +2,13 @@
 
 /* ============================================================
    Store — 局外存档（localStorage）
-   - 数据账户 / 仓库 / 战术补给 / 永久强化 / 合约 / 战绩 / 配装
+   - 数据账户 / 仓库 / 战术道具 / 永久强化 / 合约 / 战绩 / 配装
    - 所有写操作立即落盘；读到坏档自动回退到新档
    ============================================================ */
 
 const Store = (function () {
   const KEY = 'eofata3d.save.v1';
-  const SAVE_VERSION = 5;
+  const SAVE_VERSION = 6;
 
   const data = defaults();
 
@@ -17,7 +17,6 @@ const Store = (function () {
       version: SAVE_VERSION,
       bank: CFG.START_BANK,
       stash: [],
-      kit: { medkit: 1, battery: 1 },
       augments: { armor: 0, vitality: 0, pack: 0, loader: 0 },
       contracts: [],
       stats: {
@@ -27,7 +26,7 @@ const Store = (function () {
       },
       history: [],
       char: 0,
-      loadout: { weapons: [null, null], mags: [0, 0], carry: 0 },
+      loadout: { weapons: [null, null], mags: [0, 0], carry: 0, gadgets: ['knife', 'grenade'] },
       settings: { pitch: CFG.CAM.PITCH }
     };
   }
@@ -137,6 +136,19 @@ const Store = (function () {
     };
   }
 
+  /* 道具配置：两个槽位（Q / E），最多两种不同道具；空槽用 null */
+  function sanitizeGadgets(raw) {
+    const out = [null, null];
+    const src = Array.isArray(raw) ? raw : [];
+    for (let i = 0; i < 2 && i < src.length; i++) {
+      const id = src[i];
+      if (!GADGET_BY_ID[id]) continue;
+      if (out.indexOf(id) >= 0) continue;
+      out[i] = id;
+    }
+    return out;
+  }
+
   function equippedWeapon(slot) { return data.loadout.weapons[slot] || null; }
   function equippedByWeaponId(wi) {
     const list = data.loadout.weapons;
@@ -166,9 +178,6 @@ const Store = (function () {
     data.stats.bestHaul = Math.max(0, num(raw.stats && raw.stats.bestHaul, 0));
     data.stats.bestKills = Math.max(0, num(raw.stats && raw.stats.bestKills, 0));
     data.stats.time = Math.max(0, num(raw.stats && raw.stats.time, 0));
-
-    data.kit.medkit = clampInt(raw.kit && raw.kit.medkit, 0, 6, 0);
-    data.kit.battery = clampInt(raw.kit && raw.kit.battery, 0, 9, 0);
 
     AUGMENTS.forEach(function (a) {
       data.augments[a.id] = clampInt(raw.augments && raw.augments[a.id], 0, a.max, 0);
@@ -239,6 +248,10 @@ const Store = (function () {
       clampInt(lo.mags && lo.mags[1], 0, CFG.CARRY_MAX_MAGS, 0)
     ];
     data.loadout.carry = Math.max(0, Math.floor(num(lo.carry, 0) / CFG.CARRY_UNIT) * CFG.CARRY_UNIT);
+    /* 旧档没有道具字段：给出默认两种，方便直接进入新系统 */
+    data.loadout.gadgets = Array.isArray(lo.gadgets)
+      ? sanitizeGadgets(lo.gadgets)
+      : defaults().loadout.gadgets.slice();
     data.settings.pitch = clampInt(raw.settings && raw.settings.pitch, 30, 90, CFG.CAM.PITCH);
     /* v5：默认俯角统一回到 70°（旧档曾被迁移成 80°） */
     if (!raw.version || raw.version < 5) data.settings.pitch = 70;
@@ -265,7 +278,6 @@ const Store = (function () {
         }
         return o;
       }),
-      kit: { medkit: data.kit.medkit, battery: data.kit.battery },
       augments: {
         armor: data.augments.armor, vitality: data.augments.vitality,
         pack: data.augments.pack, loader: data.augments.loader
@@ -368,18 +380,7 @@ const Store = (function () {
   }
   function stashCells() { return Grid.usedCells(data.stash); }
 
-  /* ---------------- 补给 / 强化 ---------------- */
-  function buySupply(id) {
-    const s = SUPPLY_BY_ID[id];
-    if (!s) return { ok: false, msg: '未知补给' };
-    const have = data.kit[id] || 0;
-    if (have >= s.max) return { ok: false, msg: '携带上限已满' };
-    if (!spend(s.price)) return { ok: false, msg: '数据不足' };
-    data.kit[id] = have + 1;
-    save();
-    return { ok: true, msg: '已装填 ' + s.name };
-  }
-
+  /* ---------------- 强化 ---------------- */
   function buyAugment(id) {
     const a = AUGMENTS.find(function (x) { return x.id === id; });
     if (!a) return { ok: false, msg: '未知强化' };
@@ -411,7 +412,15 @@ const Store = (function () {
       clampInt(lo && lo.mags && lo.mags[1], 0, CFG.CARRY_MAX_MAGS, 0)
     ];
     data.loadout.carry = Math.max(0, Math.floor((lo && lo.carry || 0) / CFG.CARRY_UNIT) * CFG.CARRY_UNIT);
+    if (lo && Array.isArray(lo.gadgets)) data.loadout.gadgets = sanitizeGadgets(lo.gadgets);
     save();
+  }
+
+  /* 只改道具配置，不影响武器 / 弹夹 / 携带数据 */
+  function setGadgets(list) {
+    data.loadout.gadgets = sanitizeGadgets(list);
+    save();
+    return data.loadout.gadgets;
   }
 
   function equipWeapon(slot, item) {
@@ -567,13 +576,6 @@ const Store = (function () {
     return parts.join(' · ');
   }
 
-  function kit() { return data.kit; }
-  function setKit(k) {
-    data.kit.medkit = clampInt(k.medkit, 0, 6, 0);
-    data.kit.battery = clampInt(k.battery, 0, 9, 0);
-    save();
-  }
-
   function aug(id) { return data.augments[id] || 0; }
   function char() { return data.char; }
   function setChar(i) { data.char = clampInt(i, 0, 5, 0); save(); }
@@ -617,7 +619,6 @@ const Store = (function () {
     reset();
     data.bank = 10000;
     data.augments = { armor: 2, vitality: 1, pack: 1, loader: 2 };
-    data.kit = { medkit: 3, battery: 2 };
     data.stats = {
       runs: 14, extracts: 9, deaths: 5, kills: 187, looted: 142,
       dismantled: 6120, bestHaul: 1460, bestKills: 21, time: 6320
@@ -659,6 +660,7 @@ const Store = (function () {
     ];
     data.loadout.mags = [1, 0];
     data.loadout.carry = 100;
+    data.loadout.gadgets = ['knife', 'grenade'];
     save();
   }
 
@@ -669,15 +671,14 @@ const Store = (function () {
     stashAdd: stashAdd, stashAddMany: stashAddMany, stashRemove: stashRemove,
     stashDismantle: stashDismantle, stashDismantleAll: stashDismantleAll, stashRepack: stashRepack,
     stashCount: stashCount, stashValue: stashValue, stashCells: stashCells,
-    buySupply: buySupply, buyAugment: buyAugment,
-    loadout: loadout, setLoadout: setLoadout,
+    buyAugment: buyAugment,
+    loadout: loadout, setLoadout: setLoadout, setGadgets: setGadgets,
     equipWeapon: equipWeapon, unequipWeapon: unequipWeapon,
     equippedWeapon: equippedWeapon, clearLoadoutWeapons: clearLoadoutWeapons,
     weaponChips: weaponChips, setWeaponChips: setWeaponChips,
     installChip: installChip, uninstallChip: uninstallChip,
     craftChip: craftChip, craftWeapon: craftWeapon,
     weaponMods: weaponMods, modsSummary: modsSummary,
-    kit: kit, setKit: setKit,
     aug: aug, augments: function () { return data.augments; },
     char: char, setChar: setChar,
     maxHp: maxHp, maxShield: maxShield, invRows: invRows, reloadMul: reloadMul,

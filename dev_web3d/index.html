@@ -30,12 +30,15 @@
     if (standalone) document.documentElement.classList.add('standalone');
   })();
 </script>
-<link rel="stylesheet" href="css/app.css?v=20261128z10" />
+<link rel="stylesheet" href="css/app.css?v=20261126d10" />
 </head>
 <body>
 <div id="app">
   <canvas id="gl"></canvas>
   <div id="hitmark"></div>
+  <div id="gameCursor" class="hidden" aria-hidden="true">
+    <svg viewBox="0 0 20 26"><path d="M2 2 L2 21 L7.4 16.2 L11 24 L15 22.1 L11.4 14.5 L18 14.5 Z"></path></svg>
+  </div>
   <div id="dmgFlash"></div>
 
   <div id="hud" class="hidden">
@@ -71,6 +74,7 @@
 
     <div class="hud-bl">
       <div class="slot-list" id="slots"></div>
+      <div class="gadget-list" id="gadgets"></div>
     </div>
 
     <div class="ex-wrap" id="extractWrap">
@@ -107,7 +111,7 @@
 
     <div class="hint">
       <b>WASD</b> 移动 · <b>SHIFT</b> 奔跑 · <b>左键</b> 射击 · <b>R</b> 换弹 · <b>1/2</b> 换枪
-      · <b>F</b> 搜索/拾取 · <b>TAB</b> 背包 · <b>P</b> 暂停
+      · <b>Q/E</b> 长按道具瞄准 · <b>L</b> 锁定鼠标 · <b>F</b> 搜索/拾取 · <b>TAB</b> 背包 · <b>P</b> 暂停
     </div>
   </div>
 
@@ -131,8 +135,8 @@
         </div>
 
         <div class="panel-sec">
-          <div class="sec-head">战术补给 <em>在补给站购买</em></div>
-          <div class="kit-line" id="lobbyKit"></div>
+          <div class="sec-head">战术道具 <em>Q / E · 点击槽位更换</em></div>
+          <div class="gadget-line" id="lobbyGadgets"></div>
         </div>
       </div>
 
@@ -159,8 +163,8 @@
 
         <div class="stash-line">仓库 <b id="lobbyStashCount">0</b> 件 · <i id="lobbyStashValue">0</i> NB</div>
         <div class="lobby-msg" id="lobbyMainMsg"></div>
-        <button class="btn test-entry" id="testMapBtn">进入测试场 · 全武器</button>
-        <div class="test-hint">固定点 / 1 秒刷新敌人 / 随机物资</div>
+        <button class="btn test-entry" id="testMapBtn">进入测试场 · 训练配装</button>
+        <div class="test-hint">初始空手 / 配装台选武器与道具 / 1 秒刷新敌人</div>
       </div>
 
       <!-- ---------- 仓库 ---------- -->
@@ -245,15 +249,15 @@
         </div>
         <div class="shop-body">
           <div class="shop-col">
-            <div class="sec-head">战术补给 <em>带进局内，用掉才消耗</em></div>
+            <div class="sec-head">战术道具 <em>默认全部解锁</em></div>
             <div class="shop-list" id="shopSupplies"></div>
-            <div class="pane-tip">按件购买，撤离后未使用的补给保留；阵亡则丢失。</div>
+            <div class="pane-tip">在机库选择携带哪两种；局内无法更换。</div>
             <div class="shop-note">
               <div class="sec-head">使用方式</div>
               <div class="rule-list">
-                <div><b>打开背包</b>局内按 TAB 打开背包</div>
-                <div><b>战术道具</b>在右侧列表里点击使用</div>
-                <div><b>不耗数据</b>补给回复不消耗本局数据</div>
+                <div><b>Q / E</b>长按瞄准，松手使用</div>
+                <div><b>数据消耗</b>使用瞬间扣除本局数据</div>
+                <div><b>冷却</b>使用成功后进入该道具冷却</div>
               </div>
             </div>
           </div>
@@ -327,7 +331,7 @@
               <div class="arc-loadout" id="arcLoadout"></div>
             </div>
             <div class="panel-sec">
-              <div class="sec-head">战术补给 / 仓库</div>
+              <div class="sec-head">战术道具 / 仓库</div>
               <div class="arc-kit" id="arcKit"></div>
               <div class="arc-cap-label" id="arcStashLabel">仓库 0 / 96</div>
               <div class="arc-cap"><i id="arcStashFill"></i></div>
@@ -393,10 +397,6 @@
             <div class="sec-head">弹药压装 <em>备弹上限 2 夹</em></div>
             <div class="craft-list" id="craftList"></div>
           </div>
-          <div class="side-sec">
-            <div class="sec-head">战术道具 <em>补给站购买</em></div>
-            <div class="kit-list" id="kitList"></div>
-          </div>
           <div class="action-progress hidden" id="actionProg">
             <div class="ap-label" id="apLabel">分解中</div>
             <div class="ap-bar"><i id="apFill"></i></div>
@@ -416,6 +416,26 @@
       <button class="btn touch-only fs-only" data-fullscreen>全屏切换</button>
       <button class="btn" id="abandonBtn">放弃行动 · 返回机库</button>
       <div class="mini-foot">P / ESC 继续</div>
+    </div>
+  </div>
+
+  <!-- ================= 训练场配装台 ================= -->
+  <div id="trainingLoadout" class="screen hidden">
+    <div class="training-panel">
+      <div class="mini-tag">// TRAINING LOADOUT</div>
+      <div class="mini-title">训练配装</div>
+      <div class="training-cols">
+        <div class="training-col">
+          <div class="sec-head">武器 <em>最多两把</em></div>
+          <div class="train-list" id="trainWeapons"></div>
+        </div>
+        <div class="training-col">
+          <div class="sec-head">战术道具 <em>最多两个 · 无冷却</em></div>
+          <div class="train-list" id="trainGadgets"></div>
+        </div>
+      </div>
+      <div class="training-note">训练场数据无限 · 武器自动配满弹夹与 9 个备弹</div>
+      <button type="button" class="btn primary" id="trainClose">完成 · F / TAB / ESC</button>
     </div>
   </div>
 
@@ -459,35 +479,28 @@
 
 <script>
   window.__errs = [];
+  window.__build = '20261126d21';
+  console.info('EOFATA build ' + window.__build);
+  document.title = 'EOFATA 3D — End of Future : ATA · ' + window.__build;
   window.addEventListener('error', function (e) {
     window.__errs.push((e.message || 'err') + ' @' + (e.filename || '') + ':' + (e.lineno || 0));
     document.title = 'ERR: ' + window.__errs.join(' | ').slice(0, 400);
   });
 </script>
-<script src="js/config.js?v=20261128z10"></script>
-<script src="js/items.js?v=20261128z10"></script>
-<script src="js/grid.js?v=20261128z10"></script>
-<script src="js/store.js?v=20261128z10"></script>
-<script src="js/models.js?v=20261128z10"></script>
-<script src="js/weaponview.js?v=20261128z10"></script>
-<script src="js/weapondrag.js?v=20261128z10"></script>
-<script src="js/world.js?v=20261128z10"></script>
-<script src="js/hangar.js?v=20261128z10"></script>
-<script src="js/gl.js?v=20261128z10"></script>
-<script src="js/asset.js?v=20261128z10"></script>
-<script src="js/ui.js?v=20261128z10"></script>
-<script src="js/mobile.js?v=20261128z10"></script>
-<script src="js/minimap.js?v=20261128z10"></script>
-<script src="js/hud.js?v=20261128z10"></script>
-<script src="js/itemtip.js?v=20261128z10"></script>
-<script src="js/inventory.js?v=20261128z10"></script>
-<script src="js/stash.js?v=20261128z10"></script>
-<script src="js/shop.js?v=20261128z10"></script>
-<script src="js/chipshop.js?v=20261128z10"></script>
-<script src="js/contracts.js?v=20261128z10"></script>
-<script src="js/lobby.js?v=20261128z10"></script>
-<script src="js/touch.js?v=20261128z10"></script>
-<script src="js/game.js?v=20261128z10"></script>
-<script src="js/selftest.js?v=20261128z10"></script>
+<script>
+  /* 开发页：每次加载给脚本一个唯一查询串，避免 file:// / 静态服务缓存旧 JS。 */
+  (function () {
+    var files = [
+      'config', 'items', 'grid', 'store', 'models', 'weaponview', 'weapondrag',
+      'world', 'hangar', 'gl', 'asset', 'ui', 'mobile', 'minimap', 'hud',
+      'itemtip', 'inventory', 'stash', 'shop', 'chipshop', 'contracts',
+      'lobby', 'touch', 'game', 'selftest'
+    ];
+    var v = window.__build + '.' + Date.now();
+    for (var i = 0; i < files.length; i++) {
+      document.write('<script src="js/' + files[i] + '.js?v=' + v + '"><\/script>');
+    }
+  })();
+</script>
 </body>
 </html>

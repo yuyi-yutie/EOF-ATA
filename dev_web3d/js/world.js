@@ -16,6 +16,7 @@ const World = (function () {
   let props = [];
   let loot = [];
   let chests = [];
+  let houses = [];
 
   const CELL = CFG.CELL;
 
@@ -115,13 +116,555 @@ const World = (function () {
     return ch;
   }
 
+  /* ============================================================
+     安全屋：Blender 模型（墙壁 / 屋顶 / 门）在游戏里拼装
+     - 模型正面朝局部 -Z，门铰链在局部 [-doorW/2, 0, frontZ]
+     - 墙壁阻挡移动 / 子弹 / 视线；门关闭时同样阻挡
+     - 屋顶没有碰撞，只在玩家能看见屋内且距离够近时隐藏
+     ============================================================ */
+  function houseLocal(h, lx, lz) {
+    const c = Math.cos(h.yaw), s = Math.sin(h.yaw);
+    return { x: h.x + c * lx + s * lz, z: h.z - s * lx + c * lz };
+  }
+
+  function houseToLocal(h, x, z) {
+    const c = Math.cos(h.yaw), s = Math.sin(h.yaw);
+    const dx = x - h.x, dz = z - h.z;
+    return { x: c * dx - s * dz, z: s * dx + c * dz };
+  }
+
+  function makeHouse(x, z, yaw, wModules, dModules, doorList, id, partitions) {
+    const C = CFG.HOUSE;
+    const M = C.MODULE;
+    const w = Math.max(C.MIN_MODULES, Math.min(C.MAX_MODULES, wModules | 0));
+    const d = Math.max(C.MIN_MODULES, Math.min(C.MAX_MODULES, dModules | 0));
+    const h = {
+      id: id || ('house_' + x.toFixed(1) + '_' + z.toFixed(1)),
+      x: x, z: z, yaw: yaw,
+      w: w, d: d, module: M,
+      halfW: w * M * 0.5, halfD: d * M * 0.5,
+      wallH: C.WALL_H, wallT: C.WALL_T,
+      doorW: C.DOOR_W, doorH: C.DOOR_H, doorT: C.DOOR_T,
+      openAngle: 1.76,
+      roofHidden: false,
+      walls: [], doors: [], modules: [], interiorModules: [],
+      floorCells: [], roofCells: [],
+      corners: [], roofUnits: [],
+      samples: []
+    };
+    const hw = h.halfW, hd = h.halfD;
+    const doorSet = {};
+    (doorList || []).forEach(function (d) {
+      if (d && d.side && isFinite(d.index)) doorSet[d.side + '#' + (d.index | 0)] = true;
+    });
+
+    function modulePoint(module, ox, oz) {
+      const c = Math.cos(module.yaw), s = Math.sin(module.yaw);
+      return { x: module.cx + c * ox + s * oz, z: module.cz - s * ox + c * oz };
+    }
+
+    const sides = [
+      { key: 'front', count: w, yaw: 0,
+        center: function (i) { return { x: -hw + M * 0.5 + i * M, z: hd - C.WALL_T * 0.5 }; } },
+      { key: 'right', count: d, yaw: Math.PI * 0.5,
+        center: function (i) { return { x: hw - C.WALL_T * 0.5, z: hd - M * 0.5 - i * M }; } },
+      { key: 'back', count: w, yaw: Math.PI,
+        center: function (i) { return { x: -hw + M * 0.5 + i * M, z: -hd + C.WALL_T * 0.5 }; } },
+      { key: 'left', count: d, yaw: -Math.PI * 0.5,
+        center: function (i) { return { x: -hw + C.WALL_T * 0.5, z: hd - M * 0.5 - i * M }; } }
+    ];
+
+    function addHouseModule(sideKey, index, localX, localZ, moduleYaw, type, interior) {
+      const world = houseLocal(h, localX, localZ);
+      const module = {
+        side: sideKey, index: index,
+        cx: world.x, cz: world.z,
+        yaw: h.yaw + moduleYaw,
+        sideYaw: moduleYaw,
+        type: type,
+        lx: localX, lz: localZ,
+        interior: !!interior,
+        door: null
+      };
+      if (type === 'door') {
+        const halfDoor = C.DOOR_W * 0.5;
+        const sideSeg = (M - C.DOOR_W) * 0.25;
+        const segW = (M - C.DOOR_W) * 0.5;
+        const left = modulePoint(module, -(halfDoor + sideSeg), 0);
+        const right = modulePoint(module,  (halfDoor + sideSeg), 0);
+        h.walls.push({ x: left.x, z: left.z, yaw: module.yaw, hx: segW * 0.5, hz: C.WALL_T * 0.5 });
+        h.walls.push({ x: right.x, z: right.z, yaw: module.yaw, hx: segW * 0.5, hz: C.WALL_T * 0.5 });
+
+        const hinge = modulePoint(module, -halfDoor, 0);
+        let maxDepth = 1.5;
+        if (!interior) {
+          const roomDepth = (sideKey === 'front' || sideKey === 'back' ? h.halfD : h.halfW);
+          maxDepth = Math.max(0.4, roomDepth - C.WALL_T * 0.5 - 0.2);
+        }
+        const door = {
+          house: h,
+          side: sideKey, index: index,
+          x: module.cx, z: module.cz,
+          yaw: module.yaw,
+          hingeX: hinge.x, hingeZ: hinge.z,
+          maxDepth: maxDepth,
+          open: false, t: 0, angle: 0,
+          rect: { x: module.cx, z: module.cz, yaw: module.yaw, hx: halfDoor, hz: C.DOOR_T * 0.5 },
+          module: module
+        };
+        module.door = door;
+        h.doors.push(door);
+      } else {
+        h.walls.push({ x: module.cx, z: module.cz, yaw: module.yaw, hx: M * 0.5, hz: C.WALL_T * 0.5 });
+      }
+      (interior ? h.interiorModules : h.modules).push(module);
+      return module;
+    }
+
+    for (let si = 0; si < sides.length; si++) {
+      const side = sides[si];
+      for (let i = 0; i < side.count; i++) {
+        const local = side.center(i);
+        const isDoor = !!doorSet[side.key + '#' + i];
+        const type = isDoor ? 'door' : ((i % 2 === 1) ? 'window' : 'solid');
+        addHouseModule(side.key, i, local.x, local.z, side.yaw, type, false);
+      }
+    }
+
+    /* 室内隔断：沿 2m 网格线放置，doors 为从 from 端开始的模块索引 */
+    (partitions || []).forEach(function (part) {
+      if (!part) return;
+      const axis = part.axis === 'z' ? 'z' : 'x';
+      const line = +part.line || 0;
+      const from = +part.from || 0;
+      const to = +part.to || 0;
+      if (to <= from) return;
+      const count = Math.max(1, Math.round((to - from) / M));
+      const pdoors = Array.isArray(part.doors) ? part.doors : [];
+      for (let i = 0; i < count; i++) {
+        const isDoor = pdoors.indexOf(i) >= 0;
+        let lx, lz, moduleYaw;
+        if (axis === 'x') {
+          lx = from + M * 0.5 + i * M;
+          lz = line;
+          moduleYaw = 0;
+        } else {
+          lx = line;
+          lz = from + M * 0.5 + i * M;
+          moduleYaw = Math.PI * 0.5;
+        }
+        addHouseModule('interior', i, lx, lz, moduleYaw,
+          isDoor ? 'door' : 'solid', true);
+      }
+    });
+
+    /* 地板 / 屋顶瓦片 */
+    for (let i = 0; i < w; i++) {
+      for (let j = 0; j < d; j++) {
+        const lx = -hw + M * 0.5 + i * M;
+        const lz = -hd + M * 0.5 + j * M;
+        const p = houseLocal(h, lx, lz);
+        const cell = { x: p.x, z: p.z, yaw: h.yaw, i: i, j: j };
+        h.floorCells.push(cell);
+        h.roofCells.push(cell);
+      }
+    }
+
+    /* 角柱：向内收 0.16m，柱身和底座都不超出外墙；柱顶藏在屋顶下方 */
+    for (let sx = -1; sx <= 1; sx += 2) {
+      for (let sz = -1; sz <= 1; sz += 2) {
+        const p = houseLocal(h, sx * (hw - 0.16), sz * (hd - 0.16));
+        h.corners.push({ x: p.x, z: p.z, yaw: h.yaw });
+      }
+    }
+    /* 大一点的房子加一个屋顶空调装饰 */
+    if (w >= 4 && d >= 3) {
+      const p = houseLocal(h, -hw + M * 1.5, hd - M * 1.5);
+      h.roofUnits.push({ x: p.x, z: p.z, yaw: h.yaw });
+    }
+
+    /* 屋内采样点：3×3 网格 + 每扇门向内的采样点 */
+    const fx = [-0.34, 0, 0.34];
+    for (let a = 0; a < fx.length; a++) {
+      for (let b = 0; b < fx.length; b++) {
+        const p = houseLocal(h, fx[a] * hw, fx[b] * hd);
+        h.samples.push(p);
+      }
+    }
+    for (let i = 0; i < h.doors.length; i++) {
+      const door = h.doors[i];
+      const module = door.module;
+      if (!module) continue;
+      const p = modulePoint(module, 0, -1.0);
+      h.samples.push({ x: p.x, z: p.z });
+    }
+    return h;
+  }
+
+  /* 射线与带旋转的矩形求交；返回最近命中距离和世界法线 */
+  function rayRectHit(x0, z0, dx, dz, maxD, cx, cz, yaw, hx, hz) {
+    const c = Math.cos(yaw), s = Math.sin(yaw);
+    const ox = c * (x0 - cx) - s * (z0 - cz);
+    const oz = s * (x0 - cx) + c * (z0 - cz);
+    const ldx = c * dx - s * dz;
+    const ldz = s * dx + c * dz;
+    let tmin = 0, tmax = maxD;
+    let nxL = 0, nzL = 0, axis = null;
+
+    if (Math.abs(ldx) < 1e-9) {
+      if (ox < -hx || ox > hx) return null;
+    } else {
+      let t1 = (-hx - ox) / ldx;
+      let t2 = (hx - ox) / ldx;
+      if (t1 > t2) { const tmp = t1; t1 = t2; t2 = tmp; }
+      if (t1 > tmin) { tmin = t1; nxL = ldx > 0 ? -1 : 1; nzL = 0; axis = 'x'; }
+      if (t2 < tmax) tmax = t2;
+      if (tmin > tmax) return null;
+    }
+
+    if (Math.abs(ldz) < 1e-9) {
+      if (oz < -hz || oz > hz) return null;
+    } else {
+      let t1 = (-hz - oz) / ldz;
+      let t2 = (hz - oz) / ldz;
+      if (t1 > t2) { const tmp = t1; t1 = t2; t2 = tmp; }
+      if (t1 > tmin) { tmin = t1; nxL = 0; nzL = ldz > 0 ? -1 : 1; axis = 'z'; }
+      if (t2 < tmax) tmax = t2;
+      if (tmin > tmax) return null;
+    }
+
+    if (!axis || tmin < 0 || tmin > maxD) return null;
+    return {
+      d: tmin,
+      nx: c * nxL + s * nzL,
+      nz: -s * nxL + c * nzL,
+      axis: axis
+    };
+  }
+
+  function doorClosed(d) {
+    return !!d && d.t < 0.35;
+  }
+
+  function houseHasOpenDoor(h) {
+    for (let i = 0; i < h.doors.length; i++) {
+      if (h.doors[i].t > 0.35) return true;
+    }
+    return false;
+  }
+
+  function houseRayHit(x0, z0, dx, dz, maxD) {
+    if (!houses.length) return null;
+    let best = null;
+    for (let hi = 0; hi < houses.length; hi++) {
+      const h = houses[hi];
+      for (let i = 0; i < h.walls.length; i++) {
+        const w = h.walls[i];
+        const hit = rayRectHit(x0, z0, dx, dz, maxD, w.x, w.z, w.yaw, w.hx, w.hz);
+        if (hit && (!best || hit.d < best.d)) best = hit;
+      }
+      for (let i = 0; i < h.doors.length; i++) {
+        const d = h.doors[i];
+        if (!doorClosed(d)) continue;
+        const hit = rayRectHit(x0, z0, dx, dz, maxD, d.rect.x, d.rect.z, d.rect.yaw, d.rect.hx, d.rect.hz);
+        if (hit && (!best || hit.d < best.d)) best = hit;
+      }
+    }
+    return best;
+  }
+
+  function houseBlocked(x, z, r) {
+    if (!houses.length) return false;
+    for (let hi = 0; hi < houses.length; hi++) {
+      const h = houses[hi];
+      for (let i = 0; i < h.walls.length; i++) {
+        const w = h.walls[i];
+        if (rectOverlap2(w.x, w.z, w.yaw, w.hx, w.hz, x, z, r)) return true;
+      }
+      for (let i = 0; i < h.doors.length; i++) {
+        const d = h.doors[i];
+        if (!doorClosed(d)) continue;
+        if (rectOverlap2(d.rect.x, d.rect.z, d.rect.yaw, d.rect.hx, d.rect.hz, x, z, r)) return true;
+      }
+    }
+    return false;
+  }
+
+  function houseSegmentBlocked(x0, z0, x1, z1, includeDoor) {
+    if (!houses.length) return false;
+    const dx = x1 - x0, dz = z1 - z0;
+    const dist = Math.hypot(dx, dz);
+    if (dist < 1e-4) return false;
+    const ux = dx / dist, uz = dz / dist;
+    for (let hi = 0; hi < houses.length; hi++) {
+      const h = houses[hi];
+      for (let i = 0; i < h.walls.length; i++) {
+        const w = h.walls[i];
+        const hit = rayRectHit(x0, z0, ux, uz, dist, w.x, w.z, w.yaw, w.hx, w.hz);
+        if (hit && hit.d < dist - 0.06) return true;
+      }
+      if (!includeDoor) continue;
+      for (let i = 0; i < h.doors.length; i++) {
+        const d = h.doors[i];
+        if (!doorClosed(d)) continue;
+        const hit = rayRectHit(x0, z0, ux, uz, dist, d.rect.x, d.rect.z, d.rect.yaw, d.rect.hx, d.rect.hz);
+        if (hit && hit.d < dist - 0.06) return true;
+      }
+    }
+    return false;
+  }
+
+  function houseDistance(h, x, z) {
+    const l = houseToLocal(h, x, z);
+    const dx = Math.max(0, Math.abs(l.x) - h.halfW);
+    const dz = Math.max(0, Math.abs(l.z) - h.halfD);
+    return Math.hypot(dx, dz);
+  }
+
+  function houseContains(h, x, z, pad) {
+    const l = houseToLocal(h, x, z);
+    const p = pad || 0;
+    return Math.abs(l.x) <= h.halfW - p && Math.abs(l.z) <= h.halfD - p;
+  }
+
+  function inAnyHouse(x, z, pad) {
+    for (let i = 0; i < houses.length; i++) {
+      if (houseContains(houses[i], x, z, pad)) return true;
+    }
+    return false;
+  }
+
+  function houseCanSeeInterior(h, px, pz) {
+    const C = CFG.HOUSE;
+    /* 门洞专用采样：从斜角看进去时，固定屋内采样点可能都被门框挡住，
+       但门洞另一侧仍能看到屋内。沿整扇门宽、多个深度取样。 */
+    for (let i = 0; i < h.doors.length; i++) {
+      const d = h.doors[i];
+      if (d.t <= 0.35) continue;
+      const ix = -Math.sin(d.yaw), iz = -Math.cos(d.yaw); // 向内
+      const rx = Math.cos(d.yaw), rz = -Math.sin(d.yaw);  // 沿门宽
+      const half = C.DOOR_W * 0.5 - 0.06;
+      const fracs = [-0.95, -0.71, -0.47, -0.23, 0, 0.23, 0.47, 0.71, 0.95];
+      const depths = [0.16, 0.6, 1.2, 2.0, 3.0];
+      const maxDepth = d.maxDepth || 3.0;
+      for (let fi = 0; fi < fracs.length; fi++) {
+        for (let di = 0; di < depths.length; di++) {
+          const depth = depths[di];
+          if (depth > maxDepth) continue;
+          const ox = fracs[fi] * half;
+          const sx = d.x + rx * ox + ix * depth;
+          const sz = d.z + rz * ox + iz * depth;
+          if (!sightBlocked(px, pz, sx, sz)) return true;
+        }
+      }
+    }
+    for (let i = 0; i < h.samples.length; i++) {
+      const s = h.samples[i];
+      if (!sightBlocked(px, pz, s.x, s.z)) return true;
+    }
+    return false;
+  }
+
+  function updateHouses(dt, px, pz) {
+    if (!houses.length) return;
+    if (typeof ASSETS !== 'undefined' && ASSETS.house && ASSETS.house.ready &&
+        typeof ASSETS.house.openAngle === 'number') {
+      for (let i = 0; i < houses.length; i++) houses[i].openAngle = ASSETS.house.openAngle;
+    }
+    const C = CFG.HOUSE;
+    const k = 1 - Math.exp(-9 * Math.max(0, Math.min(0.1, dt)));
+    for (let hi = 0; hi < houses.length; hi++) {
+      const h = houses[hi];
+      for (let i = 0; i < h.doors.length; i++) {
+        const door = h.doors[i];
+        const target = door.open ? 1 : 0;
+        door.t += (target - door.t) * k;
+        if (Math.abs(target - door.t) < 0.002) door.t = target;
+        door.angle = door.t * h.openAngle;
+      }
+      const dist = houseDistance(h, px, pz);
+      const range = C.ROOF_HIDE_DIST + (h.roofHidden ? 0.6 : 0);
+      let see = false;
+      if (dist <= range) {
+        if (houseContains(h, px, pz, 0.02)) see = true;
+        else if (houseHasOpenDoor(h) && houseCanSeeInterior(h, px, pz)) see = true;
+      }
+      h.roofHidden = see;
+    }
+  }
+
+  function nearestDoor(px, pz) {
+    let best = null, bd = CFG.HOUSE.DOOR_INTERACT_R;
+    for (let hi = 0; hi < houses.length; hi++) {
+      const h = houses[hi];
+      for (let i = 0; i < h.doors.length; i++) {
+        const d = h.doors[i];
+        const dist = Math.hypot(d.x - px, d.z - pz);
+        if (dist < bd) { bd = dist; best = d; }
+      }
+    }
+    return best;
+  }
+
+  function toggleDoor(door) {
+    if (!door) return false;
+    door.open = !door.open;
+    return door.open;
+  }
+
+  function doorOccupied(door, x, z, r) {
+    if (!door) return false;
+    return rectOverlap2(door.rect.x, door.rect.z, door.rect.yaw, door.rect.hx, door.rect.hz, x, z, r || 0.48);
+  }
+
+  function drawFallbackHouseStatic(geo, h) {
+    const C = CFG.HOUSE;
+    const P = PAL;
+    const T = h.wallT;
+    geo.box({
+      x: h.x, y: 0.025, z: h.z,
+      sx: h.halfW * 2 - T * 2, sy: 0.05, sz: h.halfD * 2 - T * 2,
+      yaw: h.yaw, color: [0.30, 0.21, 0.14], outline: 0
+    });
+    function drawWallGroup(list) {
+      for (let i = 0; i < list.length; i++) {
+        const m = list[i];
+        const c = Math.cos(m.yaw), s = Math.sin(m.yaw);
+        function put(ox, oz, y, sx, sy, sz, color, outline, shadow) {
+          geo.box({
+            x: m.cx + c * ox + s * oz, y: y, z: m.cz - s * ox + c * oz,
+            sx: sx, sy: sy, sz: sz, yaw: m.yaw,
+            color: color, outline: outline || 0, shadow: !!shadow
+          });
+        }
+        if (m.type === 'door') {
+          put(-0.84, 0, h.wallH * 0.5, 0.32, h.wallH, T, P.wall, 0.02, true);
+          put( 0.84, 0, h.wallH * 0.5, 0.32, h.wallH, T, P.wall, 0.02, true);
+          put(0, 0, (h.doorH + h.wallH) * 0.5, h.doorW, h.wallH - h.doorH, T, P.wall, 0.02, true);
+        } else {
+          put(0, 0, h.wallH * 0.5, C.MODULE, h.wallH, T, P.wall, 0.02, true);
+        }
+      }
+    }
+    drawWallGroup(h.modules);
+    drawWallGroup(h.interiorModules);
+    for (let i = 0; i < h.corners.length; i++) {
+      const p = h.corners[i];
+      geo.box({
+        x: p.x, y: 1.40, z: p.z, sx: 0.24, sy: 2.80, sz: 0.24,
+        yaw: h.yaw, color: P.steel, outline: 0.012, shadow: true
+      });
+    }
+  }
+
+  function drawFallbackDoor(geo, door) {
+    const C = CFG.HOUSE;
+    const total = door.yaw + door.angle;
+    const half = C.DOOR_W * 0.5 - 0.01;
+    geo.box({
+      x: door.hingeX + Math.cos(total) * half,
+      y: C.DOOR_H * 0.5,
+      z: door.hingeZ - Math.sin(total) * half,
+      sx: C.DOOR_W - 0.02, sy: C.DOOR_H, sz: C.DOOR_T,
+      yaw: total, color: PAL.wood, outline: 0.016, shadow: true
+    });
+  }
+
+  function drawHouseStatic(geo) {
+    if (!houses.length) return;
+    const A = (typeof ASSETS !== 'undefined') ? ASSETS.house : null;
+    const C = CFG.HOUSE;
+    for (let hi = 0; hi < houses.length; hi++) {
+      const h = houses[hi];
+      /* 整栋房屋的平涂落地阴影 */
+      const sy = h.wallH + 0.5;
+      geo.box({
+        x: h.x, y: sy * 0.5, z: h.z,
+        sx: h.halfW * 2 + 0.7, sy: sy, sz: h.halfD * 2 + 0.7,
+        yaw: h.yaw, color: [0, 0, 0], outline: 0,
+        castOnly: true, shadow: true
+      });
+      if (!A || !A.ready) {
+        drawFallbackHouseStatic(geo, h);
+        continue;
+      }
+      for (let i = 0; i < h.floorCells.length; i++) {
+        const cell = h.floorCells[i];
+        geo.mesh(A.floor, { x: cell.x, y: 0, z: cell.z, yaw: cell.yaw });
+      }
+      function drawWallGroup(list) {
+        for (let i = 0; i < list.length; i++) {
+          const m = list[i];
+          const mesh = m.type === 'door' ? A.wallDoor : (m.type === 'window' ? A.wallWindow : A.wall);
+          if (mesh) geo.mesh(mesh, { x: m.cx, y: 0, z: m.cz, yaw: m.yaw });
+        }
+      }
+      drawWallGroup(h.modules);
+      drawWallGroup(h.interiorModules);
+      for (let i = 0; i < h.corners.length; i++) {
+        const p = h.corners[i];
+        geo.mesh(A.corner, { x: p.x, y: 0, z: p.z, yaw: h.yaw });
+      }
+    }
+  }
+
+  function drawFallbackRoof(geo, h) {
+    const C = CFG.HOUSE;
+    geo.box({
+      x: h.x, y: C.ROOF_Y + 0.15, z: h.z,
+      sx: h.halfW * 2 - 0.02, sy: 0.30, sz: h.halfD * 2 - 0.02,
+      yaw: h.yaw, color: [0.32, 0.34, 0.35], outline: 0.02, shadow: true
+    });
+    if (h.roofUnits.length) {
+      const u = h.roofUnits[0];
+      geo.box({
+        x: u.x, y: C.ROOF_TOP + 0.22, z: u.z,
+        sx: 1.3, sy: 0.44, sz: 1.0,
+        yaw: u.yaw, color: [0.40, 0.43, 0.46], outline: 0.016, shadow: true
+      });
+    }
+  }
+
+  function drawHouseScene(geo) {
+    if (!houses.length) return;
+    const A = (typeof ASSETS !== 'undefined') ? ASSETS.house : null;
+    const C = CFG.HOUSE;
+    for (let hi = 0; hi < houses.length; hi++) {
+      const h = houses[hi];
+      for (let i = 0; i < h.doors.length; i++) {
+        const door = h.doors[i];
+        if (A && A.ready) {
+          geo.mesh(A.door, { x: door.hingeX, y: 0, z: door.hingeZ, yaw: door.yaw + door.angle });
+        } else {
+          drawFallbackDoor(geo, door);
+        }
+      }
+      if (h.roofHidden) continue;
+      if (!A || !A.ready) {
+        drawFallbackRoof(geo, h);
+        continue;
+      }
+      for (let i = 0; i < h.roofCells.length; i++) {
+        const cell = h.roofCells[i];
+        /* 无房檐：2×2m 瓦片边缘与外墙齐平，不向外挑出 */
+        geo.mesh(A.roofTile, { x: cell.x, y: C.ROOF_Y, z: cell.z, yaw: cell.yaw });
+      }
+      if (A.roofUnit) {
+        for (let i = 0; i < h.roofUnits.length; i++) {
+          const u = h.roofUnits[i];
+          geo.mesh(A.roofUnit, { x: u.x, y: C.ROOF_TOP, z: u.z, yaw: u.yaw });
+        }
+      }
+    }
+  }
+
   function gen(seed) {
     rngState = (seed || 1234567) >>> 0 || 1;
     W = CFG.MAP_W; H = CFG.MAP_H;
     floor = new Uint8Array(W * H);
     rooms = []; props = []; loot = [];
     respawn = null; test = null;
-    chests = [];
+    chests = []; houses = [];
 
     /* 1. 房间 */
     const target = 9;
@@ -312,7 +855,7 @@ const World = (function () {
     W = 24; H = 24;
     floor = new Uint8Array(W * H);
     rooms = [{ x: 1, z: 1, w: W - 2, h: H - 2, cx: W >> 1, cz: H >> 1 }];
-    props = []; loot = []; respawn = null; test = null; chests = [];
+    props = []; loot = []; respawn = null; test = null; chests = []; houses = [];
 
     for (let z = 1; z < H - 1; z++) {
       for (let x = 1; x < W - 1; x++) floor[idx(x, z)] = 1;
@@ -325,7 +868,35 @@ const World = (function () {
 
     spawn = cellCenter(11, 20);
     pad = { x: cellCenter(20, 20).x, z: cellCenter(20, 20).z, r: CFG.EXTRACT_R };
-    respawn = { x: cellCenter(11, 16).x, z: cellCenter(11, 16).z, r: CFG.EXTRACT_R };
+    respawn = { x: 7, z: 42.5, r: CFG.EXTRACT_R };
+    /* 训练配装台：站在附近按 F 可切换训练场携带的武器 / 道具 */
+    const loadoutPad = { x: cellCenter(14, 20).x, z: cellCenter(14, 20).z, r: 1.7 };
+
+    /* 三栋模块化示例房：3×2 / 4×3 / 6×5 模块，门在任意外墙模块位。
+       放在训练场南侧左右两翼，给中间留出通往北侧靶区的通道。
+       改尺寸/门：makeHouse(x, z, yaw, wModules, dModules, doorList, id)，模块数 2–12。 */
+    houses.push(makeHouse(7, 35, 0, 3, 2, [
+      { side: 'front', index: 1 }
+    ], 'small', [
+      /* 6×4m 横向隔断，中间一扇内门 */
+      { axis: 'x', line: 0, from: -3, to: 3, doors: [1] }
+    ]));
+    houses.push(makeHouse(16, 35, 0, 4, 3, [
+      { side: 'front', index: 2 },
+      { side: 'right', index: 1 }
+    ], 'medium', [
+      /* 8×6m 纵向隔断，中间一扇内门 */
+      { axis: 'z', line: 0, from: -3, to: 3, doors: [1] }
+    ]));
+    houses.push(makeHouse(35, 30, 0, 6, 5, [
+      { side: 'front', index: 1 },
+      { side: 'front', index: 4 },
+      { side: 'right', index: 2 }
+    ], 'large', [
+      /* 12×10m：一道纵向 + 一道横向隔断，三个房间 */
+      { axis: 'z', line: 0, from: -5, to: 5, doors: [2] },
+      { axis: 'x', line: 1, from: -6, to: 0, doors: [1] }
+    ]));
 
     const spawns = [];
     const add = function (group, type, x, z) {
@@ -364,12 +935,12 @@ const World = (function () {
     }
 
     /* 4. 训练场物资箱：先放箱子，再让散落物资避开箱子 */
-    const chestCells = [[8, 17], [15, 18], [14, 12], [21, 15]];
+    const chestCells = [[4, 15], [15, 19], [22, 19], [22, 10]];
     for (let ci = 0; ci < chestCells.length; ci++) {
       const c = cellCenter(chestCells[ci][0], chestCells[ci][1]);
       chests.push(makeChest(c.x, c.z, Math.atan2(spawn.x - c.x, spawn.z - c.z), 0.62));
     }
-    const wc = cellCenter(17, 12);
+    const wc = cellCenter(18, 10);
     chests.push(makeWeaponCrate(wc.x, wc.z, Math.atan2(spawn.x - wc.x, spawn.z - wc.z), rnd));
 
     /* 5. 随机物资 */
@@ -379,9 +950,11 @@ const World = (function () {
       const cz = ri(2, H - 3);
       if (!isFloor(cx, cz)) continue;
       const c = cellCenter(cx, cz);
+      if (inAnyHouse(c.x, c.z, 0.9)) continue;
       if (Math.hypot(c.x - spawn.x, c.z - spawn.z) < 3) continue;
       if (Math.hypot(c.x - pad.x, c.z - pad.z) < pad.r + 1) continue;
       if (Math.hypot(c.x - respawn.x, c.z - respawn.z) < respawn.r + 1) continue;
+      if (Math.hypot(c.x - loadoutPad.x, c.z - loadoutPad.z) < loadoutPad.r + 1.2) continue;
       let tooClose = false;
       for (let i = 0; i < chests.length; i++) {
         if (Math.hypot(chests[i].x - c.x, chests[i].z - c.z) < 3.2) { tooClose = true; break; }
@@ -400,7 +973,7 @@ const World = (function () {
       });
     }
 
-    test = { respawn: respawn, spawns: spawns, extractHold: 2.0 };
+    test = { respawn: respawn, spawns: spawns, extractHold: 2.0, loadout: loadoutPad };
     return api;
   }
 
@@ -465,7 +1038,32 @@ const World = (function () {
     const padC = [0.94, 0.69, 0.30];
     drawPad(geo, pad, padC, false);
     if (respawn) drawPad(geo, respawn, [0.43, 0.85, 0.94], true);
+    if (test && test.loadout) drawLoadoutPad(geo, test.loadout);
+
+    /* 模块化安全屋：地板 / 墙 / 角柱进静态几何；屋顶和门是动态场景几何 */
+    drawHouseStatic(geo);
     return geo;
+  }
+
+  /* 训练配装台：地面平台 + 操作台 + 悬浮全息块 */
+  function drawLoadoutPad(geo, p) {
+    const cyan = [0.56, 0.90, 0.96];
+    geo.plane({ x: p.x, y: 0.035, z: p.z, sx: 2.7, sz: 2.7, color: [0.12, 0.19, 0.21] });
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+      geo.box({
+        x: p.x + Math.cos(a) * (p.r - 0.25), y: 0.055, z: p.z + Math.sin(a) * (p.r - 0.25),
+        sx: 0.38, sy: 0.05, sz: 0.38, yaw: a, color: cyan, outline: 0, emis: true
+      });
+    }
+    /* 操作台放在平台外侧，玩家站到平台中央即可按 F */
+    const cx = p.x, cz = p.z - 1.05;
+    geo.box({ x: cx, y: 0.44, z: cz, sx: 1.05, sy: 0.88, sz: 0.52, yaw: 0, color: [0.16, 0.24, 0.25], outline: 0.018, shadow: true });
+    geo.box({ x: cx, y: 0.93, z: cz, sx: 0.92, sy: 0.10, sz: 0.44, yaw: 0, color: cyan, outline: 0.012 });
+    geo.box({ x: cx, y: 1.02, z: cz - 0.02, sx: 0.72, sy: 0.34, sz: 0.06, yaw: 0, color: [0.08, 0.20, 0.23], outline: 0.010 });
+    geo.box({ x: cx, y: 1.02, z: cz - 0.06, sx: 0.58, sy: 0.16, sz: 0.02, yaw: 0, color: cyan, outline: 0, emis: true });
+    const bob = Math.sin((typeof performance !== 'undefined' ? performance.now() : 0) * 0.002) * 0.06;
+    geo.box({ x: cx, y: 1.55 + bob, z: p.z, sx: 0.26, sy: 0.26, sz: 0.26, yaw: 0.6, color: cyan, outline: 0, emis: true });
   }
 
   function drawPad(geo, p, color, isRespawn) {
@@ -510,12 +1108,16 @@ const World = (function () {
   }
 
   function rectOverlap(cx, cz, yaw, h, x, z, r) {
+    return rectOverlap2(cx, cz, yaw, h, h, x, z, r);
+  }
+
+  function rectOverlap2(cx, cz, yaw, hx, hz, x, z, r) {
     const c = Math.cos(yaw), s = Math.sin(yaw);
     const dx = x - cx, dz = z - cz;
     const lx = c * dx - s * dz;
     const lz = s * dx + c * dz;
-    const qx = lx < -h ? -h : (lx > h ? h : lx);
-    const qz = lz < -h ? -h : (lz > h ? h : lz);
+    const qx = lx < -hx ? -hx : (lx > hx ? hx : lx);
+    const qz = lz < -hz ? -hz : (lz > hz ? hz : lz);
     const ex = lx - qx, ez = lz - qz;
     return ex * ex + ez * ez <= r * r + 1e-9;
   }
@@ -542,6 +1144,7 @@ const World = (function () {
       if (ch.corpse || ch.cr <= 0) continue;
       if (rectOverlap(ch.x, ch.z, ch.yaw || 0, 0.62, x, z, r)) return true;
     }
+    if (houseBlocked(x, z, r)) return true;
     return false;
   }
 
@@ -555,6 +1158,7 @@ const World = (function () {
       const p = props[i];
       if (propOverlap(p, x, z, 0)) return true;
     }
+    if (houseBlocked(x, z, 0)) return true;
     return false;
   }
 
@@ -695,7 +1299,7 @@ const World = (function () {
   /* 精确射线（DDA 逐格步进）：返回撞墙距离与穿越的格子轴。
      axis = 'x' / 'z' / 'both'（正好穿过格角），没有撞墙为 null。
      光学武器用它计算反射面，掠射角下也不会漏掉墙角。 */
-  function rayWallHit(x0, z0, dx, dz, maxD) {
+  function rayGridWallHit(x0, z0, dx, dz, maxD) {
     let cx = Math.floor(x0 / CELL);
     let cz = Math.floor(z0 / CELL);
     if (!isFloor(cx, cz)) return { d: 0, axis: null };
@@ -727,6 +1331,15 @@ const World = (function () {
     return { d: maxD, axis: null };
   }
 
+  function rayWallHit(x0, z0, dx, dz, maxD) {
+    const grid = rayGridWallHit(x0, z0, dx, dz, maxD);
+    const hh = houseRayHit(x0, z0, dx, dz, maxD);
+    if (hh && hh.d < grid.d - 1e-6) {
+      return { d: hh.d, axis: 'house', nx: hh.nx, nz: hh.nz };
+    }
+    return grid;
+  }
+
   /* 视线：两点之间是否被墙挡住 */
   function los(x0, z0, x1, z1) {
     const dx = x1 - x0, dz = z1 - z0;
@@ -752,6 +1365,7 @@ const World = (function () {
       const rr = p.kind === 'crate' ? 0.62 : 0.36;
       if (Math.hypot(p.x - qx, p.z - qz) < rr) return true;
     }
+    if (houseSegmentBlocked(x0, z0, x1, z1, true)) return true;
     return false;
   }
 
@@ -787,6 +1401,13 @@ const World = (function () {
     los: los,
     sightBlocked: sightBlocked,
     randomFloorPoint: randomFloorPoint,
+    updateHouses: updateHouses,
+    nearestDoor: nearestDoor,
+    toggleDoor: toggleDoor,
+    doorOccupied: doorOccupied,
+    drawHouseScene: drawHouseScene,
+    inAnyHouse: inAnyHouse,
+    get houses() { return houses; },
     get W() { return W; },
     get H() { return H; },
     get rooms() { return rooms; },
