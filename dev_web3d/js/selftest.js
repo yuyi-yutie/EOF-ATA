@@ -124,9 +124,9 @@
       check('enemy factions', gunners.length > 0 && undead.length > 0 &&
         gunners[0].faction === 'scav' && undead[0].faction === 'undead');
 
-      /* 视野：360° + 24m + 墙体/木箱遮挡 */
-      check('vision all-round front', G.vision(p.x, p.z + 0.4));
-      check('vision all-round behind', G.vision(p.x, p.z - 0.4));
+      /* 视野：120° 视锥 + 24m + 墙体/木箱遮挡 */
+      check('vision cone front', G.vision(p.x, p.z + 0.4));
+      check('vision cone behind', !G.vision(p.x, p.z - 0.4));
       check('vision self', G.vision(p.x, p.z));
       check('vision range', !G.vision(p.x, p.z + 25));
 

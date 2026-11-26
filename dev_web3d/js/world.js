@@ -517,6 +517,42 @@ const World = (function () {
     return rectOverlap2(door.rect.x, door.rect.z, door.rect.yaw, door.rect.hx, door.rect.hz, x, z, r || 0.48);
   }
 
+  /* 门关上后把卡在门里的单位推到门外。
+     沿门的法线方向推开，并把横向位置收进门洞中央，避免推进门框。 */
+  function resolveDoorTrap(x, z, r) {
+    if (!houses.length) return null;
+    r = r || 0.48;
+    for (let hi = 0; hi < houses.length; hi++) {
+      const h = houses[hi];
+      for (let i = 0; i < h.doors.length; i++) {
+        const d = h.doors[i];
+        if (!doorClosed(d)) continue;
+        const rc = d.rect;
+        if (!rectOverlap2(rc.x, rc.z, rc.yaw, rc.hx, rc.hz, x, z, r)) continue;
+
+        const c = Math.cos(rc.yaw), s = Math.sin(rc.yaw);
+        const dx = x - rc.x, dz = z - rc.z;
+        const lx = c * dx - s * dz;
+        const lz = s * dx + c * dz;
+        const maxLx = Math.max(0, rc.hx - r - 0.08);
+        const clx = Math.max(-maxLx, Math.min(maxLx, lx));
+        const basePush = rc.hz + r + 0.08;
+        const dirs = lz >= 0 ? [1, -1] : [-1, 1];
+        for (let di = 0; di < dirs.length; di++) {
+          const dir = dirs[di];
+          const tries = [0, r * 0.6, r * 1.4, r * 2.2];
+          for (let k = 0; k < tries.length; k++) {
+            const nz = dir * (basePush + tries[k]);
+            const nx = rc.x + c * clx + s * nz;
+            const nzWorld = rc.z - s * clx + c * nz;
+            if (!blocked(nx, nzWorld, r)) return { x: nx, z: nzWorld };
+          }
+        }
+      }
+    }
+    return null;
+  }
+
   function drawFallbackHouseStatic(geo, h) {
     const C = CFG.HOUSE;
     const P = PAL;
@@ -1405,6 +1441,7 @@ const World = (function () {
     nearestDoor: nearestDoor,
     toggleDoor: toggleDoor,
     doorOccupied: doorOccupied,
+    resolveDoorTrap: resolveDoorTrap,
     drawHouseScene: drawHouseScene,
     inAnyHouse: inAnyHouse,
     get houses() { return houses; },

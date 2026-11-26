@@ -16,7 +16,7 @@ const R = (function () {
   let camFwd = [0, 0, -1], camRight = [1, 0, 0], camUp = [0, 1, 0];
   let camTan = 0.4, camAspect = 1;
   let visionOn = false;
-  let visionPos = [0, 0], visionYaw = 0, visionHalf = Math.PI, visionRange = 24, visionSoft = 0.061;
+  let visionPos = [0, 0], visionYaw = 0, visionHalf = Math.PI, visionRange = 24;
   let visionShade = 0.42;
   let sky = [0.26, 0.29, 0.33];
   let fogRange = [30, 78];
@@ -222,6 +222,7 @@ const R = (function () {
     'uniform float uTanHalf; uniform float uAspect;',
     'uniform vec2 uVisionPos;',
     'uniform float uVisionRange; uniform float uVisionOn;',
+    'uniform float uVisionYaw; uniform float uVisionHalf;',
     'uniform float uVisionShade;',
     'uniform sampler2D uShadowTex;',
     'float lin(float d){',
@@ -325,8 +326,13 @@ const R = (function () {
     '    float vd = length(rel);',
     '    float shadow = step(0.5, texture2D(uShadowTex, vUv).r);',
     '    float inRange = step(vd, uVisionRange);',
+    '    float vang = atan(rel.x, rel.y);',
+    '    float vdang = abs(vang - uVisionYaw);',
+    '    vdang = abs(mod(vdang + 3.14159265, 6.2831853) - 3.14159265);',
+    '    float cone = step(vdang, uVisionHalf);',
     '    float ground = smoothstep(0.55, 0.85, n0.y) * (1.0 - smoothstep(0.035, 0.10, P.y));',
-    '    c *= mix(1.0, uVisionShade, shadow * inRange * ground);',
+    '    float dark = max(shadow, 1.0 - inRange * cone);',
+    '    c *= mix(1.0, uVisionShade, dark * ground);',
     '  }',
     '  gl_FragColor = vec4(c, 1.0);',
     '}'
@@ -900,6 +906,8 @@ const R = (function () {
     gl.uniform1f(progPost.u.uAspect, camAspect);
     gl.uniform2f(progPost.u.uVisionPos, visionPos[0], visionPos[1]);
     gl.uniform1f(progPost.u.uVisionRange, visionRange);
+    gl.uniform1f(progPost.u.uVisionYaw, visionYaw);
+    gl.uniform1f(progPost.u.uVisionHalf, visionHalf);
     gl.uniform1f(progPost.u.uVisionShade, visionShade);
     gl.uniform1f(progPost.u.uVisionOn, visionOn ? 1 : 0);
 
@@ -948,10 +956,10 @@ const R = (function () {
       if (!v) { visionOn = false; return; }
       visionOn = true;
       visionPos = [v.x, v.z];
-      visionYaw = v.yaw;
+      /* 统一到 [-π, π]，避免多次转向后 yaw 累加导致 shader 角度回绕错误 */
+      visionYaw = Math.atan2(Math.sin(v.yaw), Math.cos(v.yaw));
       visionHalf = v.half;
       visionRange = v.range;
-      visionSoft = v.soft || 0.061;
       visionShade = v.shade != null ? v.shade : 0.42;
     }
   };

@@ -8,6 +8,59 @@
 const MODELS = (function () {
   const P = PAL;
 
+  /* Blender 导出的动作曲线（js/animdata.js）。没有加载时全部回退到旧动作。 */
+  const AD = (typeof ANIMDATA !== 'undefined') ? ANIMDATA : null;
+  function animValue(clip, channel, u, fallback) {
+    const c = AD && AD.clips ? AD.clips[clip] : null;
+    const keys = c && c[channel];
+    if (!keys || keys.length < 2) return fallback;
+    let x = c.loop ? (u - Math.floor(u)) : (u < 0 ? 0 : (u > 1 ? 1 : u));
+    if (x <= keys[0][0]) return keys[0][1];
+    for (let i = 1; i < keys.length; i++) {
+      if (x <= keys[i][0]) {
+        const a = keys[i - 1], b = keys[i];
+        const span = b[0] - a[0];
+        const k = span > 1e-6 ? (x - a[0]) / span : 0;
+        return a[1] + (b[1] - a[1]) * k;
+      }
+    }
+    return keys[keys.length - 1][1];
+  }
+
+  /* 奔跑时身体 / 枪械同步的左右摆动（同一个相位，保证枪不脱节） */
+  function runSway(t) {
+    const p = t * 5.5;
+    return { yaw: Math.sin(p) * 0.085, shift: Math.sin(p) * 0.026 };
+  }
+
+  /* 奔跑时枪械随步伐的上下颠动 + 轻微俯仰 / 横向晃动 */
+  function gunRunMotion(t) {
+    const p = t * 9.8;
+    return {
+      bob: Math.abs(Math.cos(p)) * 0.030,
+      pitch: Math.sin(p + 0.5) * 0.050,
+      yaw: Math.sin(p * 0.5 + 1.0) * 0.030
+    };
+  }
+
+  /* 走路时更轻、更慢的身体左右反应 */
+  function walkSway(t) {
+    const p = t * 3.2;
+    return { yaw: Math.sin(p) * 0.05, shift: Math.sin(p) * 0.016 };
+  }
+
+  /* 走路 / 奔跑 / 停下的身体摆动；sprintMix 用于跑走切换的快速缓动 */
+  function bodyStance(t, sprint, moving, sprintMix) {
+    if (!moving) return { yaw: 0, shift: 0 };
+    const run = runSway(t);
+    const walk = walkSway(t);
+    const k = sprint ? 1 : ((sprintMix === undefined) ? 0 : sprintMix);
+    return {
+      yaw: run.yaw * k + walk.yaw * (1 - k),
+      shift: run.shift * k + walk.shift * (1 - k)
+    };
+  }
+
   function part(x, y, z, sx, sy, sz, color, opt) {
     const o = { x: x, y: y, z: z, sx: sx, sy: sy, sz: sz, color: color };
     if (opt) for (const k in opt) o[k] = opt[k];
@@ -468,7 +521,35 @@ const MODELS = (function () {
     const legYaw = (moving && o.moveYaw !== undefined && o.moveYaw !== null) ? o.moveYaw : o.yaw;
 
     const bob = (moving ? Math.abs(Math.cos(ph)) * st.bob : Math.sin(t * 1.7) * 0.007) * sc;
-    const lean = (moving ? st.lean : 0) + lunge * 0.42;
+    /* Blender 导出的走路 / 奔跑曲线：
+       步态相位放慢到「一个完整左右周期约两步」，停下后平滑过渡到轻微待机摇晃。 */
+    const cycle = (t * st.cadence / (Math.PI * 4)) % 1;
+    const swayT = (o.swayT !== undefined) ? o.swayT : t;
+    const moveMix = (o.moveBlend === undefined) ? (moving ? 1 : 0) : Math.max(0, Math.min(1, o.moveBlend));
+    const phaseOff = o.swayPhase || 0;
+    const sprintMix = (o.sprintMix === undefined)
+      ? (o.sprint ? 1 : 0)
+      : Math.max(0, Math.min(1, o.sprintMix));
+    const idleYaw = Math.sin(swayT * 2.4 + phaseOff) * 0.08;
+    const idleNod = Math.sin(swayT * 2.4 + phaseOff + 1.1) * 0.018;
+    const walkYaw = animValue('walk', 'headYaw', cycle, 0);
+    const runYaw = animValue('sprint', 'headYaw', cycle, 0);
+    const walkNod = animValue('walk', 'headPitch', cycle, 0);
+    const runNod = animValue('sprint', 'headPitch', cycle, 0);
+    const walkShift = animValue('walk', 'headX', cycle, 0);
+    const runShift = animValue('sprint', 'headX', cycle, 0);
+    const walkLift = animValue('walk', 'headY', cycle, 0);
+    const runLift = animValue('sprint', 'headY', cycle, 0);
+    const headSway = (walkYaw * (1 - sprintMix) + runYaw * sprintMix) * moveMix + idleYaw * (1 - moveMix);
+    const headNod = (walkNod * (1 - sprintMix) + runNod * sprintMix) * moveMix + idleNod * (1 - moveMix);
+    const headShift = (walkShift * (1 - sprintMix) + runShift * sprintMix) * moveMix * sc;
+    const headLift = (walkLift * (1 - sprintMix) + runLift * sprintMix) * moveMix * sc;
+    const sprintLean = animValue('sprint', 'lean', cycle, 0) * sprintMix;
+    const lean = (st.lean + sprintLean) * moveMix + lunge * 0.42;
+    /* 走路 / 奔跑的身体左右反应；game 会传入带缓动的数值 */
+    const stance = bodyStance(t, !!o.sprint, !!moving, o.sprintMix);
+    const bodySway = (o.bodySway !== undefined) ? o.bodySway : stance.yaw;
+    const bodyShift = (o.bodyShift !== undefined) ? o.bodyShift : stance.shift;
 
     for (let i = 0; i < model.parts.length; i++) {
       const p = model.parts[i];
@@ -501,12 +582,21 @@ const MODELS = (function () {
         ly += Math.max(0, Math.sin(ph2)) * 0.028 * sc * moving;
         yaw = legYaw;
       } else {
-        if (p.hips) yaw = legYaw;
-        ly += bob * (p.y > 1.05 * YS ? 1.0 : 0.75);
-        if (p.y > 1.05 * YS) {
-          rotX = lean * 0.55;
+        const isHead = p.y > 1.05 * YS;
+        /* 髋部仍按移动方向，躯干 / 头 / 枪随奔跑左右摆 */
+        const baseYaw = p.hips ? legYaw : o.yaw;
+        yaw = baseYaw + bodySway;
+        lx += bodyShift;
+        if (isHead) {
+          /* 头绕颈部（模型局部 x/z = 0 的竖轴）转动：走路摇摆 + 跑动时自由观察 */
+          const look = o.headYaw || 0;
+          yaw = o.yaw + bodySway + look + headSway;
+          lx += headShift;
+          ly += bob + headLift;
+          rotX = lean * 0.55 + headNod;
           pvy = hipsY + 0.25 * sc - ly;
         } else {
+          ly += bob * 0.75;
           rotX = lean;
           pvy = hipsY - ly;
         }
@@ -533,17 +623,24 @@ const MODELS = (function () {
   function drawGun(geo, idx, o) {
     const parts = GUNS[idx];
     if (!parts) return;
-    const cy = Math.cos(o.yaw), sy = Math.sin(o.yaw);
+    const yaw = o.yaw + (o.yawOffset || 0);
+    const cy = Math.cos(yaw), sy = Math.sin(yaw);
     const sc = o.scale || 1;
+    const pitch = o.pitch || 0;
+    const cp = Math.cos(pitch), sp = Math.sin(pitch);
     for (let i = 0; i < parts.length; i++) {
       const p = parts[i];
       const lx = p.x * sc, ly = p.y * sc, lz = p.z * sc;
-      const wx = o.x + cy * lx + sy * lz;
-      const wz = o.z - sy * lx + cy * lz;
+      /* 整把枪用同一个 Ry(yaw) * Rx(pitch) 刚体变换：
+         每个零件的中心和朝向一起转，任何奔跑方向都不会散架。 */
+      const wx = o.x + cy * lx + sy * (sp * ly + cp * lz);
+      const wy = o.y + cp * ly - sp * lz;
+      const wz = o.z - sy * lx + cy * (sp * ly + cp * lz);
       geo.box({
-        x: wx, y: o.y + ly, z: wz,
+        x: wx, y: wy, z: wz,
         sx: p.sx * sc, sy: p.sy * sc, sz: p.sz * sc,
-        yaw: o.yaw,
+        yaw: yaw,
+        rotX: pitch,
         color: p.color,
         outline: p.outline === undefined ? 0.016 : p.outline,
         emis: p.emis
@@ -551,11 +648,66 @@ const MODELS = (function () {
     }
   }
 
+  /* 换弹时从枪身上掉下 / 重新装上的弹夹 */
+  function drawGunMag(geo, idx, o) {
+    const sc = o.scale || 1;
+    const msc = (o.magScale === undefined ? 1 : o.magScale) * sc;
+    if (msc < 0.02) return;
+    const yaw = o.yaw + (o.yawOffset || 0);
+    const cy = Math.cos(yaw), sy = Math.sin(yaw);
+    const pitch = o.pitch || 0;
+    const cp = Math.cos(pitch), sp = Math.sin(pitch);
+    const ly0 = -0.17 * sc;
+    const lz0 = 0.02 * sc;
+    /* 弹夹在枪身上的位置跟随枪的旋转；掉落量直接加在世界 Y 上 */
+    const wx = o.x + sy * (sp * ly0 + cp * lz0);
+    const wy = Math.max(0.06, o.y + cp * ly0 - sp * lz0 + (o.magY || 0));
+    const wz = o.z + cy * (sp * ly0 + cp * lz0);
+    geo.box({
+      x: wx, y: wy, z: wz,
+      sx: 0.075 * msc, sy: 0.18 * msc, sz: 0.065 * msc,
+      yaw: yaw, rotX: pitch,
+      color: [0.18, 0.20, 0.23], outline: 0.012
+    });
+    geo.box({
+      x: wx, y: wy - 0.095 * msc, z: wz,
+      sx: 0.09 * msc, sy: 0.028 * msc, sz: 0.075 * msc,
+      yaw: yaw, rotX: pitch,
+      color: [0.58, 0.62, 0.67], outline: 0.01
+    });
+  }
+
+  function carryPose(u) {
+    return {
+      yawOffset: animValue('sprint', 'gunYaw', u, 1.52),
+      y: animValue('sprint', 'gunY', u, -0.02),
+      pitch: animValue('sprint', 'gunPitch', u, 0.10)
+    };
+  }
+
+  function reloadPose(u) {
+    return {
+      yaw: animValue('reload', 'gunYaw', u, 0),
+      y: animValue('reload', 'gunY', u, 0),
+      x: animValue('reload', 'gunX', u, 0),
+      z: animValue('reload', 'gunZ', u, 0),
+      pitch: animValue('reload', 'gunPitch', u, 0),
+      magY: animValue('reload', 'magY', u, 0),
+      magScale: animValue('reload', 'magScale', u, 1)
+    };
+  }
+
   return {
     UNITS: UNITS,
     GUNS: GUNS,
     drawUnit: drawUnit,
     drawGun: drawGun,
+    drawGunMag: drawGunMag,
+    carryPose: carryPose,
+    reloadPose: reloadPose,
+    runSway: runSway,
+    bodyStance: bodyStance,
+    gunRunMotion: gunRunMotion,
     height: function (k) { return UNITS[k] ? UNITS[k].height : 1.7; }
   };
 })();

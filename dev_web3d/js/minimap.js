@@ -269,10 +269,11 @@ const MINIMAP = (function () {
       ctx.globalAlpha = 1;
     }
 
-    /* 玩家视野范围：24m 全向（360°），与 3D 遮罩一致 */
+    /* 玩家视野范围：120° 视锥，与 3D 遮罩一致 */
+    const lookYaw = (p.headWorldYaw !== undefined) ? p.headWorldYaw : p.yaw;
     const fx = Math.sin(p.yaw);
     const fz = Math.cos(p.yaw);
-    const ang = Math.atan2(fz, fx);
+    const ang = Math.atan2(Math.cos(lookYaw), Math.sin(lookYaw));
     const half = CFG.VISION.HALF_DEG * Math.PI / 180;
     const vr = Math.min(R, CFG.VISION.RANGE * S);
     const grd = ctx.createRadialGradient(cx, cy, 0, cx, cy, vr);

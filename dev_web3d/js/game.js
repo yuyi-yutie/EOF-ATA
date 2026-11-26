@@ -8,7 +8,7 @@
    ============================================================ */
 
 const G = (function () {
-  window.__gameBuild = '20261126d21';
+  window.__gameBuild = '20261126e11';
   if (typeof console !== 'undefined') console.info('EOFATA game ' + window.__gameBuild);
   if (typeof document !== 'undefined') {
     document.title = 'EOFATA 3D — End of Future : ATA · ' + window.__gameBuild;
@@ -40,6 +40,8 @@ const G = (function () {
 
   const player = {
     x: 0, z: 0, yaw: 0, moveYaw: 0,
+    aimYaw: 0, headYaw: 0, headWorldYaw: 0, aimActive: false,
+    swayT: 0, moveBlend: 0, gunCarryMix: 0, sprintBlend: 0,
     hp: CFG.PLAYER.hp, maxHp: CFG.PLAYER.hp,
     shield: CFG.PLAYER.shield, maxShield: CFG.PLAYER.shield,
     stam: CFG.PLAYER.stam, moving: false, animT: 0, sprinting: false,
@@ -85,7 +87,6 @@ const G = (function () {
   const TOUCH_MODE = !!window.__touchMode;
   const SELFTEST = QS.get('selftest') === '1';
   const TOUCH_DEAD = (CFG.TOUCH && CFG.TOUCH.DEAD) || 0.12;
-  const TOUCH_AIM_LERP = (CFG.TOUCH && CFG.TOUCH.AIM_LERP) || 22;
   let touchInvSuspended = false;
 
   const keys = {};
@@ -107,6 +108,7 @@ const G = (function () {
     return d;
   }
   function angLerp(a, b, t) { return a + angDiff(a, b) * t; }
+  function normAngle(a) { return Math.atan2(Math.sin(a), Math.cos(a)); }
   function isPortrait() {
     if (window.matchMedia) return window.matchMedia('(orientation: portrait)').matches;
     return window.innerWidth < window.innerHeight;
@@ -387,6 +389,7 @@ const G = (function () {
         mouse.x = e.clientX - r.left;
         mouse.y = e.clientY - r.top;
       }
+      player.aimActive = true;
       addGrenadeAimDelta(e.movementX || 0, e.movementY || 0);
       HUD.aimAt(mouse.x, mouse.y);
     });
@@ -621,6 +624,7 @@ const G = (function () {
   }
 
   let lastDryT = -9;
+  let lastSprintFireT = -9;
   function startReload() {
     if (player.weapon < 0 || player.slot < 0) return;
     const slot = player.slot;
@@ -634,6 +638,8 @@ const G = (function () {
       }
       return;
     }
+    /* 奔跑中按 R：先停下，再进入换弹；换弹结束前不会重新起跑 */
+    player.sprinting = false;
     const m = modsOf(player.weapon);
     player.reloadDur = w.reload * player.reloadMul * Math.max(0.4, 1 - m.reload);
     player.reload = player.reloadDur;
@@ -662,6 +668,108 @@ const G = (function () {
     };
   }
 
+  /* 玩家枪械姿势：普通持枪 / 横枪奔跑 / 换弹
+     sway 与身体使用同一组摆动；gunCarryMix 让进入 / 离开奔跑时快速缓动 */
+  function playerGunPose(sway) {
+    if (player.dead || player.weapon < 0) return null;
+    const sw = sway || { yaw: 0, shift: 0 };
+    const mix = Math.max(0, Math.min(1, player.gunCarryMix));
+    const bodyYaw = player.yaw + sw.yaw * mix;
+    const cy = Math.cos(bodyYaw), sy = Math.sin(bodyYaw);
+    const normalX = player.x - cy * 0.20 + sy * 0.32;
+    const normalZ = player.z + sy * 0.20 + cy * 0.32;
+    const normalY = 0.74 - player.recoil * 0.03;
+    const cp = MODELS.carryPose(0.5);
+    /* 枪根在胸前，并跟随身体的左右摆动；留出枪身厚度，避免 W/S 时插进背心 */
+    const carryX = player.x + sy * 0.29 + cy * sw.shift;
+    const carryZ = player.z + cy * 0.29 - sy * sw.shift;
+    const carryY = 0.72 + cp.y;
+    const x = normalX + (carryX - normalX) * mix;
+    const z = normalZ + (carryZ - normalZ) * mix;
+    let y = normalY + (carryY - normalY) * mix;
+    let yawOffset = cp.yawOffset * mix;
+    let pitch = cp.pitch * mix;
+    let reloading = false, magY = 0, magScale = 1;
+    if (player.reload > 0) {
+      reloading = true;
+      const dur = player.reloadDur || 1;
+      const phase = 1 - player.reload / dur;
+      const rp = MODELS.reloadPose(phase);
+      y += rp.y;
+      yawOffset += rp.yaw;
+      pitch += rp.pitch;
+      magY = rp.magY;
+      magScale = rp.magScale;
+    }
+    /* 奔跑时武器随步伐上下颠动，并带一点俯仰 / 横向晃动 */
+    if (player.sprinting) {
+      const run = MODELS.gunRunMotion(player.animT);
+      const amp = mix * player.sprintBlend;
+      y += run.bob * amp;
+      yawOffset += run.yaw * amp;
+      pitch += run.pitch * amp;
+    }
+    return {
+      x: x, y: y, z: z, yaw: bodyYaw, yawOffset: yawOffset,
+      pitch: pitch, scale: 1.15, reloading: reloading,
+      magY: magY, magScale: magScale
+    };
+  }
+
+  function enemyGunPose(e, sway) {
+    const sw = sway || { yaw: 0, shift: 0 };
+    const mix = e.gunner ? Math.max(0, Math.min(1, e.sprintBlend || 0)) : 0;
+    const bodyYaw = e.yaw + sw.yaw * mix;
+    const cy = Math.cos(bodyYaw), sy = Math.sin(bodyYaw);
+    const normalX = e.x + sy * 0.42 - cy * 0.15;
+    const normalZ = e.z + cy * 0.42 + sy * 0.15;
+    const cp = MODELS.carryPose(0.5);
+    const carryX = e.x + sy * 0.29 + cy * sw.shift;
+    const carryZ = e.z + cy * 0.29 - sy * sw.shift;
+    let x = normalX + (carryX - normalX) * mix;
+    let z = normalZ + (carryZ - normalZ) * mix;
+    let y = 1.0 + ((0.78 + cp.y) - 1.0) * mix;
+    let yawOffset = cp.yawOffset * mix;
+    let pitch = cp.pitch * mix;
+    let reloading = false, magY = 0, magScale = 1;
+    if (e.gunner && e.reloadT > 0) {
+      reloading = true;
+      const dur = e.reloadDur || CFG.GUNNER.reload || 1;
+      const phase = 1 - e.reloadT / dur;
+      const rp = MODELS.reloadPose(phase);
+      y += rp.y;
+      yawOffset += rp.yaw;
+      pitch += rp.pitch;
+      magY = rp.magY;
+      magScale = rp.magScale;
+    }
+    if (e.gunner && e.carry) {
+      const run = MODELS.gunRunMotion(e.animT);
+      y += run.bob * mix;
+      yawOffset += run.yaw * mix;
+      pitch += run.pitch * mix;
+    }
+    return {
+      x: x, y: y, z: z, yaw: bodyYaw, yawOffset: yawOffset,
+      pitch: pitch, scale: 0.92, reloading: reloading,
+      magY: magY, magScale: magScale
+    };
+  }
+
+  function drawPlayerGun(geo, sway) {
+    const pose = playerGunPose(sway);
+    if (!pose) return;
+    MODELS.drawGun(geo, player.weapon, pose);
+    if (pose.reloading) MODELS.drawGunMag(geo, player.weapon, pose);
+  }
+
+  function drawEnemyGun(geo, e, sway) {
+    if (!e.gunner) return;
+    const pose = enemyGunPose(e, sway);
+    MODELS.drawGun(geo, CFG.GUNNER.weaponId, pose);
+    if (pose.reloading) MODELS.drawGunMag(geo, CFG.GUNNER.weaponId, pose);
+  }
+
   /* ---------- 战术道具 ---------- */
   function gadgetDef(slot) {
     const id = player.gadgets[slot];
@@ -671,6 +779,10 @@ const G = (function () {
   function startGadgetAim(slot) {
     if (mode !== 'mission' || ended || paused || player.dead) return;
     if (Inventory.isOpen() || trainingOpen) return;
+    if (player.sprinting) {
+      HUD.toast('奔跑中无法使用战术道具 · 先停下', 'warn');
+      return;
+    }
     const g = gadgetDef(slot);
     if (!g) {
       HUD.toast('未配置' + (slot === 0 ? 'Q' : 'E') + '槽道具 · 在机库配置', 'warn');
@@ -969,6 +1081,13 @@ const G = (function () {
 
   function fire() {
     if (player.weapon < 0 || player.slot < 0) return;
+    if (player.sprinting) {
+      if (time - lastSprintFireT > 1.6) {
+        lastSprintFireT = time;
+        HUD.toast('奔跑中无法射击 · 松开 Shift 或停下', 'warn');
+      }
+      return;
+    }
     const wi = player.weapon;
     const slot = player.slot;
     const w = WEAPONS[wi];
@@ -1565,8 +1684,10 @@ const G = (function () {
       state: 'idle', alertT: 0, lostT: 0, waitT: 0, patrol: null,
       lastSeenX: x, lastSeenZ: z, seen: false, seenLast: false,
       seed: Math.random() * 10,
+      swayT: Math.random() * 10, moveBlend: 0, sprintBlend: 0,
       viewR: CFG.GUNNER.viewR, viewHalf: CFG.GUNNER.viewHalf,
-      aimT: 0, ammo: w.mag, reloadT: 0,
+      aimT: 0, ammo: w.mag, reloadT: 0, reloadDur: CFG.GUNNER.reload,
+      carry: false,
       burstLeft: 0, burstT: 0, burstCool: 0.4 + Math.random() * 0.7,
       strafeDir: Math.random() < 0.5 ? -1 : 1, strafeT: 0.6 + Math.random() * 0.9,
       coverTarget: null, coverHold: 0, coverCd: 2 + Math.random() * 3,
@@ -1919,6 +2040,7 @@ const G = (function () {
         if (e.burstT <= 0) {
           if (e.ammo <= 0) {
             e.reloadT = CFG.GUNNER.reload;
+            e.reloadDur = CFG.GUNNER.reload;
             e.burstLeft = 0;
             e.burstCool = 0.45;
           } else {
@@ -2031,6 +2153,7 @@ const G = (function () {
 
       e.hitFlash = Math.max(0, e.hitFlash - dt);
       e.cd = Math.max(0, e.cd - dt);
+      e.swayT = (e.swayT || 0) + dt;
 
       const target = pickEnemyTarget(e);
       const sees = !!target;
@@ -2137,6 +2260,12 @@ const G = (function () {
 
       if (e.lunge) e.lunge = Math.max(0, e.lunge - dt);
 
+      /* 拾荒者在非交战状态快速移动时把枪横在胸前（与玩家奔跑姿势一致） */
+      e.carry = !!e.gunner && e.moving && e.reloadT <= 0 &&
+        (e.state === 'cover' || e.state === 'search' || e.state === 'patrol');
+      e.moveBlend = (e.moveBlend || 0) + ((e.moving ? 1 : 0) - (e.moveBlend || 0)) * (1 - Math.exp(-6 * dt));
+      e.sprintBlend = (e.sprintBlend || 0) + ((e.carry ? 1 : 0) - (e.sprintBlend || 0)) * (1 - Math.exp(-14 * dt));
+
       for (const o of enemies) {
         if (o === e || o.dead) continue;
         const ox = e.x - o.x, oz = e.z - o.z;
@@ -2231,17 +2360,29 @@ const G = (function () {
   }
 
   /* ---------- 更新 ---------- */
-  /* 视野：24m 内且没有被墙/木箱遮挡；玩家本身 360° */
-  function visionVisible(x, z) {
+  /* 视野：120° 视锥、24m 内，且没有被墙/木箱遮挡 */
+  function inVisionCone(x, z, r) {
     const dx = x - player.x, dz = z - player.z;
-    if (dx * dx + dz * dz > CFG.VISION.RANGE * CFG.VISION.RANGE) return false;
+    const d2 = dx * dx + dz * dz;
+    const range = CFG.VISION.RANGE;
+    if (d2 > range * range) return false;
+    const half = CFG.VISION.HALF_DEG * Math.PI / 180;
+    if (half >= Math.PI - 1e-4) return true;
+    const face = (player.headWorldYaw === undefined) ? player.yaw : player.headWorldYaw;
+    const ang = Math.atan2(dx, dz);
+    const tol = r ? Math.atan2(r, Math.max(0.25, Math.sqrt(d2))) : 0;
+    return Math.abs(angDiff(ang, face)) <= half + tol;
+  }
+
+  function visionVisible(x, z, r) {
+    if (!inVisionCone(x, z, r)) return false;
     return !World.sightBlocked(player.x, player.z, x, z);
   }
 
   function updateVision() {
     for (let i = 0; i < enemies.length; i++) {
       const e = enemies[i];
-      e.inVision = !e.dead && visionVisible(e.x, e.z);
+      e.inVision = !e.dead && visionVisible(e.x, e.z, e.r);
     }
   }
 
@@ -2389,6 +2530,12 @@ const G = (function () {
     /* 训练场数据无限：每帧回填，所有消耗都可以正常扣除但不会耗尽 */
     if (player.infiniteData) player.data = 999999;
     World.updateHouses(dt, player.x, player.z);
+    /* 门关上时如果玩家正在门洞里，把玩家推出去，避免卡死 */
+    const doorPush = World.resolveDoorTrap(player.x, player.z, CFG.PLAYER.r);
+    if (doorPush) {
+      player.x = doorPush.x;
+      player.z = doorPush.z;
+    }
 
     /* 靠近物资箱自动开始撬箱；箱盖撬飞后由 F 主动搜索 */
     const autoChest = nearestChest();
@@ -2445,21 +2592,21 @@ const G = (function () {
     }
     Inventory.update(dt);
 
-    /* 鼠标位置 → 地面瞄准点：角色与枪械朝向始终跟随鼠标 */
+    /* 鼠标位置 → 地面瞄准点：站定时身体跟随瞄准；奔跑时身体朝移动方向，瞄准只转头 */
+    let aimYaw = player.aimYaw;
     if (TOUCH_MODE) {
       const tr = TOUCH.right;
       if (tr.active && tr.aimActive) {
-        player.yaw = angLerp(player.yaw, tr.aimYaw, 1 - Math.exp(-TOUCH_AIM_LERP * dt));
+        aimYaw = tr.aimYaw;
+        player.aimActive = true;
       }
     } else {
       const gp = screenToGround(mouse.x, mouse.y, 0.9);
       if (gp) aim = gp;
-
       const adx = aim.x - player.x, adz = aim.z - player.z;
-      if (Math.hypot(adx, adz) > 0.3) {
-        player.yaw = angLerp(player.yaw, Math.atan2(adx, adz), 1 - Math.exp(-18 * dt));
-      }
+      if (Math.hypot(adx, adz) > 0.3) aimYaw = Math.atan2(adx, adz);
     }
+    player.aimYaw = aimYaw;
 
     const tl = TOUCH.left;
     if (TOUCH_MODE && tl.autoMove &&
@@ -2488,16 +2635,50 @@ const G = (function () {
     if (uiLock) { ix = 0; iz = 0; touchRun = false; }
     const mag = Math.hypot(ix, iz);
     player.moving = (mag > 0 || WALK) && !player.dead;
-    if (mag > 0) player.moveYaw = Math.atan2(ix, iz);
-    if (!isNaN(MV)) player.moveYaw = player.yaw + MV * Math.PI / 180;
+    const targetMoveYaw = (mag > 0) ? Math.atan2(ix, iz) : player.moveYaw;
     const wantSprint = touchActive
       ? touchRun
       : ((TOUCH_MODE && tl.autoMove) ? true : !!(keys.ShiftLeft || keys.ShiftRight));
-    player.sprinting = wantSprint && player.stam > 1 && player.moving;
+    player.sprinting = wantSprint && player.stam > 1 && player.moving && player.reload <= 0;
+    /* 跑动转向缓动：腿和身体都使用这里的 moveYaw，不会瞬间拧到新方向 */
+    if (mag > 0 && !player.dead) {
+      const turnRate = player.sprinting ? 7.0 : 22.0;
+      player.moveYaw = angLerp(player.moveYaw, targetMoveYaw, 1 - Math.exp(-turnRate * dt));
+    }
+    if (!isNaN(MV)) player.moveYaw = player.yaw + MV * Math.PI / 180;
 
     let speed = player.sprinting ? CFG.PLAYER.run : CFG.PLAYER.walk;
     if (player.dead) speed = 0;
     if (mag > 0) { ix /= mag; iz /= mag; }
+
+    /* 奔跑：身体转向移动方向，头部可以 360° 自由看向鼠标/右摇杆；
+       站定：身体重新追回瞄准方向，头部回到身体正前方。 */
+    if (player.dead) {
+      /* 死亡时保持当前朝向 */
+    } else if (player.sprinting) {
+      if (player.gadgetAim >= 0) cancelGadgetAim();
+      player.yaw = angLerp(player.yaw, player.moveYaw, 1 - Math.exp(-12 * dt));
+      /* 奔跑时头部不锁定：可以随鼠标 / 右摇杆自由转向；
+         只加角速度上限 + 缓动，避免快速甩鼠标时头部瞬移。 */
+      const dHead = angDiff(player.headWorldYaw, player.aimYaw);
+      const desired = dHead * (1 - Math.exp(-CFG.PLAYER.headTurnLerp * dt));
+      const maxStep = CFG.PLAYER.headTurnSpeed * dt;
+      player.headWorldYaw = normAngle(player.headWorldYaw + clamp(desired, -maxStep, maxStep));
+      player.headYaw = angDiff(player.yaw, player.headWorldYaw);
+    } else {
+      player.yaw = angLerp(player.yaw, player.aimYaw, 1 - Math.exp(-18 * dt));
+      player.headWorldYaw = angLerp(player.headWorldYaw, player.aimYaw, 1 - Math.exp(-28 * dt));
+      player.headYaw = angDiff(player.yaw, player.headWorldYaw);
+    }
+    /* 还没有任何鼠标 / 右摇杆输入时，头保持朝前，避免一开跑就回头 */
+    if (!player.aimActive) {
+      player.aimYaw = player.yaw;
+      player.headWorldYaw = player.yaw;
+      player.headYaw = 0;
+    }
+    player.yaw = normAngle(player.yaw);
+    player.headWorldYaw = normAngle(player.headWorldYaw);
+    player.aimYaw = normAngle(player.aimYaw);
 
     if (player.sprinting) {
       player.stam = Math.max(0, player.stam - CFG.PLAYER.stamDrain * dt);
@@ -2517,7 +2698,13 @@ const G = (function () {
     player.z = mv.z;
 
     player.animT += dt * (player.sprinting ? 1.35 : 1);
-    if (!player.moving) player.animT = 0;
+    player.swayT += dt;
+    const moveTarget = player.moving ? 1 : 0;
+    player.moveBlend += (moveTarget - player.moveBlend) * (1 - Math.exp(-6 * dt));
+    /* 进入 / 离开奔跑、开始 / 结束换弹时，枪横胸 / 正常持枪之间快速缓动 */
+    const carryTarget = (player.sprinting || player.reload > 0) ? 1 : 0;
+    player.gunCarryMix += (carryTarget - player.gunCarryMix) * (1 - Math.exp(-14 * dt));
+    player.sprintBlend += ((player.sprinting ? 1 : 0) - player.sprintBlend) * (1 - Math.exp(-14 * dt));
 
     player.shieldTimer = Math.max(0, player.shieldTimer - dt);
     if (player.shieldTimer <= 0 && player.shield < player.maxShield && !player.dead) {
@@ -2540,9 +2727,11 @@ const G = (function () {
         if (curW.auto) {
           if (TOUCH.right.firing) fire();
         } else if (TOUCH.takeSemiShot()) {
-          const tr = TOUCH.right;
-          if (tr.aimActive) player.yaw = tr.aimYaw;
-          fire();
+          if (!player.sprinting) {
+            const tr = TOUCH.right;
+            if (tr.aimActive) player.yaw = tr.aimYaw;
+            fire();
+          }
         }
       }
     } else if ((mouse.down || AUTO) && !uiLock) {
@@ -2746,10 +2935,9 @@ const G = (function () {
   }
 
   /* ---------- 渲染 ---------- */
-  /* 视野亮区：24m 内且没有被墙 / 木箱等挡住（与地面阴影使用同一套视线） */
+  /* 视野亮区：120° 视锥、24m 内且没有被墙 / 木箱等挡住（与地面阴影使用同一套视线） */
   function isVisionLit(x, z) {
-    const dx = x - player.x, dz = z - player.z;
-    if (dx * dx + dz * dz > CFG.VISION.RANGE * CFG.VISION.RANGE) return false;
+    if (!inVisionCone(x, z, 0)) return false;
     return !World.sightBlocked(player.x, player.z, x, z);
   }
 
@@ -3179,10 +3367,9 @@ const G = (function () {
 
   function render() {
     R.setVision({
-      x: player.x, z: player.z, yaw: player.yaw,
+      x: player.x, z: player.z, yaw: player.headWorldYaw,
       half: CFG.VISION.HALF_DEG * Math.PI / 180,
       range: CFG.VISION.RANGE,
-      soft: CFG.VISION.EDGE_SOFT_DEG * Math.PI / 180,
       shade: CFG.VISION.SHADE
     });
     R.begin();
@@ -3195,55 +3382,39 @@ const G = (function () {
 
     drawGadgetAim(geo);
 
-    MODELS.drawUnit(geo, player.charKey, {
+    const pStance = MODELS.bodyStance(player.animT, player.sprinting, player.moving, player.sprintBlend);
+    pStance.yaw *= player.moveBlend;
+    pStance.shift *= player.moveBlend;
+    const playerUnit = {
       x: player.x, y: 0, z: player.z, yaw: player.yaw,
       moving: player.moving, animT: player.animT,
       moveYaw: player.moveYaw,
+      sprint: player.sprinting,
+      headYaw: player.headYaw,
+      swayT: player.swayT, moveBlend: player.moveBlend, swayPhase: 0,
+      sprintMix: player.sprintBlend,
+      bodySway: pStance.yaw, bodyShift: pStance.shift,
       deadT: player.dead ? player.deadT : 0
-    });
-
-    const gy = 0.74 - player.recoil * 0.03;
-    const gx = player.x - Math.cos(player.yaw) * 0.20;
-    const gz = player.z + Math.sin(player.yaw) * 0.20;
-    if (!player.dead && player.weapon >= 0) {
-      MODELS.drawGun(geo, player.weapon, {
-        x: gx + Math.sin(player.yaw) * 0.32,
-        y: gy,
-        z: gz + Math.cos(player.yaw) * 0.32,
-        yaw: player.yaw, scale: 1.15
-      });
-    }
+    };
+    MODELS.drawUnit(geo, player.charKey, playerUnit);
+    drawPlayerGun(geo, pStance);
     if (um) {
-      MODELS.drawUnit(um, player.charKey, {
-        x: player.x, y: 0, z: player.z, yaw: player.yaw,
-        moving: player.moving, animT: player.animT,
-        moveYaw: player.moveYaw,
-        deadT: player.dead ? player.deadT : 0
-      });
-      if (!player.dead && player.weapon >= 0) {
-        MODELS.drawGun(um, player.weapon, {
-          x: gx + Math.sin(player.yaw) * 0.32,
-          y: gy,
-          z: gz + Math.cos(player.yaw) * 0.32,
-          yaw: player.yaw, scale: 1.15
-        });
-      }
+      MODELS.drawUnit(um, player.charKey, playerUnit);
+      drawPlayerGun(um, pStance);
     }
     if (ov) {
-      MODELS.drawUnit(ov, player.charKey, {
+      const ovUnit = {
         x: player.x, y: 0, z: player.z, yaw: player.yaw,
         moving: player.moving, animT: player.animT, moveYaw: player.moveYaw,
+        sprint: player.sprinting, headYaw: player.headYaw,
+        swayT: player.swayT, moveBlend: player.moveBlend, swayPhase: 0,
+        sprintMix: player.sprintBlend,
+        bodySway: pStance.yaw, bodyShift: pStance.shift,
         deadT: player.dead ? player.deadT : 0,
         overlay: true
-      });
-      if (!player.dead && player.weapon >= 0) {
-        MODELS.drawGun(ov, player.weapon, {
-          x: gx + Math.sin(player.yaw) * 0.32,
-          y: gy,
-          z: gz + Math.cos(player.yaw) * 0.32,
-          yaw: player.yaw, scale: 1.15, overlay: true
-        });
-      }
+      };
+      MODELS.drawUnit(ov, player.charKey, ovUnit);
+      drawPlayerGun(ov, pStance);
     }
 
     for (const e of enemies) {
@@ -3285,37 +3456,34 @@ const G = (function () {
       }
       /* 阴影/视野外：不画模型、枪、状态标记和橙色遮挡剪影 */
       if (e.inVision !== true) continue;
-      MODELS.drawUnit(geo, e.type, {
+      const eStance = MODELS.bodyStance(e.animT, !!e.carry, e.moving, e.sprintBlend || 0);
+      eStance.yaw *= (e.moveBlend || 0);
+      eStance.shift *= (e.moveBlend || 0);
+      const enemyUnit = {
         x: e.x, y: 0, z: e.z, yaw: e.yaw,
-        moving: e.moving, animT: e.animT, lunge: e.lunge, moveYaw: e.yaw
-      });
-      if (e.gunner) {
-        const gx = e.x + Math.sin(e.yaw) * 0.42 - Math.cos(e.yaw) * 0.15;
-        const gz = e.z + Math.cos(e.yaw) * 0.42 + Math.sin(e.yaw) * 0.15;
-        MODELS.drawGun(geo, CFG.GUNNER.weaponId, {
-          x: gx, y: 1.0, z: gz, yaw: e.yaw, scale: 0.92
-        });
-        if (um) MODELS.drawGun(um, CFG.GUNNER.weaponId, {
-          x: gx, y: 1.0, z: gz, yaw: e.yaw, scale: 0.92
-        });
+        moving: e.moving, animT: e.animT, lunge: e.lunge, moveYaw: e.yaw,
+        sprint: !!e.carry,
+        swayT: e.swayT || 0, moveBlend: e.moveBlend || 0, swayPhase: e.seed || 0,
+        sprintMix: e.sprintBlend || 0,
+        bodySway: eStance.yaw, bodyShift: eStance.shift
+      };
+      MODELS.drawUnit(geo, e.type, enemyUnit);
+      drawEnemyGun(geo, e, eStance);
+      if (um) {
+        MODELS.drawUnit(um, e.type, enemyUnit);
+        drawEnemyGun(um, e, eStance);
       }
-      if (um) MODELS.drawUnit(um, e.type, {
-        x: e.x, y: 0, z: e.z, yaw: e.yaw,
-        moving: e.moving, animT: e.animT, lunge: e.lunge, moveYaw: e.yaw
-      });
       if (ov) {
-        MODELS.drawUnit(ov, e.type, {
+        const ovUnit = {
           x: e.x, y: 0, z: e.z, yaw: e.yaw,
           moving: e.moving, animT: e.animT, lunge: e.lunge, moveYaw: e.yaw,
-          overlay: true
-        });
-        if (e.gunner) {
-          const ox = e.x + Math.sin(e.yaw) * 0.42 - Math.cos(e.yaw) * 0.15;
-          const oz = e.z + Math.cos(e.yaw) * 0.42 + Math.sin(e.yaw) * 0.15;
-          MODELS.drawGun(ov, CFG.GUNNER.weaponId, {
-            x: ox, y: 1.0, z: oz, yaw: e.yaw, scale: 0.92, overlay: true
-          });
-        }
+          sprint: !!e.carry, overlay: true,
+          swayT: e.swayT || 0, moveBlend: e.moveBlend || 0, swayPhase: e.seed || 0,
+          sprintMix: e.sprintBlend || 0,
+          bodySway: eStance.yaw, bodyShift: eStance.shift
+        };
+        MODELS.drawUnit(ov, e.type, ovUnit);
+        drawEnemyGun(ov, e, eStance);
       }
       if (e.hitFlash > 0) {
         const hf = e.hitFlash / 0.12;
@@ -3843,6 +4011,14 @@ const G = (function () {
     player.gadgetTarget = { x: player.x, z: player.z };
     player.yaw = TOUCH_MODE ? Math.PI : 0;
     player.moveYaw = player.yaw;
+    player.aimYaw = player.yaw;
+    player.headWorldYaw = player.yaw;
+    player.headYaw = 0;
+    player.aimActive = false;
+    player.swayT = 0;
+    player.moveBlend = 0;
+    player.gunCarryMix = 0;
+    player.sprintBlend = 0;
     player.cool = 0;
     player.reload = 0;
     player.recoil = 0;
@@ -3884,6 +4060,7 @@ const G = (function () {
           moving: false, dead: false, fade: 1.9, hitFlash: 0, lunge: 0,
           state: 'idle', alertT: 0, lostT: 0, waitT: 0, patrol: null,
           lastSeenX: c.x, lastSeenZ: c.z, seen: false, seed: Math.random() * 10,
+          swayT: Math.random() * 10, moveBlend: 0, sprintBlend: 0,
           viewR: t === 'spitter' ? 20 : (t === 'gaunt' ? 15 : 16),
           viewHalf: t === 'spitter' ? 1.15 : 0.95
         });

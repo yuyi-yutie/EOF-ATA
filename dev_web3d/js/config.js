@@ -30,9 +30,8 @@ const CFG = {
 
   /* 玩家视野锥：视锥外的敌人不绘制、不上小地图 */
   VISION: {
-    HALF_DEG: 180,     // 玩家全向视野（360°）
+    HALF_DEG: 60,      // 玩家视野总角度 120°（±60°）
     RANGE: 24,         // 有效距离（米）
-    EDGE_SOFT_DEG: 3.5, // 视锥侧边柔和带（角度）
     SHADE: 0.42        // 视野外地面阴影亮度（1 = 无阴影）
   },
 
@@ -54,7 +53,9 @@ const CFG = {
     stam: 100,
     stamDrain: 21,
     stamRegen: 17,
-    stamDelay: 0.7
+    stamDelay: 0.7,
+    headTurnSpeed: 9.0,   // 奔跑时头部最大角速度（rad/s）
+    headTurnLerp: 18      // 奔跑时头部跟随鼠标的缓动速度
   },
 
   ENEMY: {
