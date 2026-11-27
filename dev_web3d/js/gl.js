@@ -113,6 +113,10 @@ const R = (function () {
     const dot = cr[0] * f.n[0] + cr[1] * f.n[1] + cr[2] * f.n[2];
     return { n: f.n, q: dot < 0 ? [f.q[0], f.q[3], f.q[2], f.q[1]] : f.q };
   });
+  /* 每个面的 6 个顶点索引预先展开，避免每个 box 每帧分配临时数组。 */
+  const FACE_TRIS = FACES.map(function (f) {
+    return [f.q[0] * 3, f.q[1] * 3, f.q[2] * 3, f.q[0] * 3, f.q[2] * 3, f.q[3] * 3];
+  });
 
   /* ---------- 着色器 ---------- */
   function compile(type, src) {
@@ -319,7 +323,16 @@ const R = (function () {
     '  float uy1 = texture2D(uMask, vUv + vec2(0.0, t1.y)).b;',
     '  float uy2 = texture2D(uMask, vUv - vec2(0.0, t1.y)).b;',
     '  float unitEdge = max(max(abs(un0 - ux1), abs(un0 - ux2)), max(abs(un0 - uy1), abs(un0 - uy2)));',
-    '  c = mix(c, uInk, clamp(unitEdge, 0.0, 1.0) * 0.92);',
+    '  float urel = texture2D(uMask, vUv).g;',
+    '  urel = max(urel, texture2D(uMask, vUv + vec2(t1.x, 0.0)).g);',
+    '  urel = max(urel, texture2D(uMask, vUv - vec2(t1.x, 0.0)).g);',
+    '  urel = max(urel, texture2D(uMask, vUv + vec2(0.0, t1.y)).g);',
+    '  urel = max(urel, texture2D(uMask, vUv - vec2(0.0, t1.y)).g);',
+    '  vec3 unitCol = uInk;',
+    '  if (urel > 0.85) unitCol = vec3(0.95, 0.16, 0.12);',
+    '  else if (urel > 0.38) unitCol = vec3(1.0, 0.78, 0.16);',
+    '  else if (urel > 0.12) unitCol = vec3(0.28, 0.95, 0.38);',
+    '  c = mix(c, unitCol, clamp(unitEdge, 0.0, 1.0) * 0.92);',
     '  if (uVisionOn > 0.5) {',
     '    vec3 P = worldAt(vUv);',
     '    vec2 rel = P.xz - uVisionPos;',
@@ -344,6 +357,7 @@ const R = (function () {
     this.shadow = [];
     this.bufS = null; this.bufW = null;
     this.nS = -1; this.nW = -1;
+    this.arrS = null; this.arrW = null;
   }
 
   const _m = mat4();
@@ -395,8 +409,7 @@ const R = (function () {
         const wx = m[0] * nX + m[4] * nY + m[8] * nZ;
         const wy = m[1] * nX + m[5] * nY + m[9] * nZ;
         const wz = m[2] * nX + m[6] * nY + m[10] * nZ;
-        const q = face.q;
-        const tri = [q[0] * 3, q[1] * 3, q[2] * 3, q[0] * 3, q[2] * 3, q[3] * 3];
+        const tri = FACE_TRIS[f];
         for (let t = 0; t < 6; t++) {
           const k = tri[t];
           S.push(_c[k], _c[k + 1], _c[k + 2], wx, wy, wz, col[0], col[1], col[2], emis);
@@ -429,14 +442,16 @@ const R = (function () {
     boxMatrix(_m, o.x || 0, o.y || 0, o.z || 0, yaw, rx, o.px || 0, o.py || 0, o.pz || 0);
     const m = _m;
     const S = this.solid;
-    const sc = o.scale || 1;
+    const scx = (o.scaleX !== undefined) ? o.scaleX : (o.scale || 1);
+    const scy = (o.scaleY !== undefined) ? o.scaleY : (o.scale || 1);
+    const scz = (o.scaleZ !== undefined) ? o.scaleZ : (o.scale || 1);
     const px0 = o.px || 0, py0 = o.py || 0, pz0 = o.pz || 0;
     for (let i = 0; i < mesh.length; i += 10) {
       let lx = mesh[i], ly = mesh[i + 1], lz = mesh[i + 2];
-      if (sc !== 1) {
-        lx = px0 + (lx - px0) * sc;
-        ly = py0 + (ly - py0) * sc;
-        lz = pz0 + (lz - pz0) * sc;
+      if (scx !== 1 || scy !== 1 || scz !== 1) {
+        lx = px0 + (lx - px0) * scx;
+        ly = py0 + (ly - py0) * scy;
+        lz = pz0 + (lz - pz0) * scz;
       }
       const nx0 = mesh[i + 3], ny0 = mesh[i + 4], nz0 = mesh[i + 5];
       const r = o.color ? o.color[0] : mesh[i + 6];
@@ -499,19 +514,22 @@ const R = (function () {
     }
   };
 
+  function uploadArray(geo, arrKey, bufKey, nKey, list) {
+    const len = list.length;
+    if (geo[bufKey] && geo[nKey] === len) return;
+    if (!geo[bufKey]) geo[bufKey] = gl.createBuffer();
+    let arr = geo[arrKey];
+    if (!arr || arr.length < len) arr = geo[arrKey] = new Float32Array(Math.max(1024, len));
+    const view = (arr.length === len) ? arr : arr.subarray(0, len);
+    if (len) view.set(list);
+    gl.bindBuffer(gl.ARRAY_BUFFER, geo[bufKey]);
+    gl.bufferData(gl.ARRAY_BUFFER, view, gl.DYNAMIC_DRAW);
+    geo[nKey] = len;
+  }
+
   Geo.prototype.upload = function () {
-    if (!this.bufS || this.nS !== this.solid.length) {
-      if (!this.bufS) this.bufS = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.bufS);
-      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(this.solid), gl.DYNAMIC_DRAW);
-      this.nS = this.solid.length;
-    }
-    if (!this.bufW || this.nW !== this.shadow.length) {
-      if (!this.bufW) this.bufW = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.bufW);
-      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(this.shadow), gl.DYNAMIC_DRAW);
-      this.nW = this.shadow.length;
-    }
+    uploadArray(this, 'arrS', 'bufS', 'nS', this.solid);
+    uploadArray(this, 'arrW', 'bufW', 'nW', this.shadow);
   };
 
   Geo.prototype.clear = function () {
@@ -544,6 +562,9 @@ const R = (function () {
   const overlayGeo = new Geo();
   const maskGeo = new Geo();
   const unitMaskGeo = new Geo();
+  const unitMaskHostile = new Geo();
+  const unitMaskNeutral = new Geo();
+  const unitMaskFriendly = new Geo();
   const shadowGeo = new Geo();
   const dynXGeo = new Geo();   // 最后叠在画面上、忽略深度的效果层（声波穿墙）
 
@@ -643,7 +664,9 @@ const R = (function () {
   }
 
   function resize(canvas) {
-    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const qdpr = (typeof QS !== 'undefined') ? parseFloat(QS.get('dpr')) : NaN;
+    const dprCap = isFinite(qdpr) ? Math.max(0.5, Math.min(2, qdpr)) : 2;
+    dpr = Math.min(window.devicePixelRatio || 1, dprCap);
     const w = Math.max(320, canvas.clientWidth || window.innerWidth);
     const h = Math.max(240, canvas.clientHeight || window.innerHeight);
     W = Math.floor(w * dpr);
@@ -686,6 +709,9 @@ const R = (function () {
     dynGeo.clear();
     overlayGeo.clear();
     unitMaskGeo.clear();
+    unitMaskHostile.clear();
+    unitMaskNeutral.clear();
+    unitMaskFriendly.clear();
     shadowGeo.clear();
     dynXGeo.clear();
     maskGeo.clear();
@@ -807,7 +833,20 @@ const R = (function () {
 
   /* 单位遮罩：把可见人物写进 mask 的蓝色通道，用于去掉人物身上的后处理粗描边 */
   function drawUnitMask() {
-    if (!unitMaskGeo.nS || unitMaskGeo.nS <= 0) return;
+    /* mask 通道：
+       R = 可互动物品白描边；B = 单位描边；G = 单位阵营关系
+       关系值 0.25 友好 / 0.50 中立 / 1.00 敌对；0 表示黑描边（玩家 / 尸体） */
+    const batches = [
+      [unitMaskGeo, 0.0],
+      [unitMaskFriendly, 0.25],
+      [unitMaskNeutral, 0.50],
+      [unitMaskHostile, 1.0]
+    ];
+    let any = false;
+    for (let i = 0; i < batches.length; i++) {
+      if (batches[i][0].nS > 0) { any = true; break; }
+    }
+    if (!any) return;
     gl.bindFramebuffer(gl.FRAMEBUFFER, fboM);
     gl.viewport(0, 0, W, H);
     gl.enable(gl.DEPTH_TEST);
@@ -818,12 +857,16 @@ const R = (function () {
     gl.disable(gl.BLEND);
     gl.useProgram(progShadow.p);
     gl.uniformMatrix4fv(progShadow.u.uVP, false, vpMat);
-    gl.uniform3f(progShadow.u.uColor, 0, 0, 1);
     gl.uniform1f(progShadow.u.uAlpha, 1);
-    gl.bindBuffer(gl.ARRAY_BUFFER, unitMaskGeo.bufS);
-    gl.enableVertexAttribArray(0);
-    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 40, 0);
-    gl.drawArrays(gl.TRIANGLES, 0, unitMaskGeo.nS / 10);
+    for (let i = 0; i < batches.length; i++) {
+      const g = batches[i][0];
+      if (!g.nS || g.nS <= 0) continue;
+      gl.uniform3f(progShadow.u.uColor, 0, batches[i][1], 1);
+      gl.bindBuffer(gl.ARRAY_BUFFER, g.bufS);
+      gl.enableVertexAttribArray(0);
+      gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 40, 0);
+      gl.drawArrays(gl.TRIANGLES, 0, g.nS / 10);
+    }
     gl.depthMask(true);
     gl.enable(gl.DEPTH_TEST);
     gl.enable(gl.CULL_FACE);
@@ -930,6 +973,9 @@ const R = (function () {
       dynGeo.upload();
       overlayGeo.upload();
       unitMaskGeo.upload();
+      unitMaskHostile.upload();
+      unitMaskNeutral.upload();
+      unitMaskFriendly.upload();
       shadowGeo.upload();
       dynXGeo.upload();
       maskGeo.upload();
@@ -948,6 +994,9 @@ const R = (function () {
     overlay: overlayGeo,
     shadow: shadowGeo,
     unitMask: unitMaskGeo,
+    unitMaskHostile: unitMaskHostile,
+    unitMaskNeutral: unitMaskNeutral,
+    unitMaskFriendly: unitMaskFriendly,
     mask: maskGeo,
     stat: staticGeo,
     setSky: function (c) { sky = c; },

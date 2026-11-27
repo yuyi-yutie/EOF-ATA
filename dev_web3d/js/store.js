@@ -8,7 +8,8 @@
 
 const Store = (function () {
   const KEY = 'eofata3d.save.v1';
-  const SAVE_VERSION = 6;
+  const SAVE_VERSION = 8;
+  const CHAR_COUNT = 12;
 
   const data = defaults();
 
@@ -16,6 +17,7 @@ const Store = (function () {
     return {
       version: SAVE_VERSION,
       bank: CFG.START_BANK,
+      elements: ITEMS.fullElementPool(CFG.START_ELEMENTS),
       stash: [],
       augments: { armor: 0, vitality: 0, pack: 0, loader: 0 },
       contracts: [],
@@ -66,6 +68,9 @@ const Store = (function () {
         value: clampInt(raw.value, 0, 9999, w.value || 0),
         time: Math.max(1, Math.min(8, parseFloat(raw.time) || 2.6)),
         chips: chips,
+        elements: raw.elements !== undefined
+          ? ITEMS.cleanElements(raw.elements)
+          : ITEMS.elementsForWeapon(raw.weaponId),
         gx: 0, gy: 0, rot: 0
       };
     }
@@ -80,6 +85,9 @@ const Store = (function () {
         w: 1, h: 1,
         value: clampInt(raw.value, 0, 9999, t.min),
         time: Math.max(0.4, Math.min(6, parseFloat(raw.time) || t.time)),
+        elements: raw.elements !== undefined
+          ? ITEMS.cleanElements(raw.elements)
+          : ITEMS.elementsForChip(def.id),
         gx: 0, gy: 0, rot: 0
       };
     }
@@ -91,6 +99,9 @@ const Store = (function () {
       h: clampInt(raw.h, 1, CFG.STASH_ROWS, 1),
       value: clampInt(raw.value, 0, 9999, t.min),
       time: Math.max(0.4, Math.min(6, parseFloat(raw.time) || t.time)),
+      elements: raw.elements !== undefined
+        ? ITEMS.cleanElements(raw.elements)
+        : ITEMS.elementsForMaterial(String(raw.name), tierId),
       gx: 0, gy: 0, rot: 0
     };
   }
@@ -103,16 +114,19 @@ const Store = (function () {
     return {
       chipId: def.id,
       tierId: tierId,
-      value: clampInt(raw.value, 0, 9999, TIER_BY_ID[tierId].min)
+      value: clampInt(raw.value, 0, 9999, TIER_BY_ID[tierId].min),
+      elements: raw.elements !== undefined
+        ? ITEMS.cleanElements(raw.elements)
+        : ITEMS.elementsForChip(def.id)
     };
   }
 
   function sanitizeEquippedWeapon(raw, legacyChips) {
     let base = raw;
     if (typeof raw === 'number') {
-      base = ITEMS.makeWeaponItem(raw);
+      base = ITEMS.makeWeaponItem(raw, { found: true });
       if (!base) return null;
-      base = { weaponId: base.weaponId, value: base.value, chips: legacyChips || [] };
+      base = { weaponId: base.weaponId, value: base.value, elements: base.elements, chips: legacyChips || [] };
     }
     if (!base || typeof base !== 'object') return null;
     const w = WEAPONS[base.weaponId];
@@ -132,7 +146,10 @@ const Store = (function () {
       tierId: wt.id,
       value: clampInt(base.value, 0, 9999, w.value || 0),
       time: 2.6,
-      chips: chips
+      chips: chips,
+      elements: base.elements !== undefined
+        ? ITEMS.cleanElements(base.elements)
+        : ITEMS.elementsForWeapon(base.weaponId)
     };
   }
 
@@ -167,7 +184,12 @@ const Store = (function () {
     if (!raw || typeof raw !== 'object') return false;
 
     data.bank = Math.max(0, num(raw.bank, CFG.START_BANK));
-    data.char = clampInt(raw.char, 0, 5, 0);
+    data.elements = ITEMS.elementPool(raw.elements);
+    /* v8：旧档如果还没有任何元素库存，补发一次新档初始元素，避免旧存档无法制造 */
+    if ((!raw.version || raw.version < 8) && ITEMS.elementTotal(data.elements) === 0) {
+      data.elements = ITEMS.fullElementPool(CFG.START_ELEMENTS);
+    }
+    data.char = clampInt(raw.char, 0, CHAR_COUNT - 1, 0);
 
     data.stats.runs = Math.max(0, num(raw.stats && raw.stats.runs, 0));
     data.stats.extracts = Math.max(0, num(raw.stats && raw.stats.extracts, 0));
@@ -263,17 +285,24 @@ const Store = (function () {
     return {
       version: SAVE_VERSION,
       bank: Math.round(data.bank),
+      elements: ITEMS.elementPool(data.elements),
       stash: data.stash.map(function (it) {
         const o = {
           kind: it.kind || 'material',
           name: it.name, tierId: it.tierId, w: it.w, h: it.h,
-          value: it.value, time: it.time, gx: it.gx, gy: it.gy, rot: it.rot
+          value: it.value, time: it.time, gx: it.gx, gy: it.gy, rot: it.rot,
+          elements: ITEMS.cleanElements(it.elements)
         };
         if (o.kind === 'chip') o.chipId = it.chipId;
         if (o.kind === 'weapon') {
           o.weaponId = it.weaponId;
           o.chips = Array.isArray(it.chips) ? it.chips.map(function (c) {
-            return { chipId: c.chipId, tierId: c.tierId, value: c.value | 0 };
+            return {
+              chipId: c.chipId,
+              tierId: c.tierId,
+              value: c.value | 0,
+              elements: ITEMS.cleanElements(c.elements)
+            };
           }) : [];
         }
         return o;
@@ -312,6 +341,27 @@ const Store = (function () {
     return true;
   }
 
+  /* ---------------- 元素资源 ---------------- */
+  function elements() { return data.elements; }
+  function element(id) { return data.elements[id] || 0; }
+  function addElements(map) {
+    ITEMS.addElements(data.elements, map);
+    return data.elements;
+  }
+  function canAffordElements(cost) {
+    const clean = ITEMS.cleanElements(cost);
+    for (const id in clean) {
+      if ((data.elements[id] || 0) < clean[id]) return false;
+    }
+    return true;
+  }
+  function spendElements(cost) {
+    if (!canAffordElements(cost)) return false;
+    const clean = ITEMS.cleanElements(cost);
+    for (const id in clean) data.elements[id] = (data.elements[id] || 0) - clean[id];
+    return true;
+  }
+
   /* ---------------- 仓库 ---------------- */
   function stashAdd(item) {
     const it = Grid.cloneItem(item);
@@ -320,9 +370,10 @@ const Store = (function () {
     return true;
   }
 
-  /* 返回 { stored, overflowValue, overflowCount } */
+  /* 返回 { stored, overflowValue, overflowCount, overflowElements } */
   function stashAddMany(list) {
     let stored = 0, overflowValue = 0, overflowCount = 0;
+    const overflowElements = {};
     for (let i = 0; i < list.length; i++) {
       const it = Grid.cloneItem(list[i]);
       if (Grid.autoPlace(data.stash, it, CFG.STASH_COLS, CFG.STASH_ROWS)) {
@@ -331,10 +382,22 @@ const Store = (function () {
       } else {
         overflowValue += it.value || 0;
         overflowCount++;
+        ITEMS.addElements(overflowElements, it.elements);
+        if (it.kind === 'weapon' && Array.isArray(it.chips)) {
+          for (let k = 0; k < it.chips.length; k++) {
+            ITEMS.addElements(overflowElements, it.chips[k].elements);
+          }
+        }
       }
     }
     if (overflowValue > 0) addBank(overflowValue);
-    return { stored: stored, overflowValue: overflowValue, overflowCount: overflowCount };
+    if (ITEMS.elementTotal(overflowElements) > 0) addElements(overflowElements);
+    return {
+      stored: stored,
+      overflowValue: overflowValue,
+      overflowCount: overflowCount,
+      overflowElements: overflowElements
+    };
   }
 
   function stashRemove(it) {
@@ -348,6 +411,7 @@ const Store = (function () {
     if (!stashRemove(it)) return 0;
     const v = Math.max(0, it.value || 0);
     addBank(v);
+    addElements(it.elements);
     data.stats.dismantled += v;
     save();
     return v;
@@ -356,17 +420,20 @@ const Store = (function () {
   function stashDismantleAll() {
     let sum = 0;
     const keep = [];
+    const gainedElements = {};
     for (let i = 0; i < data.stash.length; i++) {
       const it = data.stash[i];
       if (it.kind === 'weapon') { keep.push(it); continue; }
       sum += Math.max(0, it.value || 0);
+      ITEMS.addElements(gainedElements, it.elements);
     }
     const n = data.stash.length - keep.length;
     data.stash = keep;
     addBank(sum);
+    addElements(gainedElements);
     data.stats.dismantled += sum;
     save();
-    return { value: sum, count: n };
+    return { value: sum, count: n, elements: gainedElements };
   }
 
   function stashRepack() {
@@ -402,7 +469,7 @@ const Store = (function () {
     for (let i = 0; i < 2; i++) {
       let s = src[i];
       if (s === undefined || s === null) continue;
-      if (typeof s === 'number') s = ITEMS.makeWeaponItem(s);
+      if (typeof s === 'number') s = ITEMS.makeWeaponItem(s, { found: true });
       const item = sanitizeEquippedWeapon(s);
       if (item) ws[i] = item;
     }
@@ -446,7 +513,10 @@ const Store = (function () {
     if (!item) return { ok: false, msg: '无法卸下武器' };
     item.value = eq.value || item.value;
     item.tierId = eq.tierId || item.tierId;
-    item.chips = (eq.chips || []).slice();
+    item.elements = eq.elements !== undefined
+      ? ITEMS.cleanElements(eq.elements)
+      : ITEMS.elementsForWeapon(eq.weaponId);
+    item.chips = (eq.chips || []).map(function (c) { return ITEMS.cloneChipEntry(c); }).filter(Boolean);
     if (!Grid.autoPlace(data.stash, item, CFG.STASH_COLS, CFG.STASH_ROWS)) {
       return { ok: false, msg: '仓库已满 · 无法卸下武器' };
     }
@@ -461,33 +531,16 @@ const Store = (function () {
     save();
   }
 
-  /* ---------------- 武器芯片（跟随武器物品） ---------------- */
-  function weaponChips(wi) {
-    const eq = equippedByWeaponId(wi);
+  /* ---------------- 武器芯片（跟随具体武器物品，按配装槽独立） ---------------- */
+  function weaponChips(loadoutSlot) {
+    const eq = equippedWeapon(loadoutSlot);
     return eq && Array.isArray(eq.chips) ? eq.chips : [];
   }
 
-  /* 局内撤离后，把每把已装备武器的芯片写回对应武器 */
-  function setWeaponChips(list) {
-    WEAPONS.forEach(function (_, wi) {
-      const eq = equippedByWeaponId(wi);
-      if (!eq) return;
-      const src = list && list[wi];
-      const out = [];
-      if (Array.isArray(src)) {
-        for (let i = 0; i < src.length && out.length < 3; i++) {
-          const c = sanitizeChipEntry(src[i]);
-          if (c) out.push(c);
-        }
-      }
-      eq.chips = out;
-    });
-    save();
-  }
-
-  function installChip(wi, item) {
-    const eq = equippedByWeaponId(wi);
+  function installChip(loadoutSlot, item) {
+    const eq = equippedWeapon(loadoutSlot);
     if (!eq) return { ok: false, msg: '该武器尚未装备' };
+    const wi = eq.weaponId;
     const list = eq.chips || (eq.chips = []);
     if (list.length >= 3) return { ok: false, msg: '芯片槽已满（最多 3 个）' };
     const entry = ITEMS.chipEntry(item);
@@ -501,20 +554,20 @@ const Store = (function () {
     data.stash.splice(at, 1);
     list.push(entry);
     save();
-    return { ok: true, msg: WEAPONS[wi].name + ' 已装入 ' + (CHIP_BY_ID[entry.chipId] || {}).name };
+    return { ok: true, msg: eq.name + ' 已装入 ' + (CHIP_BY_ID[entry.chipId] || {}).name };
   }
 
-  function uninstallChip(wi, slot) {
-    const eq = equippedByWeaponId(wi);
+  function uninstallChip(loadoutSlot, chipSlot) {
+    const eq = equippedWeapon(loadoutSlot);
     if (!eq) return { ok: false, msg: '该武器尚未装备' };
     const list = eq.chips || [];
-    if (!list[slot]) return { ok: false, msg: '该槽位没有芯片' };
-    const item = ITEMS.makeChipItem(list[slot]);
+    if (!list[chipSlot]) return { ok: false, msg: '该槽位没有芯片' };
+    const item = ITEMS.makeChipItem(list[chipSlot]);
     if (!item || !Grid.autoPlace(data.stash, item, CFG.STASH_COLS, CFG.STASH_ROWS)) {
       return { ok: false, msg: '仓库已满 · 无法卸下芯片' };
     }
     data.stash.push(item);
-    list.splice(slot, 1);
+    list.splice(chipSlot, 1);
     save();
     return { ok: true, msg: '芯片已卸回仓库', item: item };
   }
@@ -524,7 +577,13 @@ const Store = (function () {
     const def = CHIP_BY_ID[chipId];
     if (!def) return { ok: false, msg: '未知芯片' };
     const price = def.price || 0;
+    const elemCost = ITEMS.elementsForChip(def.id);
+    const elemText = ITEMS.elementSummary(elemCost);
     if (data.bank < price) return { ok: false, msg: '数据不足 · 需要 ' + price + ' NB' };
+    if (elemText && !canAffordElements(elemCost)) {
+      return { ok: false, msg: '元素不足 · 需要 ' + elemText };
+    }
+    /* 制造品不带元素：消耗元素只作为制造门槛 */
     const item = ITEMS.makeChipItem({
       chipId: def.id,
       tierId: def.tierId || 'fine',
@@ -535,34 +594,53 @@ const Store = (function () {
       return { ok: false, msg: '仓库已满 · 请先整理仓库' };
     }
     if (!spend(price)) return { ok: false, msg: '数据不足' };
+    if (elemText) spendElements(elemCost);
     data.stash.push(item);
     save();
-    return { ok: true, msg: def.name + ' 制造完成 · 数据 -' + price, item: item, value: def.value };
+    return {
+      ok: true,
+      msg: def.name + ' 制造完成 · 数据 -' + price + (elemText ? ' · 元素 -' + elemText : ''),
+      item: item,
+      value: def.value,
+      elements: elemCost
+    };
   }
 
   function craftWeapon(wi) {
     const w = WEAPONS[wi];
     if (!w) return { ok: false, msg: '未知武器' };
     const price = w.craft || 0;
+    const elemCost = ITEMS.elementsForWeapon(wi);
+    const elemText = ITEMS.elementSummary(elemCost);
     if (data.bank < price) return { ok: false, msg: '数据不足 · 需要 ' + price + ' NB' };
+    if (elemText && !canAffordElements(elemCost)) {
+      return { ok: false, msg: '元素不足 · 需要 ' + elemText };
+    }
     const item = ITEMS.makeWeaponItem(wi);
     if (!item) return { ok: false, msg: '无法制造该武器' };
     if (!Grid.autoPlace(data.stash, item, CFG.STASH_COLS, CFG.STASH_ROWS)) {
       return { ok: false, msg: '仓库已满 · 请先整理仓库' };
     }
     if (!spend(price)) return { ok: false, msg: '数据不足' };
+    if (elemText) spendElements(elemCost);
     data.stash.push(item);
     save();
-    return { ok: true, msg: w.name + ' 制造完成 · 数据 -' + price, item: item, value: w.value };
+    return {
+      ok: true,
+      msg: w.name + ' 制造完成 · 数据 -' + price + (elemText ? ' · 元素 -' + elemText : ''),
+      item: item,
+      value: w.value,
+      elements: elemCost
+    };
   }
 
   /* 芯片修正：加法叠加，射速/换弹/后坐力设一个上限防止数值失控 */
-  function weaponMods(wi) {
-    return ITEMS.computeMods(weaponChips(wi));
+  function weaponMods(loadoutSlot) {
+    return ITEMS.computeMods(weaponChips(loadoutSlot));
   }
 
-  function modsSummary(wi) {
-    const m = weaponMods(wi);
+  function modsSummary(loadoutSlot) {
+    const m = weaponMods(loadoutSlot);
     const parts = [];
     if (m.dmg) parts.push('伤害 +' + Math.round(m.dmg * 100) + '%');
     if (m.rate) parts.push('射速 +' + Math.round(m.rate * 100) + '%');
@@ -578,7 +656,7 @@ const Store = (function () {
 
   function aug(id) { return data.augments[id] || 0; }
   function char() { return data.char; }
-  function setChar(i) { data.char = clampInt(i, 0, 5, 0); save(); }
+  function setChar(i) { data.char = clampInt(i, 0, CHAR_COUNT - 1, 0); save(); }
 
   /* ---------------- 派生数值 ---------------- */
   function maxHp() { return CFG.PLAYER.hp + aug('vitality') * 12; }
@@ -618,6 +696,7 @@ const Store = (function () {
   function demo() {
     reset();
     data.bank = 10000;
+    data.elements = ITEMS.fullElementPool(CFG.START_ELEMENTS);
     data.augments = { armor: 2, vitality: 1, pack: 1, loader: 2 };
     data.stats = {
       runs: 14, extracts: 9, deaths: 5, kills: 187, looted: 142,
@@ -645,7 +724,7 @@ const Store = (function () {
       if (Grid.autoPlace(data.stash, chip, CFG.STASH_COLS, CFG.STASH_ROWS)) data.stash.push(chip);
     }
     [1, 2, 4].forEach(function (wi) {
-      const w = ITEMS.makeWeaponItem(wi);
+      const w = ITEMS.makeWeaponItem(wi, { found: true });
       if (Grid.autoPlace(data.stash, w, CFG.STASH_COLS, CFG.STASH_ROWS)) data.stash.push(w);
     });
     data.loadout.weapons = [
@@ -667,6 +746,8 @@ const Store = (function () {
   return {
     load: load, save: save, reset: reset, demo: demo,
     bank: bank, addBank: addBank, spend: spend,
+    elements: elements, element: element, addElements: addElements,
+    canAffordElements: canAffordElements, spendElements: spendElements,
     stash: function () { return data.stash; },
     stashAdd: stashAdd, stashAddMany: stashAddMany, stashRemove: stashRemove,
     stashDismantle: stashDismantle, stashDismantleAll: stashDismantleAll, stashRepack: stashRepack,
@@ -675,7 +756,7 @@ const Store = (function () {
     loadout: loadout, setLoadout: setLoadout, setGadgets: setGadgets,
     equipWeapon: equipWeapon, unequipWeapon: unequipWeapon,
     equippedWeapon: equippedWeapon, clearLoadoutWeapons: clearLoadoutWeapons,
-    weaponChips: weaponChips, setWeaponChips: setWeaponChips,
+    weaponChips: weaponChips,
     installChip: installChip, uninstallChip: uninstallChip,
     craftChip: craftChip, craftWeapon: craftWeapon,
     weaponMods: weaponMods, modsSummary: modsSummary,

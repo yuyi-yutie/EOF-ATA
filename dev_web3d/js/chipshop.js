@@ -14,6 +14,7 @@ const ChipShop = (function () {
     el.root = UI.$('paneCraft');
     el.bank = UI.$('craftBank');
     el.owned = UI.$('craftOwned');
+    el.elements = UI.$('craftElements');
     el.weapons = UI.$('craftWeapons');
     el.generic = UI.$('craftGeneric');
     el.series = UI.$('craftSeries');
@@ -24,7 +25,10 @@ const ChipShop = (function () {
     const w = WEAPONS[wi];
     const bank = Store.bank();
     const price = w.craft || 0;
-    const poor = bank < price;
+    const elemCost = ITEMS.elementsForWeapon(wi);
+    const elemText = ITEMS.elementSummary(elemCost);
+    const elemPoor = !Store.canAffordElements(elemCost);
+    const poor = bank < price || elemPoor;
     let owned = 0;
     const stash = Store.stash();
     for (let i = 0; i < stash.length; i++) {
@@ -46,10 +50,11 @@ const ChipShop = (function () {
         '<span>基础伤害 <b>' + w.dmg + '</b></span>' +
         '<span>仓库 <b>' + owned + '</b> 把</span>' +
         '<span>数据价值 <b>' + w.value + ' NB</b></span>' +
+        '<span>元素消耗 <b' + (elemPoor ? ' class="bad"' : '') + '>' + (elemText || '无') + '</b></span>' +
       '</div>' +
       '<div class="sc-foot">' +
         '<span class="sc-price">' + price + ' <em>NB</em></span>' +
-        '<button class="btn-mini">' + (poor ? '数据不足' : '制造') + '</button>' +
+        '<button class="btn-mini">' + (bank < price ? '数据不足' : (elemPoor ? '元素不足' : '制造')) + '</button>' +
       '</div>';
     const btn = row.querySelector('button');
     if (poor) btn.disabled = true;
@@ -60,7 +65,10 @@ const ChipShop = (function () {
   function chipCard(def) {
     const bank = Store.bank();
     const price = def.price || 0;
-    const poor = bank < price;
+    const elemCost = ITEMS.elementsForChip(def.id);
+    const elemText = ITEMS.elementSummary(elemCost);
+    const elemPoor = !Store.canAffordElements(elemCost);
+    const poor = bank < price || elemPoor;
     let owned = 0;
     const stash = Store.stash();
     for (let i = 0; i < stash.length; i++) {
@@ -80,10 +88,11 @@ const ChipShop = (function () {
         '<span>数据价值 <b>' + def.value + ' NB</b></span>' +
         '<span>仓库 <b>' + owned + '</b> 块</span>' +
         '<span>分解可得 <b>' + def.value + ' NB</b></span>' +
+        (elemText ? '<span>元素消耗 <b' + (elemPoor ? ' class="bad"' : '') + '>' + elemText + '</b></span>' : '') +
       '</div>' +
       '<div class="sc-foot">' +
         '<span class="sc-price">' + price + ' <em>NB</em></span>' +
-        '<button class="btn-mini">' + (poor ? '数据不足' : '制造') + '</button>' +
+        '<button class="btn-mini">' + (bank < price ? '数据不足' : (elemPoor ? '元素不足' : '制造')) + '</button>' +
       '</div>';
 
     const btn = row.querySelector('button');
@@ -116,6 +125,7 @@ const ChipShop = (function () {
 
     if (el.bank) el.bank.textContent = UI.fmt(Store.bank());
     if (el.owned) el.owned.textContent = owned;
+    if (el.elements) el.elements.innerHTML = UI.elementStrip(Store.elements());
     if (el.weapons) {
       el.weapons.innerHTML = '';
       for (let wi = 0; wi < WEAPONS.length; wi++) el.weapons.appendChild(weaponCard(wi));

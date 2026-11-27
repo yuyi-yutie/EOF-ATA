@@ -8,7 +8,7 @@
    ============================================================ */
 
 const G = (function () {
-  window.__gameBuild = '20261126e11';
+  window.__gameBuild = window.__build || '20261127c1';
   if (typeof console !== 'undefined') console.info('EOFATA game ' + window.__gameBuild);
   if (typeof document !== 'undefined') {
     document.title = 'EOFATA 3D — End of Future : ATA · ' + window.__gameBuild;
@@ -16,6 +16,10 @@ const G = (function () {
   let canvas;
   let running = false, last = 0;
   let time = 0;
+  /* 可见性 / 地面收集物视野不需要每帧重算，10–14Hz 足够且能省下大量 LOS。 */
+  let visionClock = 0.08;
+  let lootVisionClock = 0.1;
+  let lootCompactT = 0;
   let lobbyT = 0;
   let inspectYaw = 0.35;
   let inspectDrag = null;
@@ -47,7 +51,7 @@ const G = (function () {
     stam: CFG.PLAYER.stam, moving: false, animT: 0, sprinting: false,
     weapon: 0, slot: 0, carried: [], cool: 0, reload: 0, recoil: 0,
     reloadDur: 1,
-    weaponChips: [], weaponMods: [],
+    weaponMods: [],
     shieldTimer: 0, stamTimer: 0, dead: false, deadT: 0,
     mags: [], spares: [],
     data: 0, infiniteData: false, inv: [], sel: null, invRows: CFG.INV_ROWS,
@@ -61,6 +65,10 @@ const G = (function () {
   };
 
   let enemies = [];
+  let enemyAlive = [];    // 每帧复用：只含存活单位，避免目标 / 推挤扫描尸体
+  let squads = [];        // 清剿小队编组 / 共享目标
+  let aiPathBudget = 0;   // 每帧最多重算几条 A*，避免所有 AI 同帧寻路造成尖峰
+  let squadPathBudget = 0; // 小队队员跟随轨迹单独预算，避免被其他 AI 抢光
   let tracers = [];
   let flashes = [];
   let sparks = [];
@@ -100,7 +108,8 @@ const G = (function () {
   function $(id) { return document.getElementById(id); }
   function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
   function lerp(a, b, t) { return a + (b - a) * t; }
-  const CHAR_KEYS = ['scout', 'assault', 'tactical', 'scav', 'raider', 'veteran'];
+  const CHAR_KEYS = ['scout', 'assault', 'tactical', 'scav', 'raider', 'veteran',
+    'specter', 'ranger', 'breacher', 'juggernaut', 'vanguard', 'sentinel'];
   function charKeyOf(i) { return CHAR_KEYS[i] || 'scout'; }
   function angDiff(a, b) {
     let d = ((b - a + Math.PI) % (Math.PI * 2)) - Math.PI;
@@ -265,6 +274,51 @@ const G = (function () {
     };
   }
 
+  /* 屏幕外敌人：只统计小地图上已经显示的敌人（inVision），
+     如果胸口投影落在屏幕内就交给 3D 画面；否则返回屏幕方向给 HUD 画边缘头像。 */
+  function offscreenEnemyMarkers() {
+    if (mode !== 'mission' || ended || paused || player.dead) return null;
+    if (Inventory.isOpen() || trainingOpen) return null;
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    if (w < 40 || h < 40) return { w: w, h: h, list: [] };
+
+    const list = [];
+    const halfW = w * 0.5;
+    const halfH = h * 0.5;
+    for (let i = 0; i < enemies.length; i++) {
+      const e = enemies[i];
+      if (e.dead || e.inVision !== true) continue;
+
+      const eyeY = MODELS.height(e.type) * 0.55;
+      const s = worldToScreen(e.x, eyeY, e.z);
+      if (s && s.x > 4 && s.x < w - 4 && s.y > 4 && s.y < h - 4) continue;
+
+      let dx, dy;
+      if (s) {
+        dx = s.x - halfW;
+        dy = s.y - halfH;
+      } else {
+        /* 敌人在相机后方：用相机地面朝向把世界方向换算成屏幕方向 */
+        const fx = CAM.focus[0] - CAM.eye[0];
+        const fz = CAM.focus[2] - CAM.eye[2];
+        const fl = Math.hypot(fx, fz) || 1;
+        const rx = -fz / fl, rz = fx / fl;
+        const vx = e.x - player.x, vz = e.z - player.z;
+        dx = vx * rx + vz * rz;
+        dy = -(vx * (fx / fl) + vz * (fz / fl));
+      }
+      if (Math.abs(dx) < 1e-4 && Math.abs(dy) < 1e-4) dy = 1;
+
+      list.push({
+        type: e.type,
+        dist: Math.hypot(e.x - player.x, e.z - player.z),
+        dx: dx,
+        dy: dy
+      });
+    }
+    return { w: w, h: h, list: list };
+  }
+
   /* ---------- 输入 ---------- */
   function bindInput() {
     window.addEventListener('keydown', function (e) {
@@ -379,6 +433,12 @@ const G = (function () {
     });
     window.addEventListener('mousemove', function (e) {
       if (TOUCH_MODE) return;
+      /* 正在操作物资箱 / 背包 / 尸体等界面时只移动界面指针，不更新瞄准，避免转动视角 */
+      if (Inventory.isOpen() || trainingOpen) {
+        const r = canvas.getBoundingClientRect();
+        HUD.aimAt(e.clientX - r.left, e.clientY - r.top);
+        return;
+      }
       if (mouse.locked) {
         /* 指针锁定后 clientX/Y 固定在中心，用相对位移驱动虚拟准星 */
         const w = canvas.clientWidth, h = canvas.clientHeight;
@@ -398,8 +458,9 @@ const G = (function () {
       if (mouse.locked) {
         mouse.autoLockPending = false;
         HUD.toast('鼠标已锁定 · 移动鼠标瞄准 · L 解除', 'good');
-      } else {
-        /* 解除锁定后系统指针回到窗口中心：同步一下虚拟指针，方便操作 UI */
+      } else if (!Inventory.isOpen() && !trainingOpen) {
+        /* 解除锁定后系统指针回到窗口中心：同步一下虚拟指针，方便操作 UI。
+           打开界面时不解锁重置，避免关闭界面后视角突然回正。 */
         mouse.x = canvas.clientWidth * 0.5;
         mouse.y = canvas.clientHeight * 0.5;
         HUD.aimAt(mouse.x, mouse.y);
@@ -504,47 +565,57 @@ const G = (function () {
   /* ---------- 武器芯片 ---------- */
   const EMPTY_MODS = { dmg: 0, rate: 0, reload: 0, recoil: 0 };
 
-  function modsOf(wi) { return player.weaponMods[wi] || EMPTY_MODS; }
+  function modsOf(slot) { return player.weaponMods[slot] || EMPTY_MODS; }
 
   function recalcWeaponMods() {
-    player.weaponMods = WEAPONS.map(function (_, wi) {
-      return ITEMS.computeMods(player.weaponChips[wi] || []);
+    player.weaponMods = player.carried.map(function (it) {
+      return ITEMS.computeMods(it.chips || []);
     });
   }
 
-  function weaponChipList(wi) { return player.weaponChips[wi] || []; }
+  function weaponChipList(slot) {
+    const it = player.carried[slot];
+    return it && Array.isArray(it.chips) ? it.chips : [];
+  }
 
-  function chipFits(wi, item) { return ITEMS.chipFitsWeapon(item, wi); }
+  function chipFits(slot, item) {
+    const it = player.carried[slot];
+    return !!(it && WEAPONS[it.weaponId] && ITEMS.chipFitsWeapon(item, it.weaponId));
+  }
 
-  function installChip(wi, item) {
-    const list = player.weaponChips[wi];
-    if (!list) return false;
+  function installChip(slot, item) {
+    const carried = player.carried[slot];
+    if (!carried) return false;
+    const list = carried.chips || (carried.chips = []);
     if (list.length >= 3) return false;
     const entry = ITEMS.chipEntry(item);
     if (!entry) return false;
-    if (!ITEMS.chipFitsWeapon(entry, wi)) return false;
+    if (!ITEMS.chipFitsWeapon(entry, carried.weaponId)) return false;
     list.push(entry);
     recalcWeaponMods();
     HUD.updateSlots(player);
     return true;
   }
 
-  function uninstallChip(wi, slot) {
-    const list = player.weaponChips[wi];
-    if (!list || !list[slot]) return null;
-    const item = ITEMS.makeChipItem(list[slot]);
+  function uninstallChip(slot, chipSlot) {
+    const carried = player.carried[slot];
+    const list = carried && carried.chips;
+    if (!list || !list[chipSlot]) return null;
+    const item = ITEMS.makeChipItem(list[chipSlot]);
     if (!item) return null;
-    list.splice(slot, 1);
+    list.splice(chipSlot, 1);
     recalcWeaponMods();
     HUD.updateSlots(player);
     return item;
   }
 
-  /* 局内从背包直接装备武器；两槽已满时替换当前手持槽 */
-  function equipWeaponItem(item) {
+  /* 局内从背包或容器直接装备武器；两槽已满时替换当前手持槽。
+     opts.external = true 时物品不必在背包中（物资箱 / 尸体直接装备）。 */
+  function equipWeaponItem(item, opts) {
     if (!item || item.kind !== 'weapon') return false;
+    const external = !!(opts && opts.external);
     const at = player.inv.indexOf(item);
-    if (at < 0) return false;
+    if (at < 0 && !external) return false;
     const wi = item.weaponId;
     if (!WEAPONS[wi]) return false;
     const copy = Grid.cloneItem(item);
@@ -552,17 +623,14 @@ const G = (function () {
     if (slot >= 2) slot = player.slot >= 0 ? player.slot : 0;
     const newMag = (typeof copy.mag === 'number') ? copy.mag : WEAPONS[wi].mag;
     const newSpares = (typeof copy.spares === 'number') ? copy.spares : 0;
-    player.inv.splice(at, 1);
+    if (at >= 0) player.inv.splice(at, 1);
     if (slot < player.carried.length) {
       const old = player.carried[slot];
       const oldCopy = Grid.cloneItem(old);
-      oldCopy.chips = (player.weaponChips[old.weaponId] || []).map(function (c) {
-        return { chipId: c.chipId, tierId: c.tierId, value: c.value | 0 };
-      });
       oldCopy.mag = (typeof player.mags[slot] === 'number') ? player.mags[slot] : WEAPONS[old.weaponId].mag;
       oldCopy.spares = player.spares[slot] || 0;
       if (!Grid.autoPlace(player.inv, oldCopy, CFG.INV_COLS, player.invRows)) {
-        player.inv.splice(at, 0, item);
+        if (at >= 0) player.inv.splice(at, 0, item);
         return false;
       }
       player.inv.push(oldCopy);
@@ -574,9 +642,6 @@ const G = (function () {
       player.mags.push(newMag);
       player.spares.push(newSpares);
     }
-    player.weaponChips[wi] = (copy.chips || []).map(function (c) {
-      return { chipId: c.chipId, tierId: c.tierId, value: c.value | 0 };
-    });
     player.slot = slot;
     player.weapon = wi;
     recalcWeaponMods();
@@ -591,9 +656,6 @@ const G = (function () {
     if (slot < 0 || slot >= player.carried.length) return false;
     const item = player.carried[slot];
     const copy = Grid.cloneItem(item);
-    copy.chips = (player.weaponChips[item.weaponId] || []).map(function (c) {
-      return { chipId: c.chipId, tierId: c.tierId, value: c.value | 0 };
-    });
     copy.mag = (typeof player.mags[slot] === 'number') ? player.mags[slot] : WEAPONS[item.weaponId].mag;
     copy.spares = player.spares[slot] || 0;
     if (!Grid.autoPlace(player.inv, copy, CFG.INV_COLS, player.invRows)) return false;
@@ -601,6 +663,7 @@ const G = (function () {
     player.carried.splice(slot, 1);
     player.mags.splice(slot, 1);
     player.spares.splice(slot, 1);
+    recalcWeaponMods();
     if (player.slot >= player.carried.length) player.slot = player.carried.length - 1;
     if (player.slot < 0) player.slot = 0;
     player.weapon = player.carried.length ? player.carried[player.slot].weaponId : -1;
@@ -608,6 +671,101 @@ const G = (function () {
     if (player.weapon >= 0) HUD.mag(player.weapon);
     HUD.updateSlots(player);
     if (TOUCH_MODE && player.weapon >= 0) TOUCH.setAuto(!!WEAPONS[player.weapon].auto);
+    return true;
+  }
+
+  /* ---------- 丢出物品 ----------
+     朝准星地面落点抛出；落点不可站立时沿投掷线退回，最后退回脚边。 */
+  const THROW_MAX = 6.5;
+  function throwLandingPoint() {
+    const px = player.x, pz = player.z;
+    let tx = px, tz = pz;
+    const adx = aim ? (aim.x - px) : 0;
+    const adz = aim ? (aim.z - pz) : 0;
+    const ad = Math.hypot(adx, adz);
+    if (aim && ad >= 1.2 && ad <= THROW_MAX + 0.3) {
+      tx = aim.x; tz = aim.z;
+    } else {
+      const yaw = (player.aimYaw === undefined) ? player.yaw : player.aimYaw;
+      const d = Math.min(THROW_MAX, Math.max(2.2, ad || THROW_MAX));
+      tx = px + Math.sin(yaw) * d;
+      tz = pz + Math.cos(yaw) * d;
+    }
+    const walkable = function (x, z) { return !World.blocked(x, z, 0.36); };
+    if (!walkable(tx, tz)) {
+      const dx = tx - px, dz = tz - pz;
+      for (let f = 0.85; f >= 0.18; f -= 0.11) {
+        const nx = px + dx * f, nz = pz + dz * f;
+        if (walkable(nx, nz)) return { x: nx, z: nz };
+      }
+      return { x: px, z: pz };
+    }
+    return { x: tx, z: tz };
+  }
+
+  function spawnThrownLoot(item, to) {
+    const copy = Grid.cloneItem(item);
+    copy.found = true;
+    copy.foundAt = 0;
+    const isWeapon = copy.kind === 'weapon';
+    const dx = to.x - player.x, dz = to.z - player.z;
+    const dist = Math.hypot(dx, dz);
+    const drop = {
+      x: player.x,
+      z: player.z,
+      kind: isWeapon ? 'weapon' : (copy.kind === 'chip' ? 'canister' : 'case'),
+      taken: false,
+      tier: copy.tierId,
+      item: copy,
+      yaw: Math.atan2(dx, dz) + (Math.random() - 0.5) * 0.5,
+      throwT: 0,
+      throwDur: 0.32 + Math.min(0.28, dist * 0.035),
+      throwArc: 0.65 + Math.min(0.45, dist * 0.055),
+      fromX: player.x,
+      fromZ: player.z,
+      toX: to.x,
+      toZ: to.z,
+      dropH: 0
+    };
+    World.loot.push(drop);
+    return drop;
+  }
+
+  function throwBackpackItem(item) {
+    if (mode !== 'mission' || ended || player.dead) return false;
+    if (!item || player.inv.indexOf(item) < 0) return false;
+    const to = throwLandingPoint();
+    player.inv.splice(player.inv.indexOf(item), 1);
+    if (player.sel === item) player.sel = null;
+    spawnThrownLoot(item, to);
+    HUD.toast('已丢出 ' + item.name, 'good');
+    return true;
+  }
+
+  function throwEquippedWeapon(slot) {
+    if (mode !== 'mission' || ended || player.dead) return false;
+    if (slot < 0 || slot >= player.carried.length) return false;
+    const item = player.carried[slot];
+    const copy = Grid.cloneItem(item);
+    copy.mag = (typeof player.mags[slot] === 'number') ? player.mags[slot] : WEAPONS[item.weaponId].mag;
+    copy.spares = player.spares[slot] || 0;
+    player.carried.splice(slot, 1);
+    player.mags.splice(slot, 1);
+    player.spares.splice(slot, 1);
+    recalcWeaponMods();
+    if (player.slot > slot) player.slot--;
+    else if (player.slot === slot) {
+      player.slot = Math.min(slot, player.carried.length - 1);
+    }
+    if (player.slot < 0) player.slot = 0;
+    player.weapon = player.carried.length ? player.carried[player.slot].weaponId : -1;
+    player.reload = 0;
+    HUD.buildSlots(player);
+    if (player.weapon >= 0) HUD.mag(player.weapon);
+    HUD.updateSlots(player);
+    if (TOUCH_MODE && player.weapon >= 0) TOUCH.setAuto(!!WEAPONS[player.weapon].auto);
+    spawnThrownLoot(copy, throwLandingPoint());
+    HUD.toast('已丢出 ' + item.name, 'good');
     return true;
   }
 
@@ -640,7 +798,7 @@ const G = (function () {
     }
     /* 奔跑中按 R：先停下，再进入换弹；换弹结束前不会重新起跑 */
     player.sprinting = false;
-    const m = modsOf(player.weapon);
+    const m = modsOf(player.slot);
     player.reloadDur = w.reload * player.reloadMul * Math.max(0.4, 1 - m.reload);
     player.reload = player.reloadDur;
   }
@@ -765,9 +923,10 @@ const G = (function () {
 
   function drawEnemyGun(geo, e, sway) {
     if (!e.gunner) return;
+    const wi = (e.weaponId === undefined) ? CFG.GUNNER.weaponId : e.weaponId;
     const pose = enemyGunPose(e, sway);
-    MODELS.drawGun(geo, CFG.GUNNER.weaponId, pose);
-    if (pose.reloading) MODELS.drawGunMag(geo, CFG.GUNNER.weaponId, pose);
+    MODELS.drawGun(geo, wi, pose);
+    if (pose.reloading) MODELS.drawGunMag(geo, wi, pose);
   }
 
   /* ---------- 战术道具 ---------- */
@@ -1105,7 +1264,7 @@ const G = (function () {
     }
 
     player.mags[slot]--;
-    const mods = modsOf(wi);
+    const mods = modsOf(slot);
     const stable = Math.max(0.25, 1 - mods.recoil);
     player.cool = w.rate * Math.max(0.35, 1 - mods.rate);
     player.recoil = 1;
@@ -1129,7 +1288,7 @@ const G = (function () {
   /* ---------- 声学：瞬时锥形冲击 ---------- */
   function fireCone(w, m, dmgMul) {
     const mul = dmgMul || 1;
-    const mods = modsOf(player.weapon);
+    const mods = modsOf(player.slot);
     const range = w.range * (1 + mods.coneRange);
     const half = (w.halfAngle || 33) * Math.PI / 180;
     sonicWaves.push({
@@ -1154,7 +1313,7 @@ const G = (function () {
   /* ---------- 光学：折线激光，最多弹射 ---------------- */
   function fireLaser(w, m, dmgMul) {
     const mul = dmgMul || 1;
-    const mods = modsOf(player.weapon);
+    const mods = modsOf(player.slot);
     const maxB = (w.bounce === undefined ? 3 : w.bounce) + mods.bounce;
     const falloff = w.falloff || 0.85;
     /* 枪口偶尔会探进墙里（贴墙射击时）：把起点收回到玩家方向的地板格 */
@@ -1239,7 +1398,7 @@ const G = (function () {
   /* ---------- 热学 / 力学 / 电学：实体弹 ---------- */
   function fireBullet(w, m, dmgMul) {
     const mul = dmgMul || 1;
-    const mods = modsOf(player.weapon);
+    const mods = modsOf(player.slot);
     const speed = w.speed || 46;
     bullets.push({
       kind: w.id, wi: player.weapon, x: m.x, z: m.z, y: 1.0,
@@ -1292,7 +1451,18 @@ const G = (function () {
     zones.push({
       x: x, z: z, r: (w.zoneR || 3.1) * (1 + (zoneMul || 0)), life: w.zoneLife || 3.2,
       tick: 0, dps: (w.tickDmg || 3.5) * 4 * (dmgMul || 1), c: c || w.rgb2,
-      seed: Math.random() * 10
+      seed: Math.random() * 10,
+      faction: 'player', hostile: false, ignorePlayer: true
+    });
+  }
+
+  function spawnHostileZone(x, z, w, e) {
+    zones.push({
+      x: x, z: z, r: w.zoneR || 3.1, life: w.zoneLife || 3.2,
+      tick: 0, dps: (w.tickDmg || 3.5) * 4, c: w.rgb2,
+      seed: Math.random() * 10,
+      faction: e.faction || 'squad', hostile: true,
+      ignorePlayer: !enemyHostileToPlayer(e)
     });
   }
 
@@ -1366,13 +1536,37 @@ const G = (function () {
 
   function damageEnemy(e, dmg, ang, col, silent, credit, fromX, fromZ) {
     if (!e || e.dead) return;
-    const sx = fromX === undefined ? player.x : fromX;
-    const sz = fromZ === undefined ? player.z : fromZ;
-    e.hp -= dmg;
+    /* 玩家来源的伤害用玩家真实位置，而不是手雷 / 燃烧区中心；
+       这样清剿小队只会在“玩家确实从屋内攻击”时获得屋内情报。 */
+    const playerCredit = credit !== false;
+    const sx = playerCredit ? player.x : (fromX === undefined ? player.x : fromX);
+    const sz = playerCredit ? player.z : (fromZ === undefined ? player.z : fromZ);
+    /* 玩家对清剿小队造成伤害：整队立刻敌对，并且本局不再恢复中立 */
+    if (e.squadRef && playerCredit) makeSquadHostile(e, sx, sz);
+    /* 被其他阵营从屋内攻击：同样允许整队追进房屋，不再站在门口抗拒进入。 */
+    if (e.squadRef && !playerCredit) {
+      e.squadRef.combatT = time;
+      squadMarkHouseIntel(e.squadRef, sx, sz);
+    }
+    /* 清剿小队有能量护盾：先扣护盾，破盾后再扣生命 */
+    let incoming = dmg;
+    if (e.shield > 0 && incoming > 0) {
+      const absorbed = Math.min(e.shield, incoming);
+      e.shield -= absorbed;
+      incoming -= absorbed;
+      e.shieldTimer = CFG.SQUAD.shieldDelay;
+      if (absorbed > 0 && !silent) {
+        HUD.damageNumber(e.x, 1.22, e.z, absorbed, [0.42, 0.78, 1.0]);
+        sparks.push({ x: e.x, y: 1.05, z: e.z, t: 0.22, c: [0.45, 0.8, 1.0], s: 0.4 });
+      }
+    }
+    if (incoming > 0) e.hp -= incoming;
+    /* 破盾后继续受击也要刷新护盾充能延迟，避免边挨打边回盾。 */
+    if (e.maxShield > 0) e.shieldTimer = CFG.SQUAD.shieldDelay;
     e.hitFlash = 0.12;
     if (credit !== false) e.playerHit = true;
     if (e.gunner) e.underFire = 1.6;
-    if (!silent) HUD.damageNumber(e.x, 1.22, e.z, dmg, col);
+    if (!silent && incoming > 0) HUD.damageNumber(e.x, 1.22, e.z, incoming, col);
     if (e.gunner) {
       if (e.state !== 'engage' && e.state !== 'cover') {
         e.state = 'alert'; e.alertT = 0.3;
@@ -1421,14 +1615,23 @@ const G = (function () {
     HUD.vitals();
   }
 
-  function nearestChest() {
+  function nearestChest(visionOnly) {
     let best = null, bd = CFG.CHEST_INTERACT_R || 1.8;
     for (let i = 0; i < World.chests.length; i++) {
       const c = World.chests[i];
       if (c.corpse && (!c.inv || !c.inv.length) &&
           !(c.weapons && (c.weapons[0] || c.weapons[1]))) continue;
+      /* 先算距离：交互半径外的箱子没必要再做视线检测。 */
       const d = Math.hypot(c.x - player.x, c.z - player.z) - (c.cr || 0);
-      if (d < bd) { bd = d; best = c; }
+      if (d >= bd) continue;
+      if (visionOnly) {
+        if (!visionVisible(c.x, c.z, c.cr || 0.5)) continue;
+      } else if (World.sightBlocked(player.x, player.z, c.x, c.z)) {
+        /* 手动 F 也不能隔墙交互；视野锥外但同处一室仍然可以 */
+        continue;
+      }
+      bd = d;
+      best = c;
     }
     return best;
   }
@@ -1588,20 +1791,71 @@ const G = (function () {
     return e.faction || (e.gunner ? 'scav' : 'undead');
   }
 
+  /* 单位相对玩家的关系：目前所有敌人都是敌对；预留中立 / 友好。
+     描边颜色由 gl.js 的 mask G 通道解码：敌对红、中立黄、友好绿。 */
+  function relationOf(e) {
+    if (!e) return 'hostile';
+    if (e.relation === 'friendly' || e.faction === 'friendly') return 'friendly';
+    if (e.relation === 'neutral' || e.faction === 'neutral') return 'neutral';
+    return 'hostile';
+  }
+
+  function enemyMaskGeo(e) {
+    const rel = relationOf(e);
+    if (rel === 'friendly' && R.unitMaskFriendly) return R.unitMaskFriendly;
+    if (rel === 'neutral' && R.unitMaskNeutral) return R.unitMaskNeutral;
+    if (R.unitMaskHostile) return R.unitMaskHostile;
+    return R.unitMask;
+  }
+
+  /* 敌人开门：靠近关着的安全屋门时，拾荒者和丧尸都会主动打开。
+     优先处理朝门移动 / 已经贴着门的情况，避免路过时乱开身后的门。
+     只调用 openDoor（幂等、只开不关），不用 toggle：
+     否则两名队员在门还没转到位的那几十毫秒里先后点同一扇门会互相抵消。 */
+  function updateEnemyDoor(e, dt) {
+    const door = World.nearestDoor(e.x, e.z);
+    /* 本帧的最近门缓存：后面的过门引导 / 战斗走位直接复用，
+       避免每帧对每个 AI 重复扫描全部门。 */
+    e.ndDoor = door;
+    /* 记录“是否正在门口”：门被关上时要靠它决定是否把单位推出去。 */
+    e.nearDoor = !!(door && Math.hypot(door.x - e.x, door.z - e.z) < 1.15);
+    if (e.doorCd > 0) { e.doorCd -= dt; return; }
+    /* door.open 是“目标状态”，比门的动画进度更早生效：
+       已经开着的门（哪怕还在转）一律不再碰。 */
+    if (!door || door.open || !World.isDoorClosed(door)) return;
+    /* 清剿小队不会为了游荡去开没观测到敌人的房屋门；
+       但如果它已经在这栋房子里面，允许开门离开，避免情报过期后被困死。 */
+    const inside = !!door.house && World.houseAt(e.x, e.z, 0.05) === door.house;
+    if (e.squadRef && door.house && !inside &&
+        !squadHouseAllowed(e.squadRef, door.house)) return;
+    const dx = door.x - e.x, dz = door.z - e.z;
+    const d = Math.hypot(dx, dz);
+    if (d > 2.4 || d < 1e-4) return;
+    const facing = (dx * Math.sin(e.yaw) + dz * Math.cos(e.yaw)) / d;
+    /* 已经卡在门框里时无条件开门，不论朝向和上一帧是否在移动。 */
+    const inDoor = World.doorOccupied(door, e.x, e.z, e.r + 0.04);
+    if (!e.moving && !inDoor && facing < 0.35) return;
+    if (World.openDoor(door)) e.doorCd = 0.5 + Math.random() * 0.3;
+  }
+
   function canSeePoint(e, tx, tz, maxD) {
     const dx = tx - e.x, dz = tz - e.z;
     const d = Math.hypot(dx, dz);
     if (d > (maxD || e.viewR)) return false;
-    if (World.sightBlocked(e.x, e.z, tx, tz)) return false;
-    if (d < 3.0) return true;
-    const ang = Math.atan2(dx, dz);
-    return Math.abs(angDiff(e.yaw, ang)) < e.viewHalf;
+    /* 先做便宜的视野锥判断，再跑贵的墙体视线；否则扫一遍敌人时
+       会为大量背对 / 侧面的目标白算 sightBlocked。 */
+    if (d >= 3.0) {
+      const ang = Math.atan2(dx, dz);
+      if (Math.abs(angDiff(e.yaw, ang)) >= e.viewHalf) return false;
+    }
+    return !World.sightBlocked(e.x, e.z, tx, tz);
   }
 
   /* 选择当前可见目标：玩家或敌对阵营的敌人，取最近者 */
   function pickEnemyTarget(e) {
     let best = null, bd = Infinity;
-    if (!player.dead && !player.extracted) {
+    if ((!e.squadRef || relationOf(e) === 'hostile') &&
+        !player.dead && !player.extracted) {
       const d = Math.hypot(player.x - e.x, player.z - e.z);
       if (d <= e.viewR && canSeePoint(e, player.x, player.z, e.viewR)) {
         best = { kind: 'player', x: player.x, z: player.z, d: d };
@@ -1609,19 +1863,51 @@ const G = (function () {
       }
     }
     const my = factionOf(e);
-    for (const o of enemies) {
-      if (o === e || o.dead) continue;
-      if (factionOf(o) === my) continue;
-      const d = Math.hypot(o.x - e.x, o.z - e.z);
-      if (d >= bd || d > e.viewR) continue;
-      if (!canSeePoint(e, o.x, o.z, e.viewR)) continue;
-      bd = d;
-      best = { kind: 'enemy', ref: o, x: o.x, z: o.z, d: d };
+    /* 小队共享目标：优先继续集火队友已经发现的目标 */
+    let sharedLock = false;
+    if (e.squadRef && e.squadRef.target) {
+      const st = e.squadRef.target;
+      if (st.kind === 'player') {
+        if (relationOf(e) === 'hostile' && !player.dead) {
+          const d = Math.hypot(player.x - e.x, player.z - e.z);
+          if (d <= e.viewR && canSeePoint(e, player.x, player.z, e.viewR)) {
+            best = { kind: 'player', x: player.x, z: player.z, d: d };
+            bd = d;
+            sharedLock = true;
+          }
+        }
+      } else if (st.ref && !st.ref.dead && factionOf(st.ref) !== my) {
+        const d = Math.hypot(st.ref.x - e.x, st.ref.z - e.z);
+        if (d <= e.viewR && canSeePoint(e, st.ref.x, st.ref.z, e.viewR)) {
+          best = { kind: 'enemy', ref: st.ref, x: st.ref.x, z: st.ref.z, d: d };
+          bd = d;
+          sharedLock = true;
+        }
+      }
     }
+    /* 已经锁定共享目标时不再被自己更近的目标覆盖，保证集火。 */
+    if (!sharedLock) {
+      for (const o of enemyAlive) {
+        if (o === e || o.dead) continue;
+        if (factionOf(o) === my) continue;
+        const d = Math.hypot(o.x - e.x, o.z - e.z);
+        if (d >= bd || d > e.viewR) continue;
+        if (!canSeePoint(e, o.x, o.z, e.viewR)) continue;
+        bd = d;
+        best = { kind: 'enemy', ref: o, x: o.x, z: o.z, d: d };
+      }
+    }
+    if (best && e.squadRef) shareSquadTarget(e, best);
     return best;
   }
 
   function pickPatrol(e) {
+    if (e.squadRef) {
+      if (e.isLeader) return pickSquadRoamPoint(e);
+      const lead = e.squadRef.leader;
+      if (lead && !lead.dead) return { x: lead.x, z: lead.z };
+      return pickSquadRoamPoint(e);
+    }
     for (let i = 0; i < 12; i++) {
       const a = Math.random() * 6.283;
       const r = 2.5 + Math.random() * 7;
@@ -1632,30 +1918,15 @@ const G = (function () {
     return { x: e.home.x, z: e.home.z };
   }
 
+  /* 所有非枪手单位（丧尸 / 喷吐者 / 干尸）共用的移动入口。
+     先尝试 A* 路径，只有近距离或视线直达时才直接朝目标走。 */
   function stepTo(e, tx, tz, speed, dt) {
-    const dx = tx - e.x, dz = tz - e.z;
-    const d = Math.hypot(dx, dz);
-    if (d < 0.05) return true;
-    const ux = dx / d, uz = dz / d;
-    let mv = World.moveCircle(e.x, e.z, ux * speed * dt, uz * speed * dt, e.r);
-    let mx = ux, mz = uz;
-    if (Math.hypot(mv.x - e.x, mv.z - e.z) < 0.0005) {
-      /* 正面被挡住时沿墙侧移，避免一直顶着墙走 */
-      for (const s of [1, -1]) {
-        const m2 = World.moveCircle(e.x, e.z, -uz * s * speed * dt, ux * s * speed * dt, e.r);
-        if (Math.hypot(m2.x - e.x, m2.z - e.z) > 0.0005) {
-          mv = m2; mx = -uz * s; mz = ux * s;
-          break;
-        }
-      }
-    }
-    if (Math.hypot(mv.x - e.x, mv.z - e.z) < 0.0005) return true;
-    e.x = mv.x;
-    e.z = mv.z;
-    e.yaw = angLerp(e.yaw, Math.atan2(mx, mz), 1 - Math.exp(-9 * dt));
-    e.moving = true;
-    e.animT += dt;
-    return false;
+    const remain = Math.hypot(tx - e.x, tz - e.z);
+    if (remain < 0.35) return true;
+    aiMoveTo(e, tx, tz, speed, dt);
+    /* 只有真的走到了才算到达；“被墙挡住原地等”不能当成到达，
+       否则队长会以为目标已完成，换下一个不可达目标，整队一直站着。 */
+    return Math.hypot(tx - e.x, tz - e.z) < 0.35;
   }
 
   /* ============================================================
@@ -1673,15 +1944,42 @@ const G = (function () {
     return bag;
   }
 
-  function makeGunner(type, x, z) {
+  function makeSquadLootBag() {
+    const bag = [];
+    const add = function (it) {
+      if (!it) return false;
+      if (Grid.autoPlace(bag, it, CFG.GUNNER.bagCols, CFG.GUNNER.bagRows)) {
+        bag.push(it);
+        return true;
+      }
+      return false;
+    };
+    /* 至少一件史诗 + 稀有物资；再补一块芯片，有机会多带一把武器 */
+    add(ITEMS.roll('epic', Math.random, 0));
+    add(ITEMS.roll(Math.random() < 0.5 ? 'rare' : 'epic', Math.random, 0));
+    add(ITEMS.rollChip(Math.random, 0.9));
+    if (Math.random() < 0.35) {
+      const wi = Math.floor(Math.random() * WEAPONS.length) % WEAPONS.length;
+      add(ITEMS.makeWeaponItem(wi, { found: true }));
+    }
+    for (let guard = 0; guard < 20 && bag.length < 3; guard++) {
+      add(ITEMS.roll('rare', Math.random, 0));
+    }
+    return bag;
+  }
+
+  function makeGunner(type, x, z, weaponId) {
     const c = CFG.ENEMY[type] || CFG.ENEMY.scav;
-    const w = WEAPONS[CFG.GUNNER.weaponId];
+    const wi = (weaponId === undefined) ? CFG.GUNNER.weaponId : weaponId;
+    const w = WEAPONS[wi] || WEAPONS[CFG.GUNNER.weaponId];
     return {
       x: x, z: z, home: { x: x, z: z }, type: type, gunner: true, faction: 'scav',
+      weaponId: wi,
       hp: c.hp, maxHp: c.hp, r: c.r, speed: c.speed, dmg: c.dmg,
       cd: 0, cdMax: c.cd, yaw: Math.random() * 6.28, animT: 0,
       moving: false, dead: false, fade: 1.9, hitFlash: 0, lunge: 0,
-      state: 'idle', alertT: 0, lostT: 0, waitT: 0, patrol: null,
+      /* 出生后直接进入巡逻 / 搜刮，不再原地“搜索”6 秒 */
+      state: 'idle', alertT: 0, lostT: 6, waitT: 0, patrol: null,
       lastSeenX: x, lastSeenZ: z, seen: false, seenLast: false,
       seed: Math.random() * 10,
       swayT: Math.random() * 10, moveBlend: 0, sprintBlend: 0,
@@ -1693,8 +1991,246 @@ const G = (function () {
       coverTarget: null, coverHold: 0, coverCd: 2 + Math.random() * 3,
       underFire: 0, corpse: false, corpseContainer: null,
       lootBag: makeGunnerBag(), lootTarget: null, lootT: 0, pryingChest: null,
-      lootFull: false, lootIgnored: null, lootIgnoredLoot: null
+      lootFull: false, lootIgnored: null, lootIgnoredLoot: null,
+      lootWaitT: 0, lootStuckT: 0, lootLastDist: Infinity,
+      lootVisitT: 0, lootAbsorbT: 0, lootAbsorbed: 0,
+      lootIgnoreRef: null, lootIgnoreT: 0,
+      lootCooldown: 0, lootSessionT: 0,
+      moveStuckT: 0, wanderT: 0, wanderYaw: 0,
+      path: null, pathGoal: null, pathTime: 0
     };
+  }
+
+  /* 丧尸 / 喷吐者 / 干尸：与程序化地图共用同一套字段 */
+  function makeUndead(type, x, z) {
+    const ecfg = CFG.ENEMY[type] || CFG.ENEMY.zombie;
+    return {
+      x: x, z: z, home: { x: x, z: z }, type: type, faction: 'undead',
+      hp: ecfg.hp, maxHp: ecfg.hp, r: ecfg.r, speed: ecfg.speed, dmg: ecfg.dmg,
+      cd: 0, cdMax: ecfg.cd, yaw: Math.random() * 6.28, animT: 0,
+      moving: false, dead: false, fade: 1.9, hitFlash: 0, lunge: 0,
+      state: 'idle', alertT: 0, lostT: 6, waitT: 0, patrol: null,
+      lastSeenX: x, lastSeenZ: z, seen: false, seed: Math.random() * 10,
+      swayT: Math.random() * 10, moveBlend: 0, sprintBlend: 0,
+      viewR: type === 'spitter' ? 20 : (type === 'gaunt' ? 15 : 16),
+      viewHalf: type === 'spitter' ? 1.15 : 0.95,
+      path: null, pathGoal: null, pathTime: 0
+    };
+  }
+
+  /* ---------- 清剿小队 ----------
+     4 人一组：队长战术干员，其余随机分配 3 种不同武器；
+     初始对玩家中立，玩家造成伤害后整队敌对并保持到本局结束。 */
+  function squadSpawnClear(x, z) {
+    if (World.blocked(x, z, CFG.SQUAD.r + 0.06)) return false;
+    if (World.houseAt && World.houseAt(x, z, 0.05)) return false;
+    return true;
+  }
+
+  function safeSquadSpawn(cx, cz) {
+    if (squadSpawnClear(cx, cz)) return { x: cx, z: cz };
+    for (let i = 0; i < 60; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const d = 2 + Math.random() * 14;
+      const x = cx + Math.cos(a) * d, z = cz + Math.sin(a) * d;
+      if (squadSpawnClear(x, z)) return { x: x, z: z };
+    }
+    return { x: cx, z: cz };
+  }
+
+  function spawnSquad(cx, cz, radius) {
+    const spawn = safeSquadSpawn(cx, cz);
+    cx = spawn.x;
+    cz = spawn.z;
+    const id = 'squad_' + Date.now().toString(36) + '_' + Math.floor(Math.random() * 1e5).toString(36);
+    const squad = {
+      id: id, members: [], leader: null,
+      target: null, lastSeenX: cx, lastSeenZ: cz, hostile: false,
+      houseIntel: {}, roamTarget: null,
+      /* 最近一次交战 / 目击时间：交战中允许进入任何房屋，不再被“未侦察”规则挡在门外。 */
+      combatT: 0
+    };
+    const defs = CFG.SQUAD.members;
+    const pool = [0, 1, 2, 4];
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const t = pool[i]; pool[i] = pool[j]; pool[j] = t;
+    }
+    let pi = 0;
+    defs.forEach(function (def, i) {
+      let x = cx, z = cz;
+      if (i > 0) {
+        let placed = false;
+        for (let t = 0; t < 20; t++) {
+          const a = Math.random() * Math.PI * 2;
+          const d = (radius || CFG.SQUAD.spawnRadius) * Math.sqrt(Math.random());
+          const tx = cx + Math.cos(a) * d;
+          const tz = cz + Math.sin(a) * d;
+          if (squadSpawnClear(tx, tz)) { x = tx; z = tz; placed = true; break; }
+        }
+        /* 找不到安全的屋内 / 障碍点就退回队长位置，至少不违反不进屋规则。 */
+        if (!placed) { x = cx; z = cz; }
+      }
+      const wi = def.leader ? CFG.SQUAD.leaderWeapon : pool[pi++ % pool.length];
+      const e = makeSquadMember(def, x, z, squad, wi);
+      e.squadSlot = i;
+      squad.members.push(e);
+      if (def.leader) squad.leader = e;
+      enemies.push(e);
+    });
+    squads.push(squad);
+    return squad;
+  }
+
+  function makeSquadMember(def, x, z, squad, weaponId) {
+    const e = makeGunner(def.key, x, z, weaponId);
+    const w = WEAPONS[weaponId] || WEAPONS[CFG.GUNNER.weaponId];
+    e.type = def.key;
+    e.displayName = '清剿小队 · ' + def.name;
+    e.faction = 'squad';
+    e.relation = 'neutral';
+    e.squadRef = squad;
+    e.isLeader = !!def.leader;
+    e.squadRole = def.leader ? 'leader' : 'member';
+    e.squadThinkT = 0;
+    e.squadHolding = false;
+    e.hp = e.maxHp = def.leader ? CFG.SQUAD.leaderHp : CFG.SQUAD.hp;
+    e.shield = e.maxShield = def.leader ? CFG.SQUAD.leaderShield : CFG.SQUAD.shield;
+    e.shieldTimer = 0;
+    e.speed = CFG.SQUAD.speed;
+    e.viewR = CFG.SQUAD.viewR;
+    e.viewHalf = CFG.SQUAD.viewHalf;
+    e.weaponId = weaponId;
+    e.ammo = w.mag;
+    e.burstMin = w.auto ? 3 : 1;
+    e.burstMax = w.auto ? 5 : 2;
+    e.burstCool = w.auto ? 0.45 + Math.random() * 0.5 : 0.9 + Math.random() * 0.7;
+    e.reloadDur = w.reload || CFG.GUNNER.reload;
+    e.home = { x: x, z: z };
+    e.lastSeenX = x; e.lastSeenZ = z;
+    e.lootBag = makeSquadLootBag();
+    e.lootFull = false;
+    return e;
+  }
+
+  function shareSquadTarget(e, target) {
+    const sq = e.squadRef;
+    if (!sq || !target) return;
+    if (target.kind === 'player' && relationOf(e) !== 'hostile') return;
+    sq.target = target.kind === 'player'
+      ? { kind: 'player', x: target.x, z: target.z }
+      : { kind: 'enemy', ref: target.ref, x: target.x, z: target.z };
+    sq.lastSeenX = target.x;
+    sq.lastSeenZ = target.z;
+    sq.combatT = time;
+    squadMarkHouseIntel(sq, target.x, target.z);
+    for (const m of sq.members) {
+      if (m.dead) continue;
+      m.lastSeenX = target.x;
+      m.lastSeenZ = target.z;
+      /* 队友刚看到目标：重置丢失计时，否则 lostT 已过 6s 的成员
+         会收到共享目标却直接回去巡逻。 */
+      m.lostT = 0;
+      if (m.state === 'idle' || m.state === 'patrol') {
+        m.state = 'alert';
+        m.alertT = Math.max(m.alertT || 0, 0.45);
+      }
+    }
+  }
+
+  function makeSquadHostile(e, sx, sz) {
+    const sq = e.squadRef;
+    if (!sq || sq.hostile) return;
+    sq.hostile = true;
+    sq.combatT = time;
+    sq.target = { kind: 'player', x: sx, z: sz };
+    sq.lastSeenX = sx; sq.lastSeenZ = sz;
+    squadMarkHouseIntel(sq, sx, sz);
+    for (const m of sq.members) {
+      if (m.dead) continue;
+      m.relation = 'hostile';
+      m.lastSeenX = sx;
+      m.lastSeenZ = sz;
+      m.lostT = 0;
+      m.state = 'alert';
+      m.alertT = Math.max(m.alertT || 0, 0.5);
+      m.squadAlert = true;
+    }
+  }
+
+  function squadMarkHouseIntel(squad, x, z) {
+    if (!squad || typeof World.houseAt !== 'function') return;
+    const h = World.houseAt(x, z, 0.05);
+    if (h) squad.houseIntel[h.id || 'house'] = time + 30;
+  }
+
+  function squadHasHouseIntel(squad, h) {
+    if (!squad || !h) return false;
+    const until = squad.houseIntel[h.id || 'house'];
+    return !!until && until > time;
+  }
+
+  /* 只要有一名存活队员已经在这栋房子里，就视为“已进入”，
+     允许其他队员跟进汇合；否则情报过期后会把小队永久劈成门内 / 门外两半。 */
+  function squadMemberInHouse(squad, h) {
+    if (!squad || !h || typeof World.houseAt !== 'function') return false;
+    for (let i = 0; i < squad.members.length; i++) {
+      const m = squad.members[i];
+      if (!m.dead && World.houseAt(m.x, m.z, 0.05) === h) return true;
+    }
+    return false;
+  }
+
+  function squadHouseAllowed(squad, h) {
+    if (!squad || !h) return true;
+    if (squadHasHouseIntel(squad, h)) return true;
+    if (squadMemberInHouse(squad, h)) return true;
+    /* 交战中（看到目标 / 追击最后目击点 / 被攻击）直接允许进屋。
+       游荡时才避开没侦察过的房屋，这样发现敌人后不会再站在门口抗拒进入。 */
+    if (squad.combatT && time - squad.combatT < 20) return true;
+    return false;
+  }
+
+  /* 小队的寻路禁入房屋选项：和平游荡时避开未侦察房屋，
+     交战中 / 情报有效 / 已有队员在屋内时允许进入。 */
+  function squadPathOpts(e) {
+    if (!e.squadRef) return null;
+    const blocked = {};
+    const houses = World.houses || [];
+    const curHouse = World.houseAt ? World.houseAt(e.x, e.z, 0.05) : null;
+    for (let i = 0; i < houses.length; i++) {
+      const h = houses[i];
+      if (h !== curHouse && !squadHouseAllowed(e.squadRef, h)) {
+        blocked[h.id || 'house'] = true;
+      }
+    }
+    return { blockHouseIds: blocked };
+  }
+
+  /* 小队游荡目标：在 6–20m 内选点，并确认当前能真正走到。
+     之前这里会选到 10m 以外的任意地板点（可能隔着整张地图的墙），
+     队长走到一半发现不可达就会原地“等到达”，整队站着不动。 */
+  function pickSquadRoamPoint(e) {
+    const opts = squadPathOpts(e);
+    for (let i = 0; i < 12; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const d = 6 + Math.random() * 14;
+      const x = e.x + Math.cos(a) * d;
+      const z = e.z + Math.sin(a) * d;
+      if (World.blocked(x, z, e.r + 0.08)) continue;
+      const h = World.houseAt(x, z, 0.05);
+      if (h && !squadHasHouseIntel(e.squadRef, h)) continue;
+      if (typeof World.findPath === 'function') {
+        const path = World.findPath(e.x, e.z, x, z, opts || undefined);
+        if (!path || !path.length) continue;
+        const last = path[path.length - 1];
+        if (Math.hypot(last.x - x, last.z - z) > 2.2) continue;
+      }
+      e.squadRef.roamTarget = { x: x, z: z };
+      return { x: x, z: z };
+    }
+    /* 实在找不到可达点就原地等下一次判断；不要挑一个不可达远景目标。 */
+    return { x: e.x, z: e.z };
   }
 
   function gunnerAddLoot(e, item) {
@@ -1714,10 +2250,79 @@ const G = (function () {
     return Grid.autoPlace(e.lootBag, dummy, CFG.GUNNER.bagCols, CFG.GUNNER.bagRows);
   }
 
+  /* 用实际物品尺寸判断背包是否能放下，避免反复跑向放不下的物资 */
+  function gunnerCanFit(e, item) {
+    if (!item) return false;
+    const dummy = Grid.cloneItem(item);
+    dummy.gx = 0; dummy.gy = 0; dummy.rot = 0;
+    return Grid.autoPlace(e.lootBag, dummy, CFG.GUNNER.bagCols, CFG.GUNNER.bagRows);
+  }
+
   function gunnerCancelPry(e) {
     const c = e.pryingChest;
     if (c && c.pryBy === e) cancelPry(c);
     e.pryingChest = null;
+  }
+
+  /* 放弃当前搜刮目标：临时冷却后重新选目标，避免对着不可达物品长时间发呆 */
+  function ignoreGunnerLoot(e, t) {
+    if (!t) return;
+    if (e.pryingChest && t.kind === 'chest' && e.pryingChest === t.ref) gunnerCancelPry(e);
+    if (t.kind === 'loot') e.lootIgnoredLoot = t.ref;
+    else e.lootIgnored = t.ref;
+    e.lootTarget = null;
+    e.lootT = Math.max(e.lootT || 0, 0.45);
+    e.lootWaitT = 0;
+    e.lootStuckT = 0;
+    e.lootLastDist = Infinity;
+    e.lootVisitT = 0;
+    e.lootAbsorbT = 0;
+    e.lootAbsorbed = 0;
+    e.lootSessionT = 0;
+    e.lootCooldown = Math.max(e.lootCooldown || 0, 7 + Math.random() * 5);
+  }
+
+  function resetGunnerLootSeek(e, t) {
+    e.lootWaitT = 0;
+    e.lootStuckT = 0;
+    e.lootLastDist = t ? Math.hypot(t.x - e.x, t.z - e.z) : Infinity;
+    e.lootVisitT = 0;
+    e.lootAbsorbT = 0;
+    e.lootAbsorbed = 0;
+    e.lootSessionT = 0;
+  }
+
+  /* 一次物资点待机结束后离开；随后进入数秒搜刮冷却，
+     避免拾荒者在同一片物资点之间无限往返、长时间逗留。 */
+  function finishGunnerLootVisit(e, t, noFit) {
+    e.lootTarget = null;
+    e.lootT = 0.6;
+    e.lootVisitT = 0;
+    e.lootAbsorbT = 0;
+    e.lootAbsorbed = 0;
+    e.lootStuckT = 0;
+    e.lootLastDist = Infinity;
+    e.lootWaitT = 0;
+    e.lootSessionT = 0;
+    e.lootCooldown = Math.max(e.lootCooldown || 0, 5 + Math.random() * 6);
+    if (t && t.kind === 'chest') {
+      const c = t.ref;
+      if (noFit) {
+        e.lootIgnored = c;
+        if (!gunnerHasSpace(e)) e.lootFull = true;
+      } else if (c.inv && c.inv.length) {
+        e.lootIgnoreRef = c;
+        e.lootIgnoreT = 6 + Math.random() * 4;
+      }
+    }
+  }
+
+  function gunnerChestHasFit(e, c) {
+    if (!c || !c.inv) return false;
+    for (let i = 0; i < c.inv.length; i++) {
+      if (gunnerCanFit(e, c.inv[i])) return true;
+    }
+    return false;
   }
 
   function pickGunnerLoot(e) {
@@ -1725,6 +2330,7 @@ const G = (function () {
     let best = null, bd = 16;
     for (const l of World.loot) {
       if (l.taken || l === e.lootIgnoredLoot) continue;
+      if (!gunnerCanFit(e, l.item)) continue;
       const d = Math.hypot(l.x - e.x, l.z - e.z);
       if (d >= bd) continue;
       if (World.sightBlocked(e.x, e.z, l.x, l.z)) continue;
@@ -1735,8 +2341,15 @@ const G = (function () {
     if (Inventory.isChestOpen()) return null;
     bd = 18;
     for (const c of World.chests) {
-      if (c.corpse || c === e.lootIgnored || !c.inv || !c.inv.length) continue;
+      /* 拾荒者不撬箱：未撬开的箱子不进入搜刮目标。 */
+      if (c.corpse || !c.pried || c === e.lootIgnored || !c.inv || !c.inv.length) continue;
+      if (e.lootIgnoreRef === c && e.lootIgnoreT > 0) continue;
       if (Inventory.currentChest && Inventory.currentChest() === c) continue;
+      let hasFit = false;
+      for (let i = 0; i < c.inv.length; i++) {
+        if (gunnerCanFit(e, c.inv[i])) { hasFit = true; break; }
+      }
+      if (!hasFit) continue;
       const d = Math.hypot(c.x - e.x, c.z - e.z);
       if (d >= bd) continue;
       if (World.sightBlocked(e.x, e.z, c.x, c.z, c)) continue;
@@ -1747,98 +2360,124 @@ const G = (function () {
     return best;
   }
 
-  /* 返回 true 表示正在搜刮，不再执行巡逻 */
+  /* 返回 true 表示正在搜刮，不再执行巡逻。
+     拾荒者不撬箱、不逐件交互：到达物资点后待机，再按间隔“吸取”少量物资。 */
   function gunnerLoot(e, dt) {
+    /* 清剿小队不参与搜刮；他们的高价值物资出生即携带，死亡后掉落 */
+    if (e.squadRef) return false;
     if (e.lootT > 0) e.lootT -= dt;
+    if (e.lootIgnoreT > 0) {
+      e.lootIgnoreT -= dt;
+      if (e.lootIgnoreT <= 0) e.lootIgnoreRef = null;
+    }
+    if (e.lootCooldown > 0) {
+      e.lootCooldown = Math.max(0, e.lootCooldown - dt);
+      e.lootTarget = null;
+      e.moving = false;
+      return false;
+    }
     let t = e.lootTarget;
     if (t) {
       if (t.kind === 'loot') {
-        if (t.ref.taken) t = e.lootTarget = null;
+        if (t.ref.taken) {
+          t = e.lootTarget = null;
+          resetGunnerLootSeek(e, null);
+        }
       } else if (t.kind === 'chest') {
         if (!t.ref.inv || !t.ref.inv.length || t.ref.corpse) {
-          if (e.pryingChest === t.ref) gunnerCancelPry(e);
           t = e.lootTarget = null;
+          resetGunnerLootSeek(e, null);
         }
       }
     }
     if (!t) {
       t = e.lootTarget = pickGunnerLoot(e);
       if (!t) return false;
+      resetGunnerLootSeek(e, t);
     }
-    /* 玩家正在查看这个箱子时，敌人不要从界面里偷东西 */
+    /* 单次搜刮会话有上限：到点后直接离开并进入冷却，避免一直围着一个物资点转 */
+    e.lootSessionT = (e.lootSessionT || 0) + dt;
+    if (e.lootSessionT > 18) {
+      finishGunnerLootVisit(e, t, false);
+      return true;
+    }
+    /* 玩家正在查看这个箱子时，敌人不要从界面里偷东西，也不要站着一直等 */
     if (t.kind === 'chest' && Inventory.isChestOpen() && Inventory.currentChest() === t.ref) {
       e.moving = false;
+      ignoreGunnerLoot(e, t);
       return true;
     }
     const td = Math.hypot(t.x - e.x, t.z - e.z);
     if (td > CFG.GUNNER.lootR) {
-      gunnerMove(e, t.x - e.x, t.z - e.z, e.speed * 0.72, dt, Math.atan2(t.x - e.x, t.z - e.z));
+      /* 卡住检测：距离一段时间没有缩短就放弃目标，避免顶着墙不动 */
+      if (!isFinite(e.lootLastDist)) e.lootLastDist = td;
+      if (td < e.lootLastDist - 0.03) {
+        e.lootLastDist = td;
+        e.lootStuckT = 0;
+      } else {
+        e.lootStuckT = (e.lootStuckT || 0) + dt;
+      }
+      if (e.lootStuckT > 1.5) {
+        ignoreGunnerLoot(e, t);
+        return true;
+      }
+      aiMoveTo(e, t.x, t.z, e.speed * 0.72, dt, Math.atan2(t.x - e.x, t.z - e.z));
       return true;
     }
+    e.lootStuckT = 0;
+    e.lootLastDist = td;
     e.moving = false;
+    /* 到达后再做一次视线校验：门在途中关上或贴墙时不会隔墙吸取。 */
+    if (World.sightBlocked(e.x, e.z, t.x, t.z)) {
+      ignoreGunnerLoot(e, t);
+      return true;
+    }
     e.yaw = angLerp(e.yaw, Math.atan2(t.x - e.x, t.z - e.z), 1 - Math.exp(-10 * dt));
     if (e.lootT > 0) return true;
 
+    /* 到达物资点后先待机一段时间，再逐步吸取 */
+    e.lootVisitT = (e.lootVisitT || 0) + dt;
+    if (e.lootVisitT < CFG.GUNNER.lootFirstDelay) return true;
+    if (e.lootAbsorbT > 0) {
+      e.lootAbsorbT -= dt;
+      return true;
+    }
+
     if (t.kind === 'loot') {
-      if (t.ref.taken) { e.lootTarget = null; return true; }
+      if (t.ref.taken) {
+        e.lootTarget = null;
+        resetGunnerLootSeek(e, null);
+        return true;
+      }
       if (gunnerAddLoot(e, t.ref.item)) {
         t.ref.taken = true;
-        e.lootT = 1.1;
-        e.lootTarget = null;
+        finishGunnerLootVisit(e, t, false);
       } else {
-        e.lootIgnoredLoot = t.ref;
-        e.lootT = 1.2;
-        e.lootTarget = null;
+        ignoreGunnerLoot(e, t);
         if (!gunnerHasSpace(e)) e.lootFull = true;
       }
       return true;
     }
 
-    /* 箱子：先撬开，再逐件拿走 */
+    /* 物资箱：每 0.45s 吸取一件，单次最多 3 件，剩下的留给其他单位 / 玩家 */
     const c = t.ref;
-    if (!c.pried) {
-      if (c.prying && c.pryBy && c.pryBy !== e && c.pryBy.dead) cancelPry(c);
-      if (c.prying && c.pryBy !== e) {
-        e.moving = false;
-        e.lootWaitT = (e.lootWaitT || 0) + dt;
-        if (e.lootWaitT > 8) {
-          e.lootWaitT = 0;
-          e.lootIgnored = c;
-          e.lootTarget = null;
-          e.lootT = 1.0;
-        }
-        return true;
+    let took = false;
+    for (let i = 0; i < c.inv.length; i++) {
+      if (gunnerAddLoot(e, c.inv[i])) {
+        c.inv.splice(i, 1);
+        took = true;
+        break;
       }
-      e.lootWaitT = 0;
-      if (!c.prying) {
-        c.prying = true;
-        c.pryT = 0;
-        c.pryBy = e;
-        e.pryingChest = c;
-      }
-      c.pryT = Math.min(1, (c.pryT || 0) + dt / CFG.CHEST_PRY_TIME);
-      e.moving = false;
-      if (c.pryT >= 1) {
-        finishPry(c, e.x, e.z, true);
-        e.pryingChest = null;
-        e.lootT = 0.4;
-      }
+    }
+    if (!took) {
+      finishGunnerLootVisit(e, t, true);
       return true;
     }
-
-    if (e.pryingChest) e.pryingChest = null;
-    for (let i = 0; i < c.inv.length; i++) {
-      const it = c.inv[i];
-      if (gunnerAddLoot(e, it)) {
-        c.inv.splice(i, 1);
-        e.lootT = 1.5;
-        return true;
-      }
+    e.lootAbsorbed = (e.lootAbsorbed || 0) + 1;
+    e.lootAbsorbT = CFG.GUNNER.lootInterval;
+    if (e.lootAbsorbed >= CFG.GUNNER.lootMaxItems || !c.inv.length || !gunnerChestHasFit(e, c)) {
+      finishGunnerLootVisit(e, t, !c.inv.length || !gunnerChestHasFit(e, c));
     }
-    e.lootT = 2.0;
-    e.lootTarget = null;
-    if (!gunnerHasSpace(e)) e.lootFull = true;
-    else e.lootIgnored = c;
     return true;
   }
 
@@ -1891,29 +2530,238 @@ const G = (function () {
     return best;
   }
 
+  function squadBlockedByHouse(e, x, z) {
+    if (!e.squadRef || typeof World.houseAt !== 'function') return false;
+    const cur = World.houseAt(e.x, e.z, 0.05);
+    const next = World.houseAt(x, z, 0.05);
+    if (!next || next === cur) return false;
+    return !squadHouseAllowed(e.squadRef, next);
+  }
+
+  /* 通用 AI 寻路：
+     - 所有单位共用同一套路径缓存和每帧预算
+     - 目标较近或视线直达时不浪费 A*
+     - 清剿小队额外禁止进入没有屋内脏情报的房屋 */
+  function aiPathFor(e, tx, tz) {
+    if (typeof World.findPath !== 'function') return null;
+    const goal = e.pathGoal;
+    const same = goal && Math.hypot(goal.x - tx, goal.z - tz) < 2.0;
+    const age = time - (e.pathTime || 0);
+    if (same && age < (e.path && e.path.length ? 1.2 : 0.8)) return e.path;
+
+    const dist = Math.hypot(tx - e.x, tz - e.z);
+    /* 近距离但中间有墙 / 门框时仍需寻路，否则单位会顶着墙原地推。 */
+    if (dist < 2.4 &&
+        (!World.los || World.los(e.x, e.z, tx, tz))) return null;
+
+    /* 普通单位：直线无墙时直接走，避免全场单位频繁跑 A*。
+       清剿小队始终走寻路，保证不会误入未侦察建筑。 */
+    if (!e.squadRef && World.los && World.los(e.x, e.z, tx, tz)) {
+      e.path = null;
+      e.pathGoal = { x: tx, z: tz };
+      e.pathTime = time;
+      return null;
+    }
+
+    if (e.squadRef && !e.isLeader) {
+      /* 队员跟随轨迹需要更稳定的寻路预算；预算用完时继续沿用旧路径，
+         不要退回“无路径”状态导致原地等待。 */
+      if (squadPathBudget <= 0) return (e.path && e.path.length) ? e.path : null;
+      squadPathBudget--;
+    } else {
+      if (aiPathBudget <= 0) {
+        return (e.path && same && age < 3.0) ? e.path : null;
+      }
+      aiPathBudget--;
+    }
+    const opts = squadPathOpts(e);
+    const path = World.findPath(e.x, e.z, tx, tz, opts || undefined);
+    e.path = path;
+    e.pathGoal = { x: tx, z: tz };
+    e.pathTime = time;
+    return path;
+  }
+
+  /* 本帧最近的门（updateEnemyDoor 里缓存；没有缓存时自己查一次）。 */
+  function enemyDoor(e) {
+    return e.ndDoor !== undefined ? e.ndDoor : World.nearestDoor(e.x, e.z);
+  }
+
+  /* 过门引导：只有“下一步真的要穿过这扇门”时才返回一个临时路点，
+     让单位先站到门前中线、再从正中穿过去。
+     旧版只按距离取最近的开着的门，于是站在门边、目标却根本不在门另一侧时
+     也会被硬拽到门中心 —— 四个人围着同一扇门打转，看起来就像卡在门里。 */
+  function doorCrossGuide(e, wx, wz) {
+    if (typeof World.nearestDoor !== 'function') return null;
+    const door = enemyDoor(e);
+    if (!door || !door.open) return null;
+    const yaw = door.rect ? door.rect.yaw : 0;
+    const nx = -Math.sin(yaw), nz = Math.cos(yaw);
+    const sd = (e.x - door.x) * nx + (e.z - door.z) * nz;
+    const td = (wx - door.x) * nx + (wz - door.z) * nz;
+    /* 同侧：不穿门，完全交给寻路 */
+    if (sd * td >= -0.04) return null;
+    const du = Math.hypot(door.x - e.x, door.z - e.z);
+    if (du > 2.6) return null;
+    /* 穿越点必须落在门洞宽度内，否则说明是从墙那边过去的，A* 会自己绕 */
+    const lx = Math.cos(yaw), lz = -Math.sin(yaw);
+    const t = sd / (sd - td);
+    const cx = e.x + (wx - e.x) * t, cz = e.z + (wz - e.z) * t;
+    if (Math.abs((cx - door.x) * lx + (cz - door.z) * lz) > 0.9) return null;
+    /* 离得远：先走到门前 1m 的中线点；已经很近：直接对准门中心 */
+    if (du > 1.05) {
+      const side = sd > 0 ? 1 : -1;
+      return { x: door.x + nx * side * 1.0, z: door.z + nz * side * 1.0 };
+    }
+    return { x: door.x, z: door.z };
+  }
+
+  function aiMoveTo(e, tx, tz, speed, dt, faceYaw) {
+    const path = aiPathFor(e, tx, tz);
+    let wx = tx, wz = tz;
+    let onPath = false;
+    if (path && path.length) {
+      while (path.length && Math.hypot(path[0].x - e.x, path[0].z - e.z) < 0.55) path.shift();
+      if (path.length) { wx = path[0].x; wz = path[0].z; onPath = true; }
+      else e.path = null;
+    }
+    /* 门口对齐：只在前方这段路真的跨过门洞时，才插一个门前中线点，
+       保证单位是从门中间垂直穿过，而不是斜着切门框被挡在门口。 */
+    const guide = doorCrossGuide(e, wx, wz);
+    if (guide) { wx = guide.x; wz = guide.z; onPath = true; }
+    /* 没有可用路径、而目标又被墙体挡住时，不要继续朝墙硬推。
+       A* 下一条 / 下一帧会重新算路，单位先原地等待。 */
+    if (!onPath && Math.hypot(tx - e.x, tz - e.z) > 0.35 &&
+        typeof World.los === 'function' && !World.los(e.x, e.z, tx, tz)) {
+      e.moving = false;
+      return false;
+    }
+    const dx = wx - e.x, dz = wz - e.z;
+    if (Math.hypot(dx, dz) < 0.001) { e.moving = false; return false; }
+    const yaw = faceYaw === undefined ? Math.atan2(dx, dz) : faceYaw;
+    return gunnerMove(e, dx, dz, speed, dt, yaw);
+  }
+
+  function squadStepTo(e, tx, tz, speed, dt) {
+    return stepTo(e, tx, tz, speed, dt);
+  }
+
   function gunnerMove(e, dirX, dirZ, speed, dt, faceYaw) {
-    const len = Math.hypot(dirX, dirZ);
+    let len = Math.hypot(dirX, dirZ);
     if (len < 0.001) { e.moving = false; return false; }
-    let mv = World.moveCircle(e.x, e.z, dirX / len * speed * dt, dirZ / len * speed * dt, e.r);
+    /* 卡在墙角 / 门框时短暂强制侧移，避免持续顶着墙原地打转 */
+    if (e.wanderT > 0) {
+      dirX = Math.sin(e.wanderYaw);
+      dirZ = Math.cos(e.wanderYaw);
+      len = 1;
+    }
+    const want = speed * dt;
+    let mv = World.moveCircle(e.x, e.z, dirX / len * speed * dt, dirZ / len * speed * dt, e.r, true);
     if (Math.hypot(mv.x - e.x, mv.z - e.z) < 0.0005) {
       /* 正面被挡住时尝试垂直侧移 */
       const px = -dirZ / len, pz = dirX / len;
       for (const s of [1, -1]) {
-        const m2 = World.moveCircle(e.x, e.z, px * s * speed * dt, pz * s * speed * dt, e.r);
+        const m2 = World.moveCircle(e.x, e.z, px * s * speed * dt, pz * s * speed * dt, e.r, true);
         if (Math.hypot(m2.x - e.x, m2.z - e.z) > 0.0005) { mv = m2; break; }
       }
     }
-    const moved = Math.hypot(mv.x - e.x, mv.z - e.z) > 0.0005;
+    /* 没有观测到内部敌人的房屋：不主动跨进门口。
+       如果这一帧的移动被这条规则整个吃掉，记一次“门禁拒绝”，
+       由 gunnerMove 的卡住检测负责放弃这个目标，而不是原地顶着门板推。 */
+    if (squadBlockedByHouse(e, mv.x, mv.z)) {
+      const wanted = Math.hypot(mv.x - e.x, mv.z - e.z);
+      mv.x = e.x;
+      mv.z = e.z;
+      if (wanted > 0.002) e.houseDeniedT = (e.houseDeniedT || 0) + dt;
+      else e.houseDeniedT = 0;
+    } else {
+      e.houseDeniedT = 0;
+    }
+    const movedDist = Math.hypot(mv.x - e.x, mv.z - e.z);
+    const moved = movedDist > 0.0005;
     e.x = mv.x;
     e.z = mv.z;
+    if (speed > 0.05 && e.wanderT <= 0) {
+      if (movedDist < want * 0.22) e.moveStuckT = (e.moveStuckT || 0) + dt;
+      else e.moveStuckT = Math.max(0, (e.moveStuckT || 0) - dt * 2);
+      if (e.moveStuckT > 1.0) {
+        e.moveStuckT = 0;
+        e.wanderT = 0.55;
+        /* 卡住多半是“这条路径已经走不通了”（别人挡路 / 贴着墙角）。
+           清掉路径缓存，下一帧重新 A*，比盲目侧移有效得多。 */
+        e.path = null;
+        e.pathGoal = null;
+        let wa = (faceYaw !== undefined ? faceYaw : e.yaw) +
+          (Math.random() < 0.5 ? -1 : 1) * (Math.PI * 0.5 + Math.random() * 0.35);
+        /* 侧移方向要能走：依次尝试 ±45° / ±90° / 斜后方 / 正后方 */
+        const offs = [0, 0.785, -0.785, 1.571, -1.571, 2.356, -2.356, 3.142];
+        for (let oi = 0; oi < offs.length; oi++) {
+          const a = wa + offs[oi];
+          if (!World.blocked(e.x + Math.sin(a) * 1.1, e.z + Math.cos(a) * 1.1, e.r)) {
+            wa = a;
+            break;
+          }
+        }
+        e.wanderYaw = wa;
+        e.patrol = null;
+        e.coverTarget = null;
+        /* 被“不许进屋”挡在门口的，直接放弃这个目标：
+           否则它会一秒一秒地重算同一条进屋路径，永远顶在门槛上。
+           （houseDeniedT 与这里的 1 秒卡住计时同速累计，0.4 秒的门槛用于
+           区分“被门禁挡住”和“被别的东西挡住”。） */
+        if ((e.houseDeniedT || 0) > 0.4) {
+          e.houseDeniedT = 0;
+          e.lastSeenX = e.x;
+          e.lastSeenZ = e.z;
+          e.lostT = 6;
+          e.squadHolding = false;
+          if (e.squadRef && e.isLeader) e.squadThinkT = 0;
+        }
+        if (e.state === 'search') {
+          /* 追最后目击点时撞墙：立即结束搜索，避免盯着墙角走满 6 秒 */
+          e.lastSeenX = e.x;
+          e.lastSeenZ = e.z;
+          e.lostT = 6;
+        }
+        if (e.lootTarget) {
+          e.lootTarget = null;
+          e.lootCooldown = Math.max(e.lootCooldown || 0, 4 + Math.random() * 4);
+        }
+      }
+    }
     if (speed > 0.01) e.moving = true;
     if (moved) e.animT += dt;
     if (faceYaw !== undefined) e.yaw = angLerp(e.yaw, faceYaw, 1 - Math.exp(-10 * dt));
     return moved;
   }
 
+  function enemyWeapon(e) {
+    const wi = (e.weaponId === undefined) ? CFG.GUNNER.weaponId : e.weaponId;
+    return WEAPONS[wi] || WEAPONS[CFG.GUNNER.weaponId];
+  }
+
+  /* 清剿小队在未敌对时不把玩家当作目标 / 不误伤玩家 */
+  function enemyHostileToPlayer(e) {
+    return !e.squadRef || relationOf(e) === 'hostile';
+  }
+
+  function damageTargetFromEnemy(e, target, dmg, col) {
+    if (!target) return;
+    const tx = target.kind === 'player' ? player.x : (target.ref ? target.ref.x : target.x);
+    const tz = target.kind === 'player' ? player.z : (target.ref ? target.ref.z : target.z);
+    /* 最后一次视线校验：直接伤害型武器不能在走位 / 失去视野后隔墙命中。 */
+    if (World.sightBlocked(e.x, e.z, tx, tz)) return;
+    if (target.kind === 'player') {
+      if (enemyHostileToPlayer(e) && !player.dead) damagePlayer(dmg);
+      return;
+    }
+    const o = target.ref;
+    if (!o || o.dead || factionOf(o) === factionOf(e)) return;
+    damageEnemy(o, dmg, Math.atan2(o.x - e.x, o.z - e.z), col, true, false, e.x, e.z);
+  }
+
   function fireEnemyBullet(e, tx, tz, d) {
-    const w = WEAPONS[CFG.GUNNER.weaponId];
+    const w = enemyWeapon(e);
     let spread = CFG.GUNNER.spread;
     if (e.moving) spread += 0.02;
     if (d > 12) spread += 0.015;
@@ -1928,25 +2776,115 @@ const G = (function () {
       mz = e.z + Math.cos(a) * 0.3;
     }
     bullets.push({
-      kind: 'kinetic', wi: CFG.GUNNER.weaponId, hostile: true,
-      faction: 'scav', ox: e.x, oz: e.z,
+      kind: 'kinetic', wi: e.weaponId === undefined ? CFG.GUNNER.weaponId : e.weaponId,
+      hostile: true, faction: e.faction || 'scav',
+      ignorePlayer: !enemyHostileToPlayer(e),
+      ox: e.x, oz: e.z,
       x: mx, z: mz, y: 1.02,
       vx: Math.sin(a) * speed, vz: Math.cos(a) * speed,
       dmg: w.dmg, dmgFar: w.dmgFar, range: w.range,
-      travelled: 0, r: 0.2, c: [1.0, 0.50, 0.22], dead: false
+      travelled: 0, r: 0.2, c: w.rgb2, dead: false
     });
-    flashes.push({ x: mx, y: 1.04, z: mz, yaw: a, t: 0.06, s: 0.34, c: [1.0, 0.55, 0.25] });
+    flashes.push({ x: mx, y: 1.04, z: mz, yaw: a, t: 0.06, s: 0.34, c: w.rgb2 });
     flashes.push({ x: mx, y: 1.04, z: mz, yaw: a, t: 0.1, s: 0.16, c: [1.0, 0.95, 0.82] });
+  }
+
+  /* 敌人的其它武器模态：保持与玩家版本相近的视觉 / 伤害反馈 */
+  function fireEnemyLaser(e, target, tx, tz, d) {
+    const w = enemyWeapon(e);
+    const fx = e.x + Math.sin(e.yaw) * 0.7;
+    const fz = e.z + Math.cos(e.yaw) * 0.7;
+    beams.push({ pts: [{ x: fx, z: fz }, { x: tx, z: tz }], t: 0.18, c: w.rgb2 });
+    flashes.push({ x: fx, y: 1.03, z: fz, yaw: e.yaw, t: 0.08, s: 0.28, c: w.rgb2 });
+    damageTargetFromEnemy(e, target, w.dmg, w.rgb2);
+    sparks.push({ x: tx, y: 1.04, z: tz, t: 0.2, c: w.rgb2, s: 0.28 });
+  }
+
+  function fireEnemySonic(e, target, tx, tz, d) {
+    const w = enemyWeapon(e);
+    const half = (w.halfAngle || 33) * Math.PI / 180;
+    sonicWaves.push({
+      x: e.x + Math.sin(e.yaw) * 0.5, z: e.z + Math.cos(e.yaw) * 0.5,
+      ang: e.yaw, half: half, range: w.range,
+      t: 0, life: 0.72, c: w.rgb2, seed: Math.random() * 10
+    });
+    damageTargetFromEnemy(e, target, w.dmg, w.rgb2);
+    sparks.push({ x: e.x, y: 1.0, z: e.z, t: 0.2, c: w.rgb2, s: 0.4 });
+  }
+
+  function fireEnemyThermal(e, target, tx, tz, d) {
+    const w = enemyWeapon(e);
+    const mx = e.x + Math.sin(e.yaw) * 0.7;
+    const mz = e.z + Math.cos(e.yaw) * 0.7;
+    tracers.push({ x0: mx, z0: mz, x1: tx, z1: tz, c: w.rgb2, t: 0.12 });
+    damageTargetFromEnemy(e, target, w.dmg, w.rgb2);
+    for (let i = 0; i < 4; i++) {
+      sparks.push({
+        x: tx + (Math.random() - 0.5) * 0.6, y: 0.65 + Math.random() * 0.9,
+        z: tz + (Math.random() - 0.5) * 0.6, t: 0.2 + Math.random() * 0.12,
+        c: i % 2 ? [1, 0.48, 0.18] : w.rgb2, s: 0.2 + Math.random() * 0.14
+      });
+    }
+    spawnHostileZone(tx, tz, w, e);
+  }
+
+  function fireEnemyVoltaic(e, target, tx, tz, d) {
+    const w = enemyWeapon(e);
+    const mx = e.x + Math.sin(e.yaw) * 0.7;
+    const mz = e.z + Math.cos(e.yaw) * 0.7;
+    bolts.push({
+      x0: mx, z0: mz, x1: tx, z1: tz,
+      t: 0.18, c: w.rgb2, seed: Math.random() * 10
+    });
+    damageTargetFromEnemy(e, target, w.dmg, w.rgb2);
+    const used = [];
+    if (target && target.ref) used.push(target.ref);
+    let src = { x: tx, z: tz };
+    const maxN = w.chainMax || 3;
+    for (let i = 0; i < maxN; i++) {
+      let best = null, bd = w.chainR || 6;
+      for (const o of enemies) {
+        if (o.dead || o === e || factionOf(o) === factionOf(e) || used.indexOf(o) >= 0) continue;
+        const od = Math.hypot(o.x - src.x, o.z - src.z);
+        if (od >= bd) continue;
+        if (World.sightBlocked(src.x, src.z, o.x, o.z)) continue;
+        bd = od; best = o;
+      }
+      if (!best) break;
+      bolts.push({
+        x0: src.x, z0: src.z, x1: best.x, z1: best.z,
+        t: 0.18, c: w.rgb2, seed: Math.random() * 10
+      });
+      const mul = i < (w.chainMul || []).length ? w.chainMul[i] : 0.25;
+      damageEnemy(best, w.dmg * mul, Math.atan2(best.x - src.x, best.z - src.z), w.rgb2, true, false, e.x, e.z);
+      used.push(best);
+      src = { x: best.x, z: best.z };
+    }
+  }
+
+  function fireEnemyWeapon(e, target, tx, tz, d) {
+    const w = enemyWeapon(e);
+    /* 走位后可能已经绕到墙角后面；不再产生光束 / 燃烧区 / 电弧。 */
+    if (World.sightBlocked(e.x, e.z, tx, tz)) return;
+    const mx = e.x + Math.sin(e.yaw) * 0.7;
+    const mz = e.z + Math.cos(e.yaw) * 0.7;
+    flashes.push({ x: mx, y: 1.03, z: mz, yaw: e.yaw, t: 0.06, s: 0.3, c: w.rgb2 });
+    if (w.id === 'laser') fireEnemyLaser(e, target, tx, tz, d);
+    else if (w.id === 'sonic') fireEnemySonic(e, target, tx, tz, d);
+    else if (w.id === 'thermal') fireEnemyThermal(e, target, tx, tz, d);
+    else if (w.id === 'voltaic') fireEnemyVoltaic(e, target, tx, tz, d);
+    else fireEnemyBullet(e, tx, tz, d);
     e.ammo = Math.max(0, e.ammo - 1);
   }
 
   function updateGunnerAI(e, dt, d, sees, dx, dz, target) {
-    const w = WEAPONS[CFG.GUNNER.weaponId];
+    const w = WEAPONS[e.weaponId === undefined ? CFG.GUNNER.weaponId : e.weaponId];
     const faceYaw = Math.atan2(dx, dz);
     const threatX = (sees && target) ? target.x : e.lastSeenX;
     const threatZ = (sees && target) ? target.z : e.lastSeenZ;
     if (e.coverCd > 0) e.coverCd -= dt;
     if (e.underFire > 0) e.underFire -= dt;
+    if (e.wanderT > 0) e.wanderT = Math.max(0, e.wanderT - dt);
     if (e.reloadT > 0) {
       e.reloadT -= dt;
       if (e.reloadT <= 0) {
@@ -1988,7 +2926,7 @@ const G = (function () {
       } else {
         const cd = Math.hypot(e.coverTarget.x - e.x, e.coverTarget.z - e.z);
         if (cd > 0.45) {
-          gunnerMove(e, e.coverTarget.x - e.x, e.coverTarget.z - e.z, e.speed, dt, faceYaw);
+          aiMoveTo(e, e.coverTarget.x, e.coverTarget.z, e.speed, dt, faceYaw);
         } else {
           e.moving = false;
           e.yaw = angLerp(e.yaw, faceYaw, 1 - Math.exp(-10 * dt));
@@ -2015,8 +2953,27 @@ const G = (function () {
       e.state = 'engage';
       e.yaw = angLerp(e.yaw, faceYaw, 1 - Math.exp(-11 * dt));
 
-      if (d > CFG.GUNNER.rangeMax) {
-        gunnerMove(e, dx, dz, e.speed, dt, faceYaw);
+      const doorHere = enemyDoor(e);
+      if (doorHere && doorHere.open &&
+          Math.hypot(doorHere.x - e.x, doorHere.z - e.z) < 1.15) {
+        /* 不要站在门洞里对枪堵路：沿门法线走到自己这一侧，
+           而不是朝“目标那一侧”硬挤 —— 目标也在门洞里时会变成贴着门框蹭。 */
+        const yaw = doorHere.rect ? doorHere.rect.yaw : 0;
+        const nx = -Math.sin(yaw), nz = Math.cos(yaw);
+        const sd = (e.x - doorHere.x) * nx + (e.z - doorHere.z) * nz;
+        if (Math.abs(sd) < 0.6) {
+          const s = sd >= 0 ? 1 : -1;
+          gunnerMove(e, nx * s, nz * s, e.speed * 0.85, dt, faceYaw);
+        } else if (d > CFG.GUNNER.rangeMax) {
+          aiMoveTo(e, target.x, target.z, e.speed, dt, faceYaw);
+        } else if (d < CFG.GUNNER.rangeMin) {
+          gunnerMove(e, -dx, -dz, e.speed, dt, faceYaw);
+        } else {
+          e.moving = false;
+          e.yaw = angLerp(e.yaw, faceYaw, 1 - Math.exp(-12 * dt));
+        }
+      } else if (d > CFG.GUNNER.rangeMax) {
+        aiMoveTo(e, target.x, target.z, e.speed, dt, faceYaw);
       } else if (d < CFG.GUNNER.rangeMin) {
         gunnerMove(e, -dx, -dz, e.speed, dt, faceYaw);
       } else {
@@ -2025,10 +2982,25 @@ const G = (function () {
           e.strafeDir *= -1;
           e.strafeT = 0.7 + Math.random() * 0.9;
         }
-        const sx = -dz / d * e.strafeDir, sz = dx / d * e.strafeDir;
-        if (!gunnerMove(e, sx, sz, e.speed * 0.62, dt, faceYaw)) {
-          e.strafeDir *= -1;
-          e.strafeT = 0.45;
+        /* 两侧都贴墙时不要继续沿墙滑；但也不要站着不动装卡住：
+           走廊里没法走位时压上到稍近的距离开火。 */
+        const ax = -dz / d, az = dx / d;
+        const canA = !World.blocked(e.x + ax * 0.7, e.z + az * 0.7, e.r, true);
+        const canB = !World.blocked(e.x - ax * 0.7, e.z - az * 0.7, e.r, true);
+        if (!canA && !canB) {
+          e.moving = false;
+          e.yaw = angLerp(e.yaw, faceYaw, 1 - Math.exp(-12 * dt));
+          if (d > CFG.GUNNER.rangeMax * 0.8) {
+            aiMoveTo(e, target.x, target.z, e.speed * 0.9, dt, faceYaw);
+          }
+        } else {
+          if (e.strafeDir > 0 && !canA) e.strafeDir = -1;
+          else if (e.strafeDir < 0 && !canB) e.strafeDir = 1;
+          const sx = ax * e.strafeDir, sz = az * e.strafeDir;
+          if (!gunnerMove(e, sx, sz, e.speed * 0.62, dt, faceYaw)) {
+            e.strafeDir *= -1;
+            e.strafeT = 0.45;
+          }
         }
       }
       e.yaw = angLerp(e.yaw, faceYaw, 1 - Math.exp(-12 * dt));
@@ -2039,33 +3011,41 @@ const G = (function () {
         e.burstT -= dt;
         if (e.burstT <= 0) {
           if (e.ammo <= 0) {
-            e.reloadT = CFG.GUNNER.reload;
-            e.reloadDur = CFG.GUNNER.reload;
+            const reload = w.reload || CFG.GUNNER.reload;
+            e.reloadT = reload;
+            e.reloadDur = reload;
             e.burstLeft = 0;
             e.burstCool = 0.45;
           } else {
-            fireEnemyBullet(e, threatX, threatZ, d);
+            fireEnemyWeapon(e, target, threatX, threatZ, d);
             e.burstLeft--;
             e.burstT = w.rate;
             if (e.burstLeft <= 0) e.burstCool = 0.45 + Math.random() * 0.55;
           }
         }
       } else if (e.burstCool <= 0) {
-        e.burstLeft = CFG.GUNNER.burstMin +
-          Math.floor(Math.random() * (CFG.GUNNER.burstMax - CFG.GUNNER.burstMin + 1));
+        const bmin = e.burstMin === undefined ? CFG.GUNNER.burstMin : e.burstMin;
+        const bmax = e.burstMax === undefined ? CFG.GUNNER.burstMax : e.burstMax;
+        e.burstLeft = bmin + Math.floor(Math.random() * (bmax - bmin + 1));
         e.burstT = 0;
       }
       return;
     }
 
-    /* 失去视野：先前往最后目击点，再开始搜刮 / 巡逻 */
+    /* 失去视野：先前往最后目击点，再开始搜刮 / 巡逻。
+       目击点在任何房屋里都直接记为已侦察，允许小队追进去搜索；
+       不再因为“这栋房屋没情报”而放弃追击、站在门口不进门。 */
     e.burstLeft = 0;
     e.coverTarget = null;
+    if (e.squadRef) {
+      e.squadRef.combatT = time;
+      squadMarkHouseIntel(e.squadRef, e.lastSeenX, e.lastSeenZ);
+    }
     if (e.lostT < 6) {
       e.state = 'search';
       const td = Math.hypot(e.lastSeenX - e.x, e.lastSeenZ - e.z);
       if (td > 0.8) {
-        gunnerMove(e, e.lastSeenX - e.x, e.lastSeenZ - e.z, e.speed * 0.9, dt,
+        aiMoveTo(e, e.lastSeenX, e.lastSeenZ, e.speed * 0.9, dt,
           Math.atan2(e.lastSeenX - e.x, e.lastSeenZ - e.z));
       } else {
         e.moving = false;
@@ -2075,6 +3055,66 @@ const G = (function () {
     }
 
     e.state = 'patrol';
+    /* 队员直接跟随队长当前位置，各自用 A* 绕墙 / 走门；
+       保留“跟随距离 + 迟滞”，避免贴太近互相挤门、也避免停一下又追一下。 */
+    if (e.squadRef && !e.isLeader) {
+      const sq = e.squadRef;
+      const lead = sq.leader;
+      if (lead && !lead.dead && lead !== e) {
+        const ld = Math.hypot(lead.x - e.x, lead.z - e.z);
+        const leadH = World.houseAt ? World.houseAt(lead.x, lead.z, 0.05) : null;
+        const myH = World.houseAt ? World.houseAt(e.x, e.z, 0.05) : null;
+        const slot = e.squadSlot || 0;
+        /* 后面的队员停得稍远，队伍自然拉开，不在门口叠成一团。 */
+        const stop = 1.9 + slot * 0.8;
+        if (e.squadHolding) {
+          if (ld > stop + 1.0 || leadH !== myH) e.squadHolding = false;
+        } else if (ld <= stop && leadH === myH) {
+          e.squadHolding = true;
+        }
+        if (e.squadHolding) {
+          /* 不要停在门洞里：如果正好压在门洞中间，沿自己这一侧的法线迈出去再待命。
+             不能按“队长那一侧”推 —— 队长也在门洞里时方向会横着，正好顶住门框。 */
+          const door = enemyDoor(e);
+          if (door && door.open && Math.hypot(door.x - e.x, door.z - e.z) < 1.25) {
+            const yaw = door.rect ? door.rect.yaw : 0;
+            const nx = -Math.sin(yaw), nz = Math.cos(yaw);
+            const sd = (e.x - door.x) * nx + (e.z - door.z) * nz;
+            if (Math.abs(sd) < 0.62) {
+              const s = sd >= 0 ? 1 : -1;
+              gunnerMove(e, nx * s, nz * s, e.speed * 0.85, dt);
+              e.squadHolding = false;
+              return;
+            }
+          }
+          e.moving = false;
+          e.patrol = null;
+          e.yaw = angLerp(e.yaw, Math.atan2(lead.x - e.x, lead.z - e.z), 1 - Math.exp(-8 * dt));
+          return;
+        }
+        e.patrol = { x: lead.x, z: lead.z };
+        e.waitT = 0;
+        e.lootTarget = null;
+      } else {
+        e.patrol = null;
+        e.squadHolding = false;
+      }
+    }
+    if (e.squadRef && e.isLeader) {
+      /* 队长只按自己的节奏选择下一个目标，不看队员位置。
+         到达后等冷却结束再选下一个，降低寻路 / 游荡点判断频率。 */
+      e.squadThinkT = Math.max(0, (e.squadThinkT || 0) - dt);
+      if (!e.patrol) {
+        if (e.squadThinkT > 0) {
+          e.moving = false;
+          e.yaw += Math.sin(time * 1.1 + e.seed) * dt * 0.5;
+          return;
+        }
+        e.patrol = pickSquadRoamPoint(e);
+        e.squadThinkT = 2.2 + Math.random() * 1.8;
+        e.waitT = 0;
+      }
+    }
     if (gunnerLoot(e, dt)) return;
     if (!e.patrol) { e.patrol = pickPatrol(e); e.waitT = 0.6 + Math.random() * 1.4; }
     if (e.waitT > 0) {
@@ -2082,10 +3122,39 @@ const G = (function () {
       e.yaw += Math.sin(time * 1.1 + e.seed) * dt * 0.5;
       return;
     }
-    if (stepTo(e, e.patrol.x, e.patrol.z, e.speed * 0.42, dt)) {
-      e.waitT = 1.2 + Math.random() * 2.2;
-      e.patrol = pickPatrol(e);
+    if (e.squadRef && !e.isLeader) {
+      /* 队员直接追队长当前所在位置；无路可走且被墙挡住时 aiMoveTo 会停下等下一帧重算 */
+      aiMoveTo(e, e.patrol.x, e.patrol.z, e.speed * 1.05, dt);
+      return;
+    }
+    const arrived = e.squadRef
+      ? squadStepTo(e, e.patrol.x, e.patrol.z, e.speed * 0.62, dt)
+      : stepTo(e, e.patrol.x, e.patrol.z, e.speed * 0.42, dt);
+    if (arrived) {
+      e.patrolStallT = 0;
+      e.patrol = null;
+      if (e.squadRef) {
+        if (e.isLeader) e.squadThinkT = Math.max(e.squadThinkT, 0.6);
+      } else {
+        e.waitT = 1.2 + Math.random() * 2.2;
+        e.patrol = pickPatrol(e);
+      }
       e.lootTarget = null;
+      e.path = null;
+    } else if (!e.moving) {
+      /* 目标不可达 / 被挡住：1.2 秒没有进展就放弃，换下一个目标。
+         没有这个兜底时，一次选到隔着墙的目标就会永远站着等。 */
+      e.patrolStallT = (e.patrolStallT || 0) + dt;
+      if (e.patrolStallT > 1.2) {
+        e.patrolStallT = 0;
+        e.patrol = null;
+        e.path = null;
+        e.pathGoal = null;
+        if (e.squadRef) e.squadThinkT = Math.max(e.squadThinkT || 0, 0.35);
+        else e.waitT = 0.2 + Math.random() * 0.4;
+      }
+    } else {
+      e.patrolStallT = 0;
     }
   }
 
@@ -2109,12 +3178,13 @@ const G = (function () {
       if (Grid.autoPlace(inv, copy, cols, rows)) inv.push(copy);
       else dropGroundItem(copy, e.x, e.z);
     }
-    let held = ITEMS.makeWeaponItem(CFG.GUNNER.weaponId);
+    const wi = (e.weaponId === undefined) ? CFG.GUNNER.weaponId : e.weaponId;
+    let held = ITEMS.makeWeaponItem(wi, { found: true });
     if (held) {
       held.found = true;
       held.foundAt = 0;
-      /* 拾荒者当前弹夹里剩多少发，尸体上的枪就带多少发；不凭空补满 */
-      held.mag = Math.max(0, Math.min(WEAPONS[CFG.GUNNER.weaponId].mag, e.ammo | 0));
+      /* 敌人当前弹夹里剩多少发，尸体上的枪就带多少发；不凭空补满 */
+      held.mag = Math.max(0, Math.min(WEAPONS[wi].mag, e.ammo | 0));
       held.spares = 0;
     }
     const weapons = [held || null, null];
@@ -2131,7 +3201,7 @@ const G = (function () {
     }
     for (const it of bagItems) add(it);
     e.lootBag = [];
-    const label = (CFG.ENEMY[e.type] && CFG.ENEMY[e.type].name) || '拾荒者';
+    const label = e.displayName || (CFG.ENEMY[e.type] && CFG.ENEMY[e.type].name) || '拾荒者';
     const container = {
       type: 'corpse', corpse: true, x: e.x, z: e.z, yaw: e.yaw,
       name: label + ' 尸体', cols: cols, rows: rows, inv: inv,
@@ -2139,11 +3209,71 @@ const G = (function () {
       cr: 0.5, pried: true, opened: false, search: null,
       emptyText: '尸体已被搜空'
     };
+    container.linkedEnemy = e;
     World.chests.push(container);
     e.corpseContainer = container;
   }
 
+  function corpseHasItems(c) {
+    if (!c || !c.corpse) return false;
+    if (c.inv && c.inv.length) return true;
+    if (c.weapons && (c.weapons[0] || c.weapons[1])) return true;
+    return !!c.weapon;
+  }
+
+  /* 尸体被搜空后：关闭仍在查看的界面，尸体视觉和普通僵尸一样下沉消失 */
+  function updateCorpseContainers(dt) {
+    for (let i = World.chests.length - 1; i >= 0; i--) {
+      const c = World.chests[i];
+      if (!c || !c.corpse) continue;
+      if (!c.emptyT) {
+        if (corpseHasItems(c)) continue;
+        c.emptyT = 0.0001;
+        if (Inventory.currentChest() === c) Inventory.closeChest();
+        const e = c.linkedEnemy;
+        if (e) {
+          e.corpse = false;
+          e.corpseContainer = null;
+          e.deadT = 0;
+          e.fade = 1.9;
+        }
+      } else {
+        c.emptyT += dt;
+        if (c.emptyT >= 1.6) {
+          World.chests.splice(i, 1);
+        }
+      }
+    }
+  }
+
+  /* 队伍顺位：队长最优先，其余按号码。推挤时只让顺位靠后的让路。 */
+  function squadRank(e) {
+    if (!e.squadRef) return 99;
+    return e.isLeader ? -1 : (e.squadSlot || 0);
+  }
+
   function updateEnemies(dt) {
+    aiPathBudget = 3;
+    squadPathBudget = 6;
+    enemyAlive.length = 0;
+    for (const e of enemies) if (!e.dead) enemyAlive.push(e);
+    /* 队长阵亡后由第一个存活成员接替，避免小队直接散架。 */
+    for (let si = 0; si < squads.length; si++) {
+      const sq = squads[si];
+      if (sq.leader && !sq.leader.dead) continue;
+      let next = null;
+      for (let mi = 0; mi < sq.members.length; mi++) {
+        if (!sq.members[mi].dead) { next = sq.members[mi]; break; }
+      }
+      sq.leader = next;
+      if (next) {
+        next.isLeader = true;
+        next.squadRole = 'leader';
+        next.squadThinkT = 0;
+        next.patrol = null;
+        next.squadHolding = false;
+      }
+    }
     for (const e of enemies) {
       if (e.dead) {
         if (!e.corpse) e.fade -= dt;
@@ -2152,8 +3282,27 @@ const G = (function () {
       }
 
       e.hitFlash = Math.max(0, e.hitFlash - dt);
+      /* 清剿小队护盾：脱战一段时间后自动充能 */
+      if (e.maxShield > 0) {
+        e.shieldTimer = Math.max(0, (e.shieldTimer || 0) - dt);
+        if (e.shieldTimer <= 0 && e.shield < e.maxShield) {
+          e.shield = Math.min(e.maxShield, e.shield + CFG.SQUAD.shieldRate * dt);
+        }
+      }
       e.cd = Math.max(0, e.cd - dt);
       e.swayT = (e.swayT || 0) + dt;
+      updateEnemyDoor(e, dt);
+      /* 门被关上时把站在门里的单位推出去（和玩家同一套处理）。
+         以前只推玩家，敌人被关门夹住就要自己靠逃逸搜索慢慢蹭出来。 */
+      if (e.nearDoor) {
+        const doorPush = World.resolveDoorTrap(e.x, e.z, e.r);
+        if (doorPush) {
+          e.x = doorPush.x;
+          e.z = doorPush.z;
+          e.path = null;
+          e.pathGoal = null;
+        }
+      }
 
       const target = pickEnemyTarget(e);
       const sees = !!target;
@@ -2202,7 +3351,7 @@ const G = (function () {
             projectiles.push({
               x: e.x + ux * 0.6, y: 1.15, z: e.z + uz * 0.6,
               vx: ux * 12, vz: uz * 12, life: 3, dmg: CFG.ENEMY.spitter.dmg,
-              faction: 'undead', srcX: e.x, srcZ: e.z
+              faction: e.faction || 'undead', srcX: e.x, srcZ: e.z
             });
             flashes.push({ x: e.x + ux * 0.7, y: 1.3, z: e.z + uz * 0.7, yaw: Math.atan2(ux, uz), t: 0.08, s: 0.22 });
           }
@@ -2260,23 +3409,58 @@ const G = (function () {
 
       if (e.lunge) e.lunge = Math.max(0, e.lunge - dt);
 
+      /* 逐帧位移可能被门框 / 墙体回弹抵消，单帧检测会漏掉“原地抖动”。
+         用 0.7s 窗口判断真实前进距离，没前进就强制侧移脱困。 */
+      e.progT = (e.progT || 0) + dt;
+      if (e.progT >= 0.7) {
+        const px = (e.progX === undefined) ? e.x : e.progX;
+        const pz = (e.progZ === undefined) ? e.z : e.progZ;
+        if (e.moving && Math.hypot(e.x - px, e.z - pz) < 0.14) {
+          e.moveStuckT = 0;
+          e.wanderT = Math.max(e.wanderT || 0, 0.55);
+          /* 路径失效：先清缓存让下一帧重新寻路，再考虑侧移 */
+          e.path = null;
+          e.pathGoal = null;
+          /* 侧移方向必须是能走的方向，否则会继续贴着墙滑。 */
+          let wa = e.yaw + (Math.random() < 0.5 ? -1 : 1) *
+            (Math.PI * 0.5 + Math.random() * 0.3);
+          const offs = [0, 0.785, -0.785, 1.571, -1.571, 2.356, -2.356, 3.142];
+          for (let oi = 0; oi < offs.length; oi++) {
+            const a = wa + offs[oi];
+            if (!World.blocked(e.x + Math.sin(a) * 1.1, e.z + Math.cos(a) * 1.1, e.r, true)) {
+              wa = a;
+              break;
+            }
+          }
+          e.wanderYaw = wa;
+          e.patrol = null;
+          if (e.gunner) e.lootTarget = null;
+        }
+        e.progX = e.x; e.progZ = e.z; e.progT = 0;
+      }
+
       /* 拾荒者在非交战状态快速移动时把枪横在胸前（与玩家奔跑姿势一致） */
       e.carry = !!e.gunner && e.moving && e.reloadT <= 0 &&
         (e.state === 'cover' || e.state === 'search' || e.state === 'patrol');
       e.moveBlend = (e.moveBlend || 0) + ((e.moving ? 1 : 0) - (e.moveBlend || 0)) * (1 - Math.exp(-6 * dt));
       e.sprintBlend = (e.sprintBlend || 0) + ((e.carry ? 1 : 0) - (e.sprintBlend || 0)) * (1 - Math.exp(-14 * dt));
 
-      for (const o of enemies) {
+      /* 队伍内部推挤：
+         门口 / 走廊不再需要“禁止互推”的老办法（那会让两个人完全重叠、
+         看起来像穿模卡住）。改成单向让路：每一对只推顺位靠后的那个，
+         净位移永远有方向，不会出现两人对称互顶、原地抖的死锁。 */
+      for (const o of enemyAlive) {
         if (o === e || o.dead) continue;
+        const mates = e.squadRef && o.squadRef === e.squadRef;
+        if (mates && squadRank(e) < squadRank(o)) continue;
         const ox = e.x - o.x, oz = e.z - o.z;
         const od = Math.hypot(ox, oz);
         const mn = e.r + o.r;
-        if (od > 0.0001 && od < mn) {
-          const push = (mn - od) * 0.5;
-          const nx = e.x + ox / od * push;
-          const nz = e.z + oz / od * push;
-          if (!World.blocked(nx, nz, e.r)) { e.x = nx; e.z = nz; }
-        }
+        if (od <= 0.0001 || od >= mn) continue;
+        const push = (mn - od) * 0.5;
+        const nx = e.x + ox / od * push;
+        const nz = e.z + oz / od * push;
+        if (!World.blocked(nx, nz, e.r)) { e.x = nx; e.z = nz; }
       }
     }
     enemies = enemies.filter(function (e) { return e.corpse || !(e.dead && e.fade <= 0); });
@@ -2337,9 +3521,10 @@ const G = (function () {
       }
     }
 
-    const dp = Math.hypot(player.x - World.pad.x, player.z - World.pad.z);
-    if (dp < World.pad.r) HUD.objective('撤离台 · 保持站位', true);
-    else if (dp < World.pad.r + 5) HUD.objective('撤离台 · 已到达', true);
+    const nearPad = nearestPad(player.x, player.z);
+    const dp = Math.hypot(player.x - nearPad.x, player.z - nearPad.z);
+    if (dp < nearPad.r) HUD.objective('撤离台 · 保持站位', true);
+    else if (dp < nearPad.r + 5) HUD.objective('撤离台 · 已到达', true);
     else HUD.objective('撤离点 · ' + Math.round(dp) + ' m', false);
 
     let best = null, bd = CFG.INTERACT_R + 0.6;
@@ -2354,8 +3539,8 @@ const G = (function () {
         ITEMS.tier(it.tierId).name + ' · ' + it.name + '</b>');
       return;
     }
-    if (dp < World.pad.r) HUD.prompt('保持站位 · 撤离同步中');
-    else if (dp < World.pad.r + 5) HUD.prompt('撤离台就在附近');
+    if (dp < nearPad.r) HUD.prompt('保持站位 · 撤离同步中');
+    else if (dp < nearPad.r + 5) HUD.prompt('撤离台就在附近');
     else HUD.prompt(null);
   }
 
@@ -2379,10 +3564,19 @@ const G = (function () {
     return !World.sightBlocked(player.x, player.z, x, z);
   }
 
-  function updateVision() {
+  function updateVision(dt) {
+    visionClock += dt;
+    if (visionClock < 0.07) return;
+    visionClock = 0;
     for (let i = 0; i < enemies.length; i++) {
       const e = enemies[i];
-      e.inVision = !e.dead && visionVisible(e.x, e.z, e.r);
+      if (e.dead) {
+        /* 尸体也要做视野判断：否则尸体会和战利品标记一起穿墙显示。
+           搜空后 e.corpse=false 但仍在淡出下沉，需要继续允许渲染。 */
+        e.inVision = (!!e.corpse || e.fade > 0) && visionVisible(e.x, e.z, 0.35);
+        continue;
+      }
+      e.inVision = visionVisible(e.x, e.z, e.r);
     }
   }
 
@@ -2481,7 +3675,9 @@ const G = (function () {
     const MH = CFG.HOUSE;
     for (let hi = 0; hi < HOUSES.length; hi++) {
       const h = HOUSES[hi];
-      if (Math.hypot(h.x - px, h.z - pz) > RANGE + 12) continue;
+      /* 只处理视野附近的房屋；大房子的中心可能很远，用轮廓距离判断 */
+      const hd = World.houseDistance ? World.houseDistance(h, px, pz) : Math.hypot(h.x - px, h.z - pz);
+      if (hd > RANGE + 8) continue;
       for (let mi = 0; mi < h.modules.length; mi++) {
         const m = h.modules[mi];
         const c = Math.cos(m.yaw), s = Math.sin(m.yaw);
@@ -2529,7 +3725,9 @@ const G = (function () {
     time += dt;
     /* 训练场数据无限：每帧回填，所有消耗都可以正常扣除但不会耗尽 */
     if (player.infiniteData) player.data = 999999;
-    World.updateHouses(dt, player.x, player.z);
+    const houseAimYaw = (player.headWorldYaw === undefined) ? player.yaw : player.headWorldYaw;
+    World.updateHouses(dt, player.x, player.z,
+      Math.sin(houseAimYaw), Math.cos(houseAimYaw), CFG.VISION.RANGE);
     /* 门关上时如果玩家正在门洞里，把玩家推出去，避免卡死 */
     const doorPush = World.resolveDoorTrap(player.x, player.z, CFG.PLAYER.r);
     if (doorPush) {
@@ -2537,8 +3735,10 @@ const G = (function () {
       player.z = doorPush.z;
     }
 
-    /* 靠近物资箱自动开始撬箱；箱盖撬飞后由 F 主动搜索 */
-    const autoChest = nearestChest();
+    /* 靠近物资箱自动开始撬箱；箱盖撬飞后由 F 主动搜索。
+       自动撬箱要求箱子在当前视野内（120° 视锥 + 24m + 无墙体遮挡），
+       避免隔着墙或背对箱子时凭空撬开。 */
+    const autoChest = nearestChest(true);
     if (autoChest && !autoChest.corpse && !autoChest.pried && !autoChest.prying) startPry(autoChest);
 
     /* 物资箱：撬箱进度 / 撬飞箱盖 / 延迟进入搜索 */
@@ -2553,6 +3753,8 @@ const G = (function () {
           const d = Math.hypot(c.x - player.x, c.z - player.z) - (c.cr || 0);
           if (d > (CFG.CHEST_INTERACT_R || 1.8) + 0.9) {
             cancelPry(c, '离得太远 · 撬箱中断');
+          } else if (!visionVisible(c.x, c.z, c.cr || 0.5)) {
+            cancelPry(c, '失去视野 · 撬箱中断');
           } else {
             c.pryT += dt / CFG.CHEST_PRY_TIME;
             if (c.pryT >= 1) finishPry(c);
@@ -2571,6 +3773,7 @@ const G = (function () {
       }
     }
     updateLidDebris(dt);
+    updateCorpseContainers(dt);
 
     const invOpen = Inventory.isOpen();
     const uiLock = invOpen || trainingOpen;
@@ -2600,13 +3803,14 @@ const G = (function () {
         aimYaw = tr.aimYaw;
         player.aimActive = true;
       }
-    } else {
+    } else if (!uiLock) {
       const gp = screenToGround(mouse.x, mouse.y, 0.9);
       if (gp) aim = gp;
       const adx = aim.x - player.x, adz = aim.z - player.z;
       if (Math.hypot(adx, adz) > 0.3) aimYaw = Math.atan2(adx, adz);
     }
-    player.aimYaw = aimYaw;
+    /* 界面打开期间锁定当前朝向，鼠标移动只操作界面 */
+    if (!uiLock) player.aimYaw = aimYaw;
 
     const tl = TOUCH.left;
     if (TOUCH_MODE && tl.autoMove &&
@@ -2739,8 +3943,10 @@ const G = (function () {
     }
 
     updateEnemies(dt);
-    updateVision();
-    updateLootVision();
+    updateVision(dt);
+    updateDroppedLoot(dt);
+    updateLootVision(dt);
+    compactLoot(dt);
 
     /* 弹体 */
     for (const p of projectiles) {
@@ -2810,7 +4016,7 @@ const G = (function () {
         if (b.hostile) {
           const bf = b.faction || 'scav';
           let hitPlayer = false, hitEnemy = null, hitD = 1e9;
-          if (!player.dead && !player.extracted) {
+          if (!b.ignorePlayer && !player.dead && !player.extracted) {
             const pd = Math.hypot(player.x - b.x, player.z - b.z);
             if (pd < CFG.PLAYER.r + b.r) { hitPlayer = true; hitD = pd; }
           }
@@ -2856,10 +4062,18 @@ const G = (function () {
       z.tick -= dt;
       if (z.tick <= 0) {
         z.tick = 0.25;
+        if (z.hostile && !z.ignorePlayer && !player.dead &&
+            Math.hypot(player.x - z.x, player.z - z.z) < z.r &&
+            !World.sightBlocked(z.x, z.z, player.x, player.z)) {
+          damagePlayer(z.dps * 0.25);
+        }
         for (const e of enemies) {
           if (e.dead) continue;
-          if (Math.hypot(e.x - z.x, e.z - z.z) < z.r) {
-            damageEnemy(e, z.dps * 0.25, Math.atan2(e.x - z.x, e.z - z.z), z.c, true);
+          if (z.faction && factionOf(e) === z.faction) continue;
+          if (Math.hypot(e.x - z.x, e.z - z.z) < z.r &&
+              !World.sightBlocked(z.x, z.z, e.x, e.z)) {
+            damageEnemy(e, z.dps * 0.25, Math.atan2(e.x - z.x, e.z - z.z), z.c,
+              true, z.hostile ? false : true, z.x, z.z);
           }
         }
       }
@@ -2883,10 +4097,13 @@ const G = (function () {
     for (const r of rings) r.t -= dt;
     rings = rings.filter(function (r) { return r.t > 0; });
 
-    /* 撤离 */
-    const exHold = (testMap && World.test && World.test.extractHold) ? World.test.extractHold : CFG.EXTRACT_HOLD;
-    const dp = Math.hypot(player.x - World.pad.x, player.z - World.pad.z);
-    if (dp < World.pad.r && !player.dead) {
+    /* 撤离：支持多个撤离台，站进任意一个都会独立计量 */
+    const activePad = nearestPad(player.x, player.z);
+    const exHold = (testMap && World.test && World.test.extractHold)
+      ? World.test.extractHold
+      : (activePad.hold || CFG.EXTRACT_HOLD);
+    const dp = Math.hypot(player.x - activePad.x, player.z - activePad.z);
+    if (dp < activePad.r && !player.dead) {
       player.extractT += dt;
       HUD.extract(player.extractT / exHold);
       if (player.extractT >= exHold) {
@@ -2957,10 +4174,44 @@ const G = (function () {
     return false;
   }
 
-  function updateLootVision() {
+  /* 丢出物品的短抛物线：只改显示位置，落地后保持静止 */
+  function updateDroppedLoot(dt) {
+    if (!World.loot || !World.loot.length) return;
+    for (let i = 0; i < World.loot.length; i++) {
+      const l = World.loot[i];
+      if (!(l.throwDur > 0)) continue;
+      l.throwT += dt;
+      const t = Math.min(1, l.throwT / l.throwDur);
+      l.x = l.fromX + (l.toX - l.fromX) * t;
+      l.z = l.fromZ + (l.toZ - l.fromZ) * t;
+      l.dropH = Math.sin(Math.PI * t) * l.throwArc;
+      if (t >= 1) {
+        l.x = l.toX;
+        l.z = l.toZ;
+        l.dropH = 0;
+        l.throwDur = 0;
+      }
+    }
+  }
+
+  function updateLootVision(dt) {
+    lootVisionClock += dt;
+    if (lootVisionClock < 0.1) return;
+    lootVisionClock = 0;
     for (let i = 0; i < World.loot.length; i++) {
       const l = World.loot[i];
       l.inVision = !l.taken && lootVisible(l);
+    }
+  }
+
+  /* 定期清理已拾取的收集物，避免长局中 World.loot 无限增长导致
+     视野、拾取、AI 搜刮和小地图每帧扫描越来越多。 */
+  function compactLoot(dt) {
+    lootCompactT += dt;
+    if (lootCompactT < 4) return;
+    lootCompactT = 0;
+    for (let i = World.loot.length - 1; i >= 0; i--) {
+      if (World.loot[i].taken) World.loot.splice(i, 1);
     }
   }
 
@@ -2997,12 +4248,29 @@ const G = (function () {
       if (!l.inVision) continue;
       const col = tierRgb(l.item ? l.item.tierId : 'common');
       const bob = Math.sin(time + l.x * 0.7) * 0.03;
-      if (l.kind === 'case') {
-        put({ x: l.x, y: 0.24 + bob, z: l.z, sx: 0.62, sy: 0.46, sz: 0.5, yaw: 0.4, color: PAL.teal, outline: 0.016, shadow: true });
-        put({ x: l.x, y: 0.50 + bob, z: l.z, sx: 0.44, sy: 0.05, sz: 0.3, yaw: 0.4, color: col, outline: 0, emis: true });
+      const lift = l.dropH || 0;
+      const yaw = l.yaw === undefined ? (l.kind === 'canister' ? 0.2 : 0.4) : l.yaw;
+      if (l.kind === 'weapon' && l.item && l.item.weaponId !== undefined) {
+        /* 武器丢出后直接使用实际枪械建模躺在地上 */
+        if (typeof MODELS !== 'undefined' && MODELS.drawGun) {
+          MODELS.drawGun(geo, l.item.weaponId, {
+            x: l.x, y: 0.12 + lift, z: l.z, yaw: yaw, pitch: 0.04, scale: 0.92
+          });
+        }
+        put({ x: l.x, y: 0.035 + lift, z: l.z, sx: 0.22, sy: 0.025, sz: 1.08, yaw: yaw, color: col, outline: 0, emis: true, shadow: false });
+        put({ x: l.x, y: 0.78 + bob + lift, z: l.z, sx: 0.13, sy: 0.13, sz: 0.13, yaw: 0.6, color: col, outline: 0, emis: true, shadow: false });
+        if (mask) {
+          mask.box({
+            x: l.x, y: 0.16 + lift, z: l.z, sx: 0.34, sy: 0.28, sz: 1.25,
+            yaw: yaw, color: [1, 1, 1], outline: 0
+          });
+        }
+      } else if (l.kind === 'case') {
+        put({ x: l.x, y: 0.24 + bob + lift, z: l.z, sx: 0.62, sy: 0.46, sz: 0.5, yaw: yaw, color: PAL.teal, outline: 0.016, shadow: true });
+        put({ x: l.x, y: 0.50 + bob + lift, z: l.z, sx: 0.44, sy: 0.05, sz: 0.3, yaw: yaw, color: col, outline: 0, emis: true });
       } else {
-        put({ x: l.x, y: 0.3 + bob, z: l.z, sx: 0.36, sy: 0.6, sz: 0.36, yaw: 0.2, color: PAL.gunL, outline: 0.014, shadow: true });
-        put({ x: l.x, y: 0.62 + bob, z: l.z, sx: 0.30, sy: 0.06, sz: 0.30, yaw: 0.2, color: col, outline: 0, emis: true });
+        put({ x: l.x, y: 0.3 + bob + lift, z: l.z, sx: 0.36, sy: 0.6, sz: 0.36, yaw: yaw, color: PAL.gunL, outline: 0.014, shadow: true });
+        put({ x: l.x, y: 0.62 + bob + lift, z: l.z, sx: 0.30, sy: 0.06, sz: 0.30, yaw: yaw, color: col, outline: 0, emis: true });
       }
       if (!ov) continue;
       const s = 0.24;
@@ -3013,15 +4281,20 @@ const G = (function () {
       ];
       if (!needsObjectSilhouette(l.x, l.z, samples)) continue;
       /* 单个外包盒：保证不会出现物体自己遮挡自己的橙色补片 */
-      if (l.kind === 'case') {
+      if (l.kind === 'weapon') {
         ov.box({
-          x: l.x, y: 0.27 + bob, z: l.z, sx: 0.66, sy: 0.56, sz: 0.54,
-          yaw: 0.4, color: [1, 1, 1], outline: 0
+          x: l.x, y: 0.16 + lift, z: l.z, sx: 0.36, sy: 0.30, sz: 1.28,
+          yaw: yaw, color: [1, 1, 1], outline: 0
+        });
+      } else if (l.kind === 'case') {
+        ov.box({
+          x: l.x, y: 0.27 + bob + lift, z: l.z, sx: 0.66, sy: 0.56, sz: 0.54,
+          yaw: yaw, color: [1, 1, 1], outline: 0
         });
       } else {
         ov.box({
-          x: l.x, y: 0.33 + bob, z: l.z, sx: 0.40, sy: 0.70, sz: 0.40,
-          yaw: 0.2, color: [1, 1, 1], outline: 0
+          x: l.x, y: 0.33 + bob + lift, z: l.z, sx: 0.40, sy: 0.70, sz: 0.40,
+          yaw: yaw, color: [1, 1, 1], outline: 0
         });
       }
     }
@@ -3040,11 +4313,28 @@ const G = (function () {
       m.castOnly = false;
       mask.box(m);
     }
+    const px = player.x, pz = player.z;
     for (let i = 0; i < list.length; i++) {
       const c = list[i];
       if (c.corpse) continue;
       const isW = c.type === 'weapon';
       const bx = c.x, bz = c.z;
+      const cdx = bx - px, cdz = bz - pz;
+      const cd2 = cdx * cdx + cdz * cdz;
+      /* 远处物资箱不画高面数 OBJ：箱体 10m 内 / 武器箱 18m 内用完整模型，
+         更远用低模盒子，30m 外直接剔除。箱体网格很大，这一条能省下大量顶点变换。 */
+      const fullDist = isW ? 18 : 10;
+      if (cd2 > 30 * 30) continue;
+      if (cd2 > fullDist * fullDist) {
+        if (isW) {
+          geo.box({ x: bx, y: 0.16, z: bz, sx: 1.50, sy: 0.28, sz: 0.90, yaw: c.yaw, color: [0.16, 0.18, 0.21], outline: 0.02, shadow: false });
+          if (!c.pried) geo.box({ x: bx, y: 0.31, z: bz, sx: 1.52, sy: 0.04, sz: 0.90, yaw: c.yaw, color: [0.43, 0.85, 0.94], outline: 0, emis: true });
+        } else {
+          geo.box({ x: bx, y: 0.32, z: bz, sx: 1.12, sy: 0.56, sz: 0.78, yaw: c.yaw, color: [0.31, 0.24, 0.16], outline: 0.02, shadow: false });
+          if (!c.pried) geo.box({ x: bx, y: 0.60, z: bz, sx: 1.14, sy: 0.06, sz: 0.80, yaw: c.yaw, color: [0.94, 0.69, 0.30], outline: 0, emis: true });
+        }
+        continue;
+      }
       let near = false;
       if (ov) {
         const hx = isW ? 0.78 : 0.60;
@@ -3074,10 +4364,29 @@ const G = (function () {
       });
       if (A && A.ready) {
         geo.mesh(A.body, { x: bx, y: 0, z: bz, yaw: c.yaw });
-        if (mask) mask.mesh(A.body, { x: bx, y: 0, z: bz, yaw: c.yaw });
         if (!c.pried) {
-          geo.mesh(A.lid, { x: bx, y: 0, z: bz, yaw: c.yaw });
-          if (mask) mask.mesh(A.lid, { x: bx, y: 0, z: bz, yaw: c.yaw });
+          /* 箱盖网格同样很重，只有 6m 内才用完整箱盖，远处用一块薄盒代替。 */
+          if (cd2 <= 6 * 6) {
+            geo.mesh(A.lid, { x: bx, y: 0, z: bz, yaw: c.yaw });
+          } else {
+            geo.box(isW
+              ? { x: bx, y: 0.303, z: bz, sx: 1.52, sy: 0.054, sz: 0.90, yaw: c.yaw, color: [0.135, 0.155, 0.180], outline: 0.012 }
+              : { x: bx, y: 0.70, z: bz, sx: 1.16, sy: 0.17, sz: 0.80, yaw: c.yaw, color: [0.16, 0.20, 0.23], outline: 0.014 });
+          }
+        }
+        /* 白描边只用一个外包盒做遮罩：箱体和箱盖是两块相交网格，
+           分别写 mask 会在内部接缝处产生不断闪动的白边。 */
+        if (mask) {
+          maskBox({
+            x: bx,
+            y: c.pried ? (isW ? 0.125 : 0.31) : (isW ? 0.17 : 0.43),
+            z: bz,
+            sx: isW ? 1.60 : 1.22,
+            sy: c.pried ? (isW ? 0.25 : 0.62) : (isW ? 0.34 : 0.86),
+            sz: isW ? 1.85 : 0.87,
+            yaw: c.yaw,
+            color: [1, 1, 1], outline: 0
+          });
         }
       } else {
         const bodyBox = isW
@@ -3419,6 +4728,9 @@ const G = (function () {
 
     for (const e of enemies) {
       if (e.dead) {
+        /* 远处 / 视野外的尸体不画：长局里尸体数量会累积，避免每帧全图渲染。 */
+        const cdx = e.x - player.x, cdz = e.z - player.z;
+        if (cdx * cdx + cdz * cdz > 34 * 34 || e.inVision !== true) continue;
         if (e.corpse) {
           const spread = Math.min(0.36, e.deadT || 0);
           MODELS.drawUnit(geo, e.type, {
@@ -3469,9 +4781,10 @@ const G = (function () {
       };
       MODELS.drawUnit(geo, e.type, enemyUnit);
       drawEnemyGun(geo, e, eStance);
-      if (um) {
-        MODELS.drawUnit(um, e.type, enemyUnit);
-        drawEnemyGun(um, e, eStance);
+      const eMask = enemyMaskGeo(e);
+      if (eMask) {
+        MODELS.drawUnit(eMask, e.type, enemyUnit);
+        drawEnemyGun(eMask, e, eStance);
       }
       if (ov) {
         const ovUnit = {
@@ -3508,7 +4821,7 @@ const G = (function () {
     drawLoot(scene);
     drawChests(scene);
     drawGadgetEffects(geo);
-    World.drawHouseScene(scene);
+    World.drawHouseScene(scene, player.x, player.z);
 
     for (const p of projectiles) {
       geo.box({ x: p.x, y: p.y, z: p.z, sx: 0.16, sy: 0.16, sz: 0.16, color: [0.73, 0.55, 1.0], outline: 0, emis: true });
@@ -3844,7 +5157,6 @@ const G = (function () {
     }
     player.slot = player.carried.length ? 0 : -1;
     player.weapon = player.carried.length ? player.carried[0].weaponId : -1;
-    player.weaponChips = WEAPONS.map(function () { return []; });
     recalcWeaponMods();
     player.cool = 0;
     player.reload = 0;
@@ -3896,6 +5208,20 @@ const G = (function () {
     }
   }
 
+  /* 多撤离点：返回离指定位置最近的撤离台 */
+  function nearestPad(x, z) {
+    const list = (World.pads && World.pads.length) ? World.pads : [World.pad];
+    let best = list[0] || { x: x, z: z, r: CFG.EXTRACT_R, hold: CFG.EXTRACT_HOLD };
+    let bd = Infinity;
+    for (let i = 0; i < list.length; i++) {
+      const p = list[i];
+      if (!p) continue;
+      const d = Math.hypot(x - p.x, z - p.z);
+      if (d < bd) { bd = d; best = p; }
+    }
+    return best;
+  }
+
   /* ---------- 出击 / 结算 / 回大厅 ---------- */
   function beginMission(cfg) {
     if (mode === 'mission') return;
@@ -3925,7 +5251,10 @@ const G = (function () {
     }
 
     seed = (Math.random() * 1e9) | 0;
+    const mapId = (!isTest && cfg.mapId) ? cfg.mapId : '';
+    const customMap = (mapId && typeof MAPSTORE !== 'undefined') ? MAPSTORE.get(mapId) : null;
     if (isTest) World.genTest(seed);
+    else if (customMap) World.loadMap(customMap, seed);
     else World.gen(seed);
     R.buildStatic(function (geo) { World.buildStatic(geo); });
     if (typeof MINIMAP !== 'undefined') MINIMAP.build();
@@ -3959,13 +5288,6 @@ const G = (function () {
     player.carried = entries.map(function (e) { return e.item; });
     player.slot = player.carried.length ? 0 : -1;
     player.weapon = player.carried.length ? player.carried[0].weaponId : -1;
-    player.weaponChips = WEAPONS.map(function () { return []; });
-    for (let i = 0; i < player.carried.length; i++) {
-      const it = player.carried[i];
-      player.weaponChips[it.weaponId] = (it.chips || []).map(function (c) {
-        return { chipId: c.chipId, tierId: c.tierId, value: c.value | 0 };
-      });
-    }
     recalcWeaponMods();
     player.mags = [];
     player.spares = [];
@@ -4009,7 +5331,7 @@ const G = (function () {
     player.x = World.spawn.x;
     player.z = World.spawn.z;
     player.gadgetTarget = { x: player.x, z: player.z };
-    player.yaw = TOUCH_MODE ? Math.PI : 0;
+    player.yaw = World.customMap ? (World.spawnYaw || 0) : (TOUCH_MODE ? Math.PI : 0);
     player.moveYaw = player.yaw;
     player.aimYaw = player.yaw;
     player.headWorldYaw = player.yaw;
@@ -4033,6 +5355,9 @@ const G = (function () {
     }
 
     kills = 0; looted = 0; spittersKilled = 0; time = 0;
+    visionClock = 0.08;
+    lootVisionClock = 0.1;
+    lootCompactT = 0;
     tracers = []; flashes = []; sparks = []; projectiles = [];
     bullets = []; zones = []; beams = []; bolts = []; sonicWaves = []; rings = [];
     knives = []; grenades = []; blasts = []; radFields = [];
@@ -4044,8 +5369,11 @@ const G = (function () {
     CAM.eye = [player.x, player.maxShield + 12, player.z + 12];
 
     enemies = [];
+    squads = [];
     if (isTest) {
       spawnTestEnemies();
+    } else if (World.customMap) {
+      spawnMapEnemies();
     } else {
       const types = ['zombie', 'zombie', 'zombie', 'gaunt', 'spitter'];
       for (let i = 0; i < CFG.ENEMY_COUNT; i++) {
@@ -4058,11 +5386,12 @@ const G = (function () {
           hp: ecfg.hp, maxHp: ecfg.hp, r: ecfg.r, speed: ecfg.speed, dmg: ecfg.dmg,
           cd: 0, cdMax: ecfg.cd, yaw: Math.random() * 6.28, animT: 0,
           moving: false, dead: false, fade: 1.9, hitFlash: 0, lunge: 0,
-          state: 'idle', alertT: 0, lostT: 0, waitT: 0, patrol: null,
+          state: 'idle', alertT: 0, lostT: 6, waitT: 0, patrol: null,
           lastSeenX: c.x, lastSeenZ: c.z, seen: false, seed: Math.random() * 10,
           swayT: Math.random() * 10, moveBlend: 0, sprintBlend: 0,
           viewR: t === 'spitter' ? 20 : (t === 'gaunt' ? 15 : 16),
-          viewHalf: t === 'spitter' ? 1.15 : 0.95
+          viewHalf: t === 'spitter' ? 1.15 : 0.95,
+          path: null, pathGoal: null, pathTime: 0
         });
       }
 
@@ -4079,6 +5408,16 @@ const G = (function () {
         if (!c) c = World.randomFloorPoint({ x: player.x, z: player.z }, 16);
         enemies.push(makeGunner(gtypes[i % gtypes.length], c.x, c.z));
       }
+
+      /* 随机设施里也放一支清剿小队，作为中立第三方 */
+      let squadPoint = null;
+      for (let k = 0; k < 40; k++) {
+        const p = World.randomFloorPoint({ x: player.x, z: player.z }, 24);
+        if (World.blocked(p.x, p.z, 0.7)) continue;
+        squadPoint = p;
+        break;
+      }
+      if (squadPoint) spawnSquad(squadPoint.x, squadPoint.z, CFG.SQUAD.spawnRadius);
     }
 
     mode = 'mission';
@@ -4097,7 +5436,8 @@ const G = (function () {
     HUD.hideEnd();
     HUD.data(player.data);
     HUD.prompt(null);
-    const d0 = Math.hypot(World.spawn.x - World.pad.x, World.spawn.z - World.pad.z);
+    const pad0 = nearestPad(World.spawn.x, World.spawn.z);
+    const d0 = Math.hypot(World.spawn.x - pad0.x, World.spawn.z - pad0.z);
     HUD.objective('撤离点 · ' + Math.round(d0) + ' m', false);
     if (isTest) {
       HUD.objective('测试场 · 靠近配装台按 F 选择装备', false);
@@ -4157,22 +5497,17 @@ const G = (function () {
     const haul = player.inv.reduce(function (s, it) { return s + (it.value || 0); }, 0);
     const itemCount = player.inv.length;
     const t = time;
-    let stored = 0, overflow = 0, overflowValue = 0;
+    let stored = 0, overflow = 0, overflowValue = 0, overflowElements = {};
 
     if (win) {
-      /* 局内装卸过的芯片随撤离写回武器物品 */
-      for (let i = 0; i < player.carried.length; i++) {
-        const it = player.carried[i];
-        it.chips = (player.weaponChips[it.weaponId] || []).map(function (c) {
-          return { chipId: c.chipId, tierId: c.tierId, value: c.value | 0 };
-        });
-      }
+      /* 芯片直接存放在每把武器物品上，撤离时随武器一起写回仓库 / 配装 */
       const oldLo = Store.loadout();
       Store.setLoadout({ weapons: player.carried, mags: oldLo.mags, carry: oldLo.carry });
       const r = Store.stashAddMany(player.inv);
       stored = r.stored;
       overflow = r.overflowCount;
       overflowValue = r.overflowValue;
+      overflowElements = r.overflowElements || {};
       Store.addBank(player.data);
     } else {
       Store.clearLoadoutWeapons();
@@ -4216,6 +5551,7 @@ const G = (function () {
       stored: stored,
       overflow: overflow,
       overflowValue: overflowValue,
+      overflowElements: overflowElements,
       dismantled: player.dismantledValue,
       contracts: done,
       best: Store.best()
@@ -4264,6 +5600,46 @@ const G = (function () {
       f.classList.remove('on');
       f.style.display = 'none';
     }, ms || 300);
+  }
+
+  /* 自定义地图刷怪：按设计点生成，半径内随机散开，避免重叠在墙里 */
+  function spawnMapEnemies() {
+    enemies = [];
+    squads = [];
+    const list = World.enemySpawns || [];
+    const gunners = { scav: 1, raider: 1, veteran: 1 };
+    const scavSkins = ['scav', 'raider', 'veteran'];
+    for (let i = 0; i < list.length; i++) {
+      const s = list[i];
+      if (!s) continue;
+      const count = Math.max(1, Math.min(40, s.count | 0));
+      const radius = Math.max(0, s.radius || 0);
+      if (s.type === 'squad') {
+        for (let k = 0; k < count; k++) spawnSquad(s.x, s.z, radius || CFG.SQUAD.spawnRadius);
+        continue;
+      }
+      for (let k = 0; k < count; k++) {
+        let px = s.x, pz = s.z;
+        for (let t = 0; t < 16; t++) {
+          const a = Math.random() * Math.PI * 2;
+          const d = radius * Math.sqrt(Math.random());
+          const tx = s.x + Math.cos(a) * d;
+          const tz = s.z + Math.sin(a) * d;
+          if (!World.blocked(tx, tz, 0.5)) { px = tx; pz = tz; break; }
+        }
+        let e;
+        if (gunners[s.type]) {
+          /* 地图编辑器里只保留「拾荒者」一个类别；每次生成随机挑一个皮肤 */
+          const skin = scavSkins[Math.floor(Math.random() * scavSkins.length)];
+          e = makeGunner(skin, px, pz);
+          if (s.faction === 'undead') e.faction = 'undead';
+        } else {
+          e = makeUndead(s.type, px, pz);
+          if (s.faction) e.faction = s.faction;
+        }
+        enemies.push(e);
+      }
+    }
   }
 
   /* 测试场固定靶：不移动、不攻击，血量较高，站在刷新点可整体重置 */
@@ -4460,7 +5836,8 @@ const G = (function () {
     const lo = Store.loadout();
     beginMission({
       weapons: lo.weapons, mags: lo.mags,
-      data: 500, character: Store.char()
+      data: 500, character: Store.char(),
+      mapId: QS.get('map') || undefined
     });
     if (QS.get('safe') === '1') enemies.length = 0;
     if (kind === 'pause') { setPause(true); return; }
@@ -4487,8 +5864,10 @@ const G = (function () {
     uninstallChip: uninstallChip,
     equipWeaponItem: equipWeaponItem,
     unequipWeaponSlot: unequipWeaponSlot,
+    throwBackpackItem: throwBackpackItem,
+    throwEquippedWeapon: throwEquippedWeapon,
     weaponChips: weaponChipList,
-    weaponMods: function (wi) { return modsOf(wi); },
+    weaponMods: modsOf,
     chipFits: chipFits,
     setPaused: setPause,
     togglePause: function () { setPause(!paused); },
@@ -4499,6 +5878,7 @@ const G = (function () {
     toggleInventory: function () { Inventory.toggle(); },
     worldToScreen: worldToScreen,
     worldToScreenClamped: worldToScreenClamped,
+    offscreenEnemyMarkers: offscreenEnemyMarkers,
     devGo: devGo,
     debug: {
       tick: function (dt) { if (mode === 'mission' && !paused) update(dt); },

@@ -217,7 +217,10 @@ const MINIMAP = (function () {
 
     /* 撤离点 / 刷新点：范围内画菱形，范围外贴边指方向 */
     const marks = [];
-    if (World.pad) marks.push({ x: World.pad.x, z: World.pad.z, c: COL.pad });
+    const pads = (World.pads && World.pads.length) ? World.pads : (World.pad ? [World.pad] : []);
+    for (let pi = 0; pi < pads.length; pi++) {
+      marks.push({ x: pads[pi].x, z: pads[pi].z, c: COL.pad });
+    }
     if (World.respawn) marks.push({ x: World.respawn.x, z: World.respawn.z, c: COL.respawn });
     if (World.test && World.test.loadout) {
       marks.push({ x: World.test.loadout.x, z: World.test.loadout.z, c: COL.loadout });
@@ -255,13 +258,15 @@ const MINIMAP = (function () {
       const q = w2s(en.x, en.z);
       if (Math.hypot(q.x - cx, q.y - cy) > R - 3) continue;
       const r = en.type === 'spitter' ? 2.6 : (en.type === 'gaunt' ? 2.2 : 2.0);
-      ctx.fillStyle = COL.enemy;
+      const col = en.relation === 'neutral' ? '#e8c04c'
+        : (en.relation === 'friendly' ? '#5ad46a' : COL.enemy);
+      ctx.fillStyle = col;
       ctx.globalAlpha = 0.95;
       ctx.beginPath();
       ctx.arc(q.x, q.y, r, 0, TAU);
       ctx.fill();
       ctx.globalAlpha = 0.18 + 0.22 * pulse;
-      ctx.strokeStyle = COL.enemy;
+      ctx.strokeStyle = col;
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.arc(q.x, q.y, r + 2, 0, TAU);

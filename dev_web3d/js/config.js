@@ -86,7 +86,34 @@ const CFG = {
     corpseCols: 4,
     corpseRows: 3,
     lootR: 1.3,
+    lootFirstDelay: 0.6,      // 到达物资点后先待机多久
+    lootInterval: 0.45,       // 每件物资吸取间隔
+    lootMaxItems: 3,          // 单次最多吸取几件，剩下的留给其他单位 / 玩家
     reload: 1.8
+  },
+
+  /* 清剿小队：4 人一组，队长战术干员，初始对玩家中立 */
+  SQUAD: {
+    members: [
+      { key: 'tactical', name: '战术干员', leader: true },
+      { key: 'specter', name: '特种干员' },
+      { key: 'ranger', name: '侦察队员' },
+      { key: 'breacher', name: '破障队员' }
+    ],
+    hp: 150,
+    leaderHp: 180,
+    shield: 70,
+    leaderShield: 100,
+    shieldDelay: 5.0,
+    shieldRate: 18,
+    speed: 3.1,
+    r: 0.42,
+    viewR: 20,
+    viewHalf: 1.15,
+    reaction: 0.45,
+    spawnRadius: 3.2,
+    formationDist: 6.0,
+    leaderWeapon: 3
   },
 
   /* 敌群：开局在离玩家一定距离外的房间刷 */
@@ -137,6 +164,7 @@ const CFG = {
      局外系统（大厅 / 仓库 / 背包 / 经济）
      ---------------------------------------------------------- */
   START_BANK: 10000,        // 新档数据
+  START_ELEMENTS: 1000,     // 新档五系元素各 1000
   CARRY_UNIT: 100,          // 出征数据的最小单位
   CARRY_MAX_MAGS: 3,        // 每把武器可配给的初始弹夹（含枪内）
 
@@ -157,27 +185,27 @@ const WEAPONS = [
   { id: 'sonic', auto: false, name: '共振霰弹', tag: '声学', color: '#ffb648', accent: '#F0B04C',
     mag: 6, maxSpare: 2, rate: 0.75, reload: 2.4, dmg: 40, dmgFar: 16, cost: 40,
     range: 26, halfAngle: 33, recoil: 0.9, kick: 1.15, noise: 760,
-    craft: 1600, value: 640, tierId: 'rare',
+    craft: 1600, value: 640, tierId: 'rare', elements: { acoustic: 70 },
     desc: '扇形冲击波，随距离衰减' },
   { id: 'laser', auto: false, name: '棱镜激光', tag: '光学', color: '#9fe6ff', accent: '#8FE3F2',
     mag: 6, maxSpare: 2, rate: 0.5, reload: 2.0, dmg: 46, dmgFar: 34, cost: 60,
     range: 60, bounce: 3, falloff: 0.85, recoil: 0.3, kick: 0.55, noise: 560,
-    craft: 1800, value: 720, tierId: 'rare',
+    craft: 1800, value: 720, tierId: 'rare', elements: { optical: 80 },
     desc: '单发高伤光束' },
   { id: 'thermal', auto: false, name: '辐射投射器', tag: '热学', color: '#ff7043', accent: '#F0703C',
     mag: 5, maxSpare: 2, rate: 0.9, reload: 2.6, dmg: 34, dmgFar: 20, cost: 70,
     range: 40, speed: 24, zoneR: 3.1, zoneLife: 3.2, tickDmg: 3.5, recoil: 1.4, kick: 1.3, noise: 560,
-    craft: 1700, value: 680, tierId: 'rare',
+    craft: 1700, value: 680, tierId: 'rare', elements: { thermal: 75 },
     desc: '弹体命中后灼烧一小片区域' },
   { id: 'kinetic', auto: true, name: '轨道步枪', tag: '力学', color: '#e8e8e8', accent: '#DDE3EA',
     mag: 30, maxSpare: 2, rate: 0.28, reload: 1.8, dmg: 20, dmgFar: 16, cost: 25,
     range: 70, speed: 60, recoil: 0.35, kick: 0.5, noise: 520,
-    craft: 1200, value: 480, tierId: 'fine',
+    craft: 1200, value: 480, tierId: 'fine', elements: { kinetic: 50 },
     desc: '高速动能弹，全自动压制' },
   { id: 'voltaic', auto: false, name: '电弧枪', tag: '电学', color: '#b28cff', accent: '#B491F0',
     mag: 8, maxSpare: 2, rate: 0.45, reload: 2.0, dmg: 22, dmgFar: 14, cost: 60,
     range: 34, speed: 42, chainR: 6.0, chainMax: 3, chainMul: [0.6, 0.4, 0.25], recoil: 0.5, kick: 0.75, noise: 540,
-    craft: 2000, value: 800, tierId: 'epic',
+    craft: 2000, value: 800, tierId: 'epic', elements: { voltaic: 90 },
     desc: '命中后向附近敌人放电' }
 ];
 

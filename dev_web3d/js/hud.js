@@ -8,7 +8,9 @@ const HUD = (function () {
   let el = {};
   let fpsT = 0, fpsN = 0, fps = 0;
   let hitT = 0;
+  let minimapT = 0;
   let dmgPool = [], dmgCursor = 0;
+  let edgePool = [], edgePortraits = {};
 
   function $(id) { return document.getElementById(id); }
 
@@ -29,6 +31,7 @@ const HUD = (function () {
       exWrap: $('extractWrap'), exFill: $('exFill'),
       respawnWrap: $('respawnWrap'), respawnFill: $('respawnFill'),
       dmgLayer: $('dmgLayer'),
+      edgeLayer: $('edgeLayer'),
       dmg: $('dmgFlash'),
       end: $('endScreen'), endTag: $('endTag'), endTitle: $('endTitle'),
       endBody: $('endBody'), endNote: $('endNote'), endContracts: $('endContracts'),
@@ -107,6 +110,104 @@ const HUD = (function () {
     }
   }
 
+  /* 屏幕外敌人：头像标识 + 方向三角。
+     头像由 MODELS.headPortrait 用现有方块头部正面投影生成，尺寸随距离缩小。 */
+  const EDGE_COLORS = {
+    zombie: '#e2604f',
+    spitter: '#b98cff',
+    gaunt: '#d8c27a',
+    scav: '#f0a04c',
+    raider: '#f0a04c',
+    veteran: '#f0a04c'
+  };
+
+  function edgeColor(type) { return EDGE_COLORS[type] || '#e2604f'; }
+
+  function edgeSize(dist, w, h) {
+    const k = Math.max(0, Math.min(1, dist / CFG.VISION.RANGE));
+    const base = 62 - 34 * k;
+    const ui = Math.max(0.68, Math.min(1, Math.min(w / 1440, h / 900)));
+    return Math.max(20, Math.round(base * ui));
+  }
+
+  function edgePortrait(type) {
+    if (edgePortraits[type] !== undefined) return edgePortraits[type];
+    const src = (typeof MODELS !== 'undefined' && MODELS.headPortrait)
+      ? MODELS.headPortrait(type, 128) : '';
+    edgePortraits[type] = src || '';
+    return edgePortraits[type];
+  }
+
+  function edgeNode(i) {
+    while (edgePool.length <= i) {
+      const node = document.createElement('div');
+      node.className = 'edge-mark';
+      const face = document.createElement('div');
+      face.className = 'em-face';
+      const img = document.createElement('img');
+      img.alt = '';
+      img.draggable = false;
+      face.appendChild(img);
+      const arrow = document.createElement('i');
+      arrow.className = 'em-arrow';
+      node.appendChild(face);
+      node.appendChild(arrow);
+      if (el.edgeLayer) el.edgeLayer.appendChild(node);
+      edgePool.push({ node: node, face: face, img: img, arrow: arrow, type: '', size: 0 });
+    }
+    return edgePool[i];
+  }
+
+  function updateEdgeMarkers() {
+    if (!el.edgeLayer) return;
+    const data = (typeof G !== 'undefined' && G.offscreenEnemyMarkers)
+      ? G.offscreenEnemyMarkers() : null;
+    const list = data && data.list ? data.list : [];
+    for (let i = 0; i < list.length; i++) {
+      const m = list[i];
+      const e = edgeNode(i);
+      const size = edgeSize(m.dist, data.w, data.h);
+      const r = size * 0.5;
+      const pad = r + 10;
+      const hw = Math.max(1, data.w * 0.5 - pad);
+      const hh = Math.max(1, data.h * 0.5 - pad);
+      const ax = Math.abs(m.dx), ay = Math.abs(m.dy);
+      let k = Math.min(ax > 1e-4 ? hw / ax : 1e9, ay > 1e-4 ? hh / ay : 1e9);
+      if (!isFinite(k) || k <= 0) k = 1;
+      const x = data.w * 0.5 + m.dx * k;
+      const y = data.h * 0.5 + m.dy * k;
+
+      e.node.style.display = 'block';
+      if (e.size !== size) {
+        e.size = size;
+        e.node.style.width = size + 'px';
+        e.node.style.height = size + 'px';
+      }
+      e.node.style.transform = 'translate(-50%,-50%) translate(' +
+        x.toFixed(1) + 'px,' + y.toFixed(1) + 'px)';
+
+      if (e.type !== m.type) {
+        e.type = m.type;
+        e.node.style.setProperty('--ec', edgeColor(m.type));
+        const src = edgePortrait(m.type);
+        if (src) {
+          e.img.src = src;
+          e.img.style.visibility = 'visible';
+        } else {
+          e.img.removeAttribute('src');
+          e.img.style.visibility = 'hidden';
+        }
+      }
+
+      const ang = Math.atan2(m.dy, m.dx) * 180 / Math.PI + 90;
+      e.arrow.style.transform = 'rotate(' + ang.toFixed(1) + 'deg) translateY(' +
+        (-(r + 5)).toFixed(1) + 'px)';
+    }
+    for (let i = list.length; i < edgePool.length; i++) {
+      edgePool[i].node.style.display = 'none';
+    }
+  }
+
   function pct(v, m) { return Math.max(0, Math.min(1, v / m)) * 100; }
 
   function vitals() {
@@ -175,14 +276,13 @@ const HUD = (function () {
     const list = el.slots.querySelectorAll('.slot');
     for (let s = 0; s < list.length; s++) {
       if (!p.carried[s]) continue;
-      const wi = p.carried[s].weaponId;
       const node = list[s];
       node.classList.toggle('on', s === p.slot);
       const m = node.querySelector('[data-mag]');
       const sp = node.querySelector('[data-spare]');
       if (m) m.textContent = p.mags[s] !== undefined ? p.mags[s] : 0;
       if (sp) sp.textContent = p.spares[s] !== undefined ? p.spares[s] : 0;
-      const chips = (p.weaponChips && p.weaponChips[wi]) || [];
+      const chips = p.carried[s].chips || [];
       const dots = node.querySelectorAll('.s-chips i');
       for (let k = 0; k < dots.length; k++) {
         const c = chips[k];
@@ -266,6 +366,10 @@ const HUD = (function () {
     for (let i = 0; i < dmgPool.length; i++) {
       dmgPool[i].active = false;
       dmgPool[i].node.style.display = 'none';
+    }
+    for (let i = 0; i < edgePool.length; i++) {
+      edgePool[i].node.style.display = 'none';
+      edgePool[i].type = '';
     }
     el.reload.classList.add('hidden');
     prompt(null);
@@ -391,6 +495,8 @@ const HUD = (function () {
         info.stored + ' 件物资已入库';
       if (info.overflow > 0) {
         note += ' · 仓库已满，' + info.overflow + ' 件自动分解为 ' + UI.fmt(info.overflowValue) + ' NB';
+        const oe = info.overflowElements ? ITEMS.elementSummary(info.overflowElements) : '';
+        if (oe) note += '，元素 +' + oe;
       }
     } else {
       const cause = info.reason === 'death' ? '生命体征归零。' : '你主动放弃了本次行动。';
@@ -414,8 +520,14 @@ const HUD = (function () {
     if (fpsT > 0.4) { fps = Math.round(fpsN / fpsT); fpsT = 0; fpsN = 0; }
     const p = G.state.player;
     if (G.mode !== 'mission') return;
-    if (typeof MINIMAP !== 'undefined') MINIMAP.draw(dt);
+    /* 小地图每帧遍历所有敌人 / 物资 / 箱子；20Hz 足够，且能显著降低长局扫描。 */
+    minimapT += dt;
+    if (minimapT >= 0.05) {
+      if (typeof MINIMAP !== 'undefined') MINIMAP.draw(minimapT);
+      minimapT = 0;
+    }
     updateDamageNumbers(dt);
+    updateEdgeMarkers();
     el.camInfo.textContent = Math.round(G.state.cam.pitch) + '° · ' + fps + 'fps';
     el.data.textContent = p.infiniteData ? '∞' : UI.fmt(p.data);
     updateSlots(p);

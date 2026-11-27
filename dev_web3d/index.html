@@ -30,7 +30,7 @@
     if (standalone) document.documentElement.classList.add('standalone');
   })();
 </script>
-<link rel="stylesheet" href="css/app.css?v=20261126d10" />
+<link rel="stylesheet" href="css/app.css?v=20261127c5" />
 </head>
 <body>
 <div id="app">
@@ -43,6 +43,7 @@
 
   <div id="hud" class="hidden">
     <div class="dmg-layer" id="dmgLayer"></div>
+    <div class="edge-layer" id="edgeLayer"></div>
     <div class="hud-tl">
       <div class="vbar shd"><i id="shdFill"></i><span class="lab">SHD</span><span class="num" id="shdNum">60</span></div>
       <div class="vbar hp"><i id="hpFill"></i><span class="lab">VIT</span><span class="num" id="hpNum">100</span></div>
@@ -162,6 +163,15 @@
         </div>
 
         <div class="stash-line">仓库 <b id="lobbyStashCount">0</b> 件 · <i id="lobbyStashValue">0</i> NB</div>
+
+        <div class="panel-sec map-sec">
+          <div class="sec-head">战局地图 <em id="lobbyMapCount">0 张自定义</em></div>
+          <div class="map-row">
+            <select id="lobbyMapPick" title="选择出击地图"></select>
+            <button type="button" class="btn-mini" id="openMapEditor">编辑器</button>
+          </div>
+          <div class="map-hint" id="lobbyMapHint">程序化随机设施 · 每局重新生成</div>
+        </div>
         <div class="lobby-msg" id="lobbyMainMsg"></div>
         <button class="btn test-entry" id="testMapBtn">进入测试场 · 训练配装</button>
         <div class="test-hint">初始空手 / 配装台选武器与道具 / 1 秒刷新敌人</div>
@@ -200,6 +210,8 @@
             <div class="detail-box" id="stashDetail">
               <div class="dt-empty">仓库物资会跨局保存<br><span>右键单件立即分解</span></div>
             </div>
+            <div class="sec-head">元素库存 <em>分解 / 撤离回收</em></div>
+            <div class="element-strip" id="stashElements"></div>
             <div class="sec-head">品质分布 <em>件 / 价值</em></div>
             <div class="stash-break" id="stashBreak"></div>
             <div class="side-actions">
@@ -220,6 +232,10 @@
             <span>数据 <b id="craftBank">0</b> NB</span>
             <span>仓库芯片 <b id="craftOwned">0</b> 块</span>
           </div>
+        </div>
+        <div class="element-bar">
+          <span class="eb-label">元素库存</span>
+          <div class="element-strip" id="craftElements"></div>
         </div>
         <div class="shop-body">
           <div class="shop-col">
@@ -368,7 +384,7 @@
             <div class="inv-items" id="invItems"></div>
             <div class="inv-drop" id="invDrop"></div>
           </div>
-          <div class="inv-keys">左键拖动 · <b>R</b> 旋转 · 右键分解 · 移动会中断操作</div>
+          <div class="inv-keys">左键拖动 · <b>R</b> 旋转 · 右键分解 · 拖出面板丢出 · 移动会中断操作</div>
           <div class="inv-weapons" id="invWeapons"></div>
         </div>
         <div class="inv-side">
@@ -479,7 +495,7 @@
 
 <script>
   window.__errs = [];
-  window.__build = '20261126e11';
+  window.__build = '20261127c30';
   console.info('EOFATA build ' + window.__build);
   document.title = 'EOFATA 3D — End of Future : ATA · ' + window.__build;
   window.addEventListener('error', function (e) {
@@ -491,7 +507,7 @@
   /* 开发页：每次加载给脚本一个唯一查询串，避免 file:// / 静态服务缓存旧 JS。 */
   (function () {
     var files = [
-      'config', 'items', 'grid', 'store', 'animdata', 'models', 'weaponview', 'weapondrag',
+      'config', 'items', 'grid', 'store', 'mapstore', 'animdata', 'charmodels', 'models', 'weaponview', 'weapondrag',
       'world', 'hangar', 'gl', 'asset', 'ui', 'mobile', 'minimap', 'hud',
       'itemtip', 'inventory', 'stash', 'shop', 'chipshop', 'contracts',
       'lobby', 'touch', 'game', 'selftest'

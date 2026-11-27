@@ -25,6 +25,9 @@ const Inventory = (function () {
   let corpseDrag = null;
 
   function P() { return G.state.player; }
+  function isDismantling(it) {
+    return !!(action && action.type === 'dismantle' && action.item === it);
+  }
   function cols() { return CFG.INV_COLS; }
   function rows() { return P().invRows || CFG.INV_ROWS; }
   function chestCols() { return (chest && chest.cols) || CFG.CHEST_COLS; }
@@ -47,6 +50,7 @@ const Inventory = (function () {
   /* ---------------- 初始化 ---------------- */
   function init() {
     el.root = UI.$('inventory');
+    el.panel = document.querySelector('#inventory .inv-panel');
     el.grid = UI.$('invGrid');
     el.items = UI.$('invItems');
     el.drop = UI.$('invDrop');
@@ -94,6 +98,7 @@ const Inventory = (function () {
       if (btn.getAttribute('data-inv-act') === 'rotate') rotate();
       else if (btn.getAttribute('data-inv-act') === 'chip') quickInstallAny();
       else if (btn.getAttribute('data-inv-act') === 'equip') quickEquipWeapon();
+      else if (btn.getAttribute('data-inv-act') === 'drop') dropItem(it);
       else startAction('dismantle', it, 'bag');
     });
 
@@ -119,6 +124,7 @@ const Inventory = (function () {
     buildGrid(rows(), true);
     drag = null;
     action = null;
+    clearItemProgress();
     hover = null;
     socketDrag = null;
     chest = null;
@@ -174,6 +180,7 @@ const Inventory = (function () {
   }
 
   function removeItem(it) {
+    if (isDismantling(it)) return;
     const p = P();
     const i = p.inv.indexOf(it);
     if (i >= 0) p.inv.splice(i, 1);
@@ -183,10 +190,49 @@ const Inventory = (function () {
 
   function usedCells() { return Grid.usedCells(P().inv); }
 
+  /* 丢出背包物品 / 已装备武器；真正生成地面物品由 game.js 处理 */
+  function dropItem(it) {
+    if (!it || isDismantling(it)) return false;
+    if (busy()) return false;
+    if (!G.throwBackpackItem || !G.throwBackpackItem(it)) {
+      HUD.toast('无法丢出该物品', 'warn');
+      return false;
+    }
+    if (P().sel === it) P().sel = null;
+    refresh();
+    return true;
+  }
+
+  function dropEquippedWeapon(slot) {
+    if (busy()) return false;
+    if (!G.throwEquippedWeapon || !G.throwEquippedWeapon(slot)) return false;
+    refresh();
+    return true;
+  }
+
   /* ---------------- 渲染 ---------------- */
+  function invElementMini(it) {
+    const list = ITEMS.elementEntries(it.elements);
+    if (!list.length) return '';
+    let html = '<span class="inv-elems">';
+    for (let i = 0; i < list.length; i++) {
+      html += '<i style="--ec:' + list[i].color + '"></i>' +
+        list[i].name.charAt(0) + '<b>' + list[i].amount + '</b>';
+    }
+    return html + '</span>';
+  }
+
+  function elementLine(it) {
+    const tags = UI.elementTags(it.elements);
+    if (!tags) return '<div class="dt-line"><span>元素属性</span><b style="color:var(--dim2)">无元素</b></div>';
+    return '<div class="dt-line"><span>元素属性</span><b>' + tags + '</b></div>';
+  }
+
   function itemNode(it, extra) {
     const d = Grid.dims(it);
-    const div = UI.el('div', 'inv-item' + (it.kind === 'chip' ? ' chip-item' : '') + (extra || ''));
+    const active = !!(action && action.type === 'dismantle' && action.item === it);
+    const div = UI.el('div', 'inv-item' + (it.kind === 'chip' ? ' chip-item' : '') +
+      (active ? ' dismantling' : '') + (extra || ''));
     div.style.left = (it.gx * PITCH) + 'px';
     div.style.top = (it.gy * PITCH) + 'px';
     div.style.width = (d.w * CELL + (d.w - 1) * GAP) + 'px';
@@ -199,12 +245,16 @@ const Inventory = (function () {
     const icon = (it.kind === 'weapon' && typeof WeaponView !== 'undefined')
       ? '<span class="weapon-thumb">' + WeaponView.svg(it.weaponId) + '</span>'
       : '<span class="gem"></span>';
+    const pct = active ? clamp(action.t / action.dur, 0, 1) * 100 : 0;
     div.innerHTML =
       icon +
       '<span class="nm">' + UI.esc(it.name) + '</span>' +
+      invElementMini(it) +
       '<span class="val">' + it.value + '</span>' +
-      '<span class="sz">' + d.w + '×' + d.h + '</span>';
-    if (typeof ItemTip !== 'undefined') ItemTip.bind(div, it);
+      '<span class="sz">' + d.w + '×' + d.h + '</span>' +
+      '<span class="item-prog' + (active ? ' on' : '') + '"><i style="width:' +
+        pct.toFixed(1) + '%"></i></span>';
+    if (typeof ItemTip !== 'undefined') ItemTip.bind(div, it, { showElements: true });
     return div;
   }
 
@@ -295,6 +345,8 @@ const Inventory = (function () {
     const s = chest.search;
     s.idx++;
     s.t = 0;
+    /* 已提前拿走的物品不再参与搜索队列 */
+    while (s.idx < s.order.length && chest.inv.indexOf(s.order[s.idx]) < 0) s.idx++;
     if (s.idx >= s.order.length) { finishChestSearch(); return; }
     renderChest();
     updateChestStatus();
@@ -315,6 +367,7 @@ const Inventory = (function () {
     if (!chest || !chest.search) return;
     const s = chest.search;
     if (!s.active) return;
+    while (s.idx < s.order.length && chest.inv.indexOf(s.order[s.idx]) < 0) s.idx++;
     const it = s.order[s.idx];
     if (!it) { finishChestSearch(); return; }
     s.t += dt;
@@ -403,6 +456,8 @@ const Inventory = (function () {
 
   function renderChest() {
     if (!chest || !el.chestItems) return;
+    /* 拖拽箱子 / 尸体物品时暂停重建物品节点，避免搜索动画把正在拖的节点换掉 */
+    if (chestDrag || corpseDrag) return;
     el.chestItems.innerHTML = '';
     const s = chest.search;
     const cur = (s && s.active && s.idx >= 0) ? s.order[s.idx] : null;
@@ -413,7 +468,8 @@ const Inventory = (function () {
       const recent = found && s && s.lastFound === it && it.foundAt && (now - it.foundAt < 0.4);
       const cls = ' chest-item' + (found ? ' found' : ' unknown') +
         (it === cur && !found ? ' scanning' : '') +
-        (recent ? ' pop' : '');
+        (recent ? ' pop' : '') +
+        (isDismantling(it) ? ' dismantling' : '');
       const div = itemNode(it, cls);
       if (!found) div.innerHTML = '';
       div.addEventListener('pointerdown', function (e) { onChestDown(e, it); });
@@ -487,7 +543,7 @@ const Inventory = (function () {
         if (e.pointerType === 'mouse' && e.button !== 0) return;
         onCorpseDown(e, s);
       });
-      if (typeof ItemTip !== 'undefined') ItemTip.bind(card, it);
+      if (typeof ItemTip !== 'undefined') ItemTip.bind(card, it, { showElements: true });
       el.chestWeapons.appendChild(card);
     }
   }
@@ -496,7 +552,7 @@ const Inventory = (function () {
     if (!chest || !chest.corpse) return false;
     const slots = corpseWeaponSlots();
     const it = slots[slot];
-    if (!it) return false;
+    if (!it || isDismantling(it)) return false;
     const p = P();
     if (!placeInBag(it, tx, ty)) {
       HUD.toast(tx !== undefined ? '这里放不下' : '背包已满 · 无法拿走武器', 'warn');
@@ -514,26 +570,69 @@ const Inventory = (function () {
     if (!chest || !chest.corpse || !G.equipWeaponItem) return false;
     const slots = corpseWeaponSlots();
     const it = slots[slot];
-    if (!it) return false;
-    const p = P();
-    if (!Grid.autoPlace(p.inv, it, cols(), rows())) {
-      HUD.toast('背包已满 · 无法装备', 'warn');
+    if (!it || isDismantling(it)) return false;
+    if (!G.equipWeaponItem(it, { external: true })) {
+      HUD.toast('无法装备 · 背包已满或武器类型重复', 'warn');
+      refresh();
       return false;
     }
-    p.inv.push(it);
-    if (G.equipWeaponItem(it)) {
-      slots[slot] = null;
-      if (G.noteLoot) G.noteLoot(1);
-      HUD.toast('已装备 ' + it.name, 'good');
-      refresh();
-      pulseWeaponCard(P().slot);
-      return true;
-    }
-    const i = p.inv.indexOf(it);
-    if (i >= 0) p.inv.splice(i, 1);
-    HUD.toast('无法装备 · 武器类型重复', 'warn');
+    slots[slot] = null;
+    if (G.noteLoot) G.noteLoot(1);
+    HUD.toast('已装备 ' + it.name, 'good');
     refresh();
-    return false;
+    pulseWeaponCard(P().slot);
+    return true;
+  }
+
+  /* 从物资箱 / 尸体背包直接装备武器；不必先放进玩家背包 */
+  function equipFromChest(it) {
+    if (!chest || !it || it.kind !== 'weapon' || !G.equipWeaponItem || isDismantling(it)) return false;
+    const i = chest.inv.indexOf(it);
+    if (i < 0) return false;
+    if (!G.equipWeaponItem(it, { external: true })) {
+      HUD.toast('无法装备 · 背包已满或武器类型重复', 'warn');
+      refresh();
+      return false;
+    }
+    chest.inv.splice(i, 1);
+    if (G.noteLoot) G.noteLoot(1);
+    HUD.toast('已装备 ' + it.name, 'good');
+    refresh();
+    pulseWeaponCard(P().slot);
+    return true;
+  }
+
+  /* 把尸体背包里的武器放进尸体的空武器槽 */
+  function putChestWeaponInCorpseSlot(it, slot) {
+    if (!chest || !chest.corpse || !it || it.kind !== 'weapon' || isDismantling(it)) return false;
+    const slots = corpseWeaponSlots();
+    if (slot !== 0 && slot !== 1) return false;
+    if (slots[slot]) return false;
+    const i = chest.inv.indexOf(it);
+    if (i < 0) return false;
+    chest.inv.splice(i, 1);
+    slots[slot] = it;
+    refresh();
+    return true;
+  }
+
+  /* 把尸体武器槽里的武器移回尸体背包 */
+  function moveCorpseWeaponToChest(slot, tx, ty) {
+    if (!chest || !chest.corpse) return false;
+    const slots = corpseWeaponSlots();
+    const it = slots[slot];
+    if (!it || isDismantling(it)) return false;
+    if (!placeInChest(it, tx, ty)) {
+      HUD.toast(tx !== undefined ? '这里放不下' : '尸体背包已满', 'warn');
+      refresh();
+      return false;
+    }
+    it.found = true;
+    it.foundAt = 0;
+    chest.inv.push(it);
+    slots[slot] = null;
+    refresh();
+    return true;
   }
 
   function corpseSlotAtPoint(e) {
@@ -563,7 +662,7 @@ const Inventory = (function () {
   }
 
   function putWeaponInCorpseSlot(slot, item) {
-    if (!chest || !chest.corpse || !item || item.kind !== 'weapon') return false;
+    if (!chest || !chest.corpse || !item || item.kind !== 'weapon' || isDismantling(item)) return false;
     const slots = corpseWeaponSlots();
     if (slot !== 0 && slot !== 1) return false;
     if (slots[slot]) return false;
@@ -603,7 +702,7 @@ const Inventory = (function () {
   }
 
   function transferToBag(it, tx, ty) {
-    if (!chest || !it || !it.found) return;
+    if (!chest || !it || !it.found || isDismantling(it)) return;
     const i = chest.inv.indexOf(it);
     if (i < 0) return;
     const p = P();
@@ -619,7 +718,7 @@ const Inventory = (function () {
   }
 
   function transferToChest(it, tx, ty) {
-    if (!chest) return;
+    if (!chest || isDismantling(it)) return;
     if (chest.corpse && it.kind === 'weapon') {
       HUD.toast('武器请放入尸体武器槽', 'warn');
       return;
@@ -656,6 +755,7 @@ const Inventory = (function () {
     if (corpseWs) {
       for (let s2 = 0; s2 < 2; s2++) {
         if (!corpseWs[s2]) continue;
+        if (isDismantling(corpseWs[s2])) { left++; continue; }
         if (Grid.autoPlace(p.inv, corpseWs[s2], cols(), rows())) {
           p.inv.push(corpseWs[s2]);
           corpseWs[s2] = null;
@@ -666,6 +766,7 @@ const Inventory = (function () {
       }
     }
     for (const it of chest.inv.slice()) {
+      if (isDismantling(it)) { left++; continue; }
       if (onlyFound && !it.found) { left++; continue; }
       const copy = Grid.cloneItem(it);
       if (!Grid.autoPlace(p.inv, copy, cols(), rows())) { full = true; break; }
@@ -697,6 +798,7 @@ const Inventory = (function () {
       const slots = corpseWeaponSlots();
       for (const it of p.inv.slice()) {
         if (it.kind !== 'weapon') continue;
+        if (isDismantling(it)) { skipped++; continue; }
         let slot = -1;
         if (!slots[0]) slot = 0;
         else if (!slots[1]) slot = 1;
@@ -711,6 +813,7 @@ const Inventory = (function () {
     }
     for (const it of p.inv.slice()) {
       if (chest.corpse && it.kind === 'weapon') continue;
+      if (isDismantling(it)) { skipped++; continue; }
       const copy = Grid.cloneItem(it);
       if (!Grid.autoPlace(chest.inv, copy, chestCols(), chestRows())) { full = true; break; }
       copy.found = true;
@@ -738,8 +841,8 @@ const Inventory = (function () {
   }
 
   /* ---------------- 武器 / 芯片槽 ---------------- */
-  function modsText(wi) {
-    const m = G.weaponMods(wi);
+  function modsText(slot) {
+    const m = G.weaponMods(slot);
     const parts = [];
     if (m.dmg) parts.push('伤+' + Math.round(m.dmg * 100) + '%');
     if (m.rate) parts.push('速+' + Math.round(m.rate * 100) + '%');
@@ -773,15 +876,16 @@ const Inventory = (function () {
       }
       const wi = item.weaponId;
       const w = WEAPONS[wi];
-      const list = (p.weaponChips && p.weaponChips[wi]) || [];
+      const list = item.chips || [];
       const card = UI.el('div', 'iw-card');
+      card.dataset.wslot = String(s);
       card.style.setProperty('--wc', w.color);
       let slots = '';
       for (let i = 0; i < 3; i++) {
         const c = list[i];
         const def = c ? CHIP_BY_ID[c.chipId] : null;
         slots += '<button type="button" class="iw-slot' + (def ? ' on' : '') + '"' +
-          ' data-wi="' + wi + '" data-slot="' + i + '"' +
+          ' data-wslot="' + s + '" data-slot="' + i + '"' +
           '>' + (def ? UI.chipTile(c) : '<span class="plus">+</span>') +
           '</button>';
       }
@@ -794,7 +898,8 @@ const Inventory = (function () {
             '<div class="iw-head">' +
               '<span class="iw-key">' + (s + 1) + '</span>' +
               '<span class="iw-name">' + w.name + '</span>' +
-              '<span class="iw-mods">' + modsText(wi) + '</span>' +
+              '<span class="iw-mods">' + modsText(s) + '</span>' +
+              '<button type="button" class="iw-drop" data-wslot="' + s + '" title="丢出这把武器">丢出</button>' +
             '</div>' +
             '<div class="iw-slots">' + slots + '</div>' +
           '</div>' +
@@ -803,8 +908,8 @@ const Inventory = (function () {
       if (s === p.slot) card.classList.add('on');
       if (typeof ItemTip !== 'undefined') {
         const tipItem = Grid.cloneItem(item);
-        tipItem.chips = (p.weaponChips[wi] || []).slice();
-        ItemTip.bind(card, tipItem);
+        tipItem.chips = list.slice();
+        ItemTip.bind(card, tipItem, { showElements: true });
       }
 
       card.addEventListener('pointerdown', function (e) {
@@ -815,7 +920,13 @@ const Inventory = (function () {
           name: w.name,
           color: w.color,
           onDrop: function (x, y) {
-            if (!pointIn(el.grid, { clientX: x, clientY: y })) return;
+            const pos = { clientX: x, clientY: y };
+            /* 拖出背包面板 = 直接把装备中的武器丢到地上 */
+            if (el.panel && !pointIn(el.panel, pos)) {
+              dropEquippedWeapon(s);
+              return;
+            }
+            if (!pointIn(el.grid, pos)) return;
             if (G.unequipWeaponSlot(s)) {
               HUD.toast('武器已放回背包', 'good');
               refresh();
@@ -826,20 +937,29 @@ const Inventory = (function () {
         });
       });
 
+      const dropBtn = card.querySelector('.iw-drop');
+      if (dropBtn) {
+        dropBtn.addEventListener('click', function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          dropEquippedWeapon(s);
+        });
+      }
+
       const btns = card.querySelectorAll('.iw-slot');
       for (let b = 0; b < btns.length; b++) {
         (function (btn, slot) {
           const filled = !!list[slot];
           if (filled && typeof ItemTip !== 'undefined' && list[slot]) {
-            ItemTip.bind(btn, ITEMS.makeChipItem(list[slot]));
+            ItemTip.bind(btn, ITEMS.makeChipItem(list[slot]), { showElements: true });
           }
           btn.addEventListener('pointerdown', function (e) {
-            if (filled) onSocketDown(e, wi, slot);
+            if (filled) onSocketDown(e, s, slot);
           });
           btn.addEventListener('click', function (e) {
             e.preventDefault();
             e.stopPropagation();
-            if (!filled) quickInstall(wi);
+            if (!filled) quickInstall(s);
           });
         })(btns[b], b);
       }
@@ -879,8 +999,8 @@ const Inventory = (function () {
     if (!card) return null;
     const slots = card.querySelectorAll('.iw-slot');
     if (!slots.length) return null;
-    const wi = parseInt(slots[0].getAttribute('data-wi'), 10);
-    if (!(wi >= 0) || !G.chipFits(wi, chip)) return null;
+    const wslot = parseInt(slots[0].getAttribute('data-wslot'), 10);
+    if (!(wslot >= 0) || !G.chipFits(wslot, chip)) return null;
     for (let i = 0; i < slots.length; i++) {
       if (!slots[i].classList.contains('on')) return slots[i];
     }
@@ -936,15 +1056,17 @@ const Inventory = (function () {
     }, 360);
   }
 
-  function firstChipInContainers(wi) {
+  function firstChipInContainers(wslot) {
     const p = P();
-    function fits(it) { return it.kind === 'chip' && G.chipFits(wi, it); }
+    function fits(it) { return it.kind === 'chip' && G.chipFits(wslot, it); }
     for (let i = 0; i < p.inv.length; i++) {
-      if (fits(p.inv[i])) return { it: p.inv[i], from: 'bag' };
+      if (!isDismantling(p.inv[i]) && fits(p.inv[i])) return { it: p.inv[i], from: 'bag' };
     }
     if (chest && !(chest.search && chest.search.active)) {
       for (let i = 0; i < chest.inv.length; i++) {
-        if (chest.inv[i].found && fits(chest.inv[i])) return { it: chest.inv[i], from: 'chest' };
+        if (!isDismantling(chest.inv[i]) && chest.inv[i].found && fits(chest.inv[i])) {
+          return { it: chest.inv[i], from: 'chest' };
+        }
       }
     }
     return null;
@@ -955,10 +1077,11 @@ const Inventory = (function () {
     return tag ? ('该芯片只能装在「' + tag + '」武器上') : '该芯片无法装在当前武器上';
   }
 
-  function installFoundChip(found, wi) {
-    if (!found) return false;
-    if (!G.chipFits(wi, found.it)) { HUD.toast(chipMismatchMsg(found.it), 'warn'); return false; }
-    if (!G.installChip(wi, found.it)) { HUD.toast('芯片槽已满（最多 3 个）', 'warn'); return false; }
+  function installFoundChip(found, wslot) {
+    if (!found || isDismantling(found.it)) return false;
+    if (!G.chipFits(wslot, found.it)) { HUD.toast(chipMismatchMsg(found.it), 'warn'); return false; }
+    if (!G.installChip(wslot, found.it)) { HUD.toast('芯片槽已满（最多 3 个）', 'warn'); return false; }
+    const carried = P().carried[wslot];
     if (found.from === 'chest') {
       const i = chest.inv.indexOf(found.it);
       if (i >= 0) chest.inv.splice(i, 1);
@@ -966,39 +1089,39 @@ const Inventory = (function () {
     } else {
       removeItem(found.it);
     }
-    HUD.toast('芯片已装入 ' + WEAPONS[wi].name, 'good');
+    HUD.toast('芯片已装入 ' + (carried ? carried.name : '武器'), 'good');
     return true;
   }
 
-  function quickInstall(wi) {
+  function quickInstall(wslot) {
     if (!isOpen()) return false;
     const p = P();
-    const found = (p.sel && p.sel.kind === 'chip' && p.inv.indexOf(p.sel) >= 0)
-      ? { it: p.sel, from: 'bag' } : firstChipInContainers(wi);
+    const found = (p.sel && p.sel.kind === 'chip' && p.inv.indexOf(p.sel) >= 0 &&
+      !isDismantling(p.sel))
+      ? { it: p.sel, from: 'bag' } : firstChipInContainers(wslot);
     if (!found) { HUD.toast('背包和物资箱里没有芯片', 'warn'); return false; }
-    return installFoundChip(found, wi);
+    return installFoundChip(found, wslot);
   }
 
   function quickInstallAny() {
     const p = P();
-    const selected = (p.sel && p.sel.kind === 'chip' && p.inv.indexOf(p.sel) >= 0)
+    const selected = (p.sel && p.sel.kind === 'chip' && p.inv.indexOf(p.sel) >= 0 &&
+      !isDismantling(p.sel))
       ? { it: p.sel, from: 'bag' } : null;
     if (selected) {
       let fitsSome = false;
       for (let s = 0; s < p.carried.length; s++) {
-        const wi = p.carried[s].weaponId;
-        if (!G.chipFits(wi, selected.it)) continue;
+        if (!G.chipFits(s, selected.it)) continue;
         fitsSome = true;
-        if (((p.weaponChips[wi] || []).length) < 3) return installFoundChip(selected, wi);
+        if (((p.carried[s].chips || []).length) < 3) return installFoundChip(selected, s);
       }
       HUD.toast(fitsSome ? '所有武器芯片槽已满' : chipMismatchMsg(selected.it), 'warn');
       return false;
     }
     for (let s = 0; s < p.carried.length; s++) {
-      const wi = p.carried[s].weaponId;
-      if (((p.weaponChips[wi] || []).length) >= 3) continue;
-      const found = firstChipInContainers(wi);
-      if (found) return installFoundChip(found, wi);
+      if (((p.carried[s].chips || []).length) >= 3) continue;
+      const found = firstChipInContainers(s);
+      if (found) return installFoundChip(found, s);
     }
     HUD.toast('背包和物资箱里没有可安装的芯片', 'warn');
     return false;
@@ -1026,11 +1149,11 @@ const Inventory = (function () {
     return toBag() || toChest();
   }
 
-  function takeOffChip(wi, slot, target, tx, ty) {
-    const item = G.uninstallChip(wi, slot);
+  function takeOffChip(wslot, chipSlot, target, tx, ty) {
+    const item = G.uninstallChip(wslot, chipSlot);
     if (!item) return false;
     if (!chipDropTargets(item, target, tx, ty)) {
-      G.installChip(wi, item);
+      G.installChip(wslot, item);
       HUD.toast('背包和物资箱都满了 · 无法卸下芯片', 'warn');
       refresh();
       return false;
@@ -1040,17 +1163,17 @@ const Inventory = (function () {
     return true;
   }
 
-  function onSocketDown(e, wi, slot) {
+  function onSocketDown(e, wslot, chipSlot) {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     const p = P();
-    const list = (p.weaponChips && p.weaponChips[wi]) || [];
-    if (!list[slot]) return;
+    const list = (p.carried[wslot] && p.carried[wslot].chips) || [];
+    if (!list[chipSlot]) return;
     e.preventDefault();
     socketDrag = {
-      wi: wi, slot: slot, pointerId: e.pointerId,
+      wslot: wslot, slot: chipSlot, pointerId: e.pointerId,
       sx: e.clientX, sy: e.clientY, moved: false
     };
-    const chip = ITEMS.makeChipItem(list[slot]);
+    const chip = ITEMS.makeChipItem(list[chipSlot]);
     const g = ensureGhost(chip);
     g.style.width = CELL + 'px';
     g.style.height = CELL + 'px';
@@ -1095,19 +1218,19 @@ const Inventory = (function () {
     clearChestHighlight();
     markSocketHover(null);
     if (!e || e.type === 'pointercancel') { refresh(); return; }
-    if (!d.moved) { takeOffChip(d.wi, d.slot); return; }
+    if (!d.moved) { takeOffChip(d.wslot, d.slot); return; }
     if (pointIn(el.grid, e)) {
       const r = el.grid.getBoundingClientRect();
       const tx = Math.round((e.clientX - r.left - CELL * 0.5) / PITCH);
       const ty = Math.round((e.clientY - r.top - CELL * 0.5) / PITCH);
-      takeOffChip(d.wi, d.slot, 'bag', tx, ty);
+      takeOffChip(d.wslot, d.slot, 'bag', tx, ty);
       return;
     }
     if (chest && pointIn(el.chestGrid, e)) {
       const r = el.chestGrid.getBoundingClientRect();
       const tx = Math.round((e.clientX - r.left - CELL * 0.5) / PITCH);
       const ty = Math.round((e.clientY - r.top - CELL * 0.5) / PITCH);
-      takeOffChip(d.wi, d.slot, 'chest', tx, ty);
+      takeOffChip(d.wslot, d.slot, 'chest', tx, ty);
       return;
     }
     refresh();
@@ -1131,10 +1254,14 @@ const Inventory = (function () {
         '<div class="dt-name">' + UI.esc(it.name) + '</div>' +
         '<div class="dt-line"><span>芯片效果</span><b style="color:' + def.color + '">' + def.desc + '</b></div>' +
         '<div class="dt-line"><span>数据价值</span><b>' + it.value + ' NB</b></div>' +
+        elementLine(it) +
         '<div class="dt-line"><span>品质 / 类型</span><b>' + tierName(it.tierId) + ' · ' + typeLabel + '</b></div>' +
         (def.forTag ? '<div class="dt-line"><span>安装限制</span><b style="color:' + def.color + '">仅限 ' + def.forTag + ' 武器</b></div>' : '') +
         '<div class="dt-line"><span>占格 / 分解</span><b>' + d.w + '×' + d.h + ' · ' + it.time.toFixed(1) + 's</b></div>' +
-        '<div class="dt-hint">拖到上方武器芯片槽 · 或点击空槽快速安装</div>' +
+        '<div class="dt-hint">拖到上方武器芯片槽 · 或点击空槽快速安装 · 拖出面板丢出</div>' +
+        '<div class="dt-actions">' +
+          '<button type="button" class="dt-btn danger" data-inv-act="drop">丢出</button>' +
+        '</div>' +
         '<div class="dt-touch">' +
           '<button type="button" class="dt-btn" data-inv-act="chip">快速安装</button>' +
           '<button type="button" class="dt-btn danger" data-inv-act="dismantle">分解</button>' +
@@ -1151,10 +1278,12 @@ const Inventory = (function () {
         '<div class="dt-line"><span>类型</span><b style="color:' + w.color + '">' + w.tag + ' · 武器</b></div>' +
         '<div class="dt-line"><span>弹夹 / 射速</span><b>' + (w.mag || 0) + ' 发 · ' + (w.rate || 0).toFixed(2) + 's</b></div>' +
         '<div class="dt-line"><span>数据价值</span><b>' + it.value + ' NB</b></div>' +
+        elementLine(it) +
         '<div class="dt-line"><span>占格</span><b>' + d.w + '×' + d.h + '</b></div>' +
-        '<div class="dt-hint">点击下方按钮装备到武器槽；两槽已满时替换当前手持武器</div>' +
+        '<div class="dt-hint">装备到武器槽；拖出面板或点击丢出会把整把武器扔到地上</div>' +
         '<div class="dt-actions">' +
           '<button type="button" class="dt-btn" data-inv-act="equip">装备武器</button>' +
+          '<button type="button" class="dt-btn danger" data-inv-act="drop">丢出</button>' +
           '<button type="button" class="dt-btn danger" data-inv-act="dismantle">分解</button>' +
         '</div>';
       return;
@@ -1162,8 +1291,12 @@ const Inventory = (function () {
     el.detail.innerHTML =
       '<div class="dt-name">' + UI.esc(it.name) + '</div>' +
       '<div class="dt-line"><span>' + tierName(it.tierId) + ' · 数据载体</span><b>' + it.value + ' NB</b></div>' +
+      elementLine(it) +
       '<div class="dt-line"><span>占格 / 分解</span><b>' + d.w + '×' + d.h + ' · ' + it.time.toFixed(1) + 's</b></div>' +
-      '<div class="dt-hint">[拖动] 移动 · [R] 旋转 · [右键] 分解</div>' +
+      '<div class="dt-hint">[拖动] 移动 · [R] 旋转 · [右键] 分解 · 拖出面板丢出</div>' +
+      '<div class="dt-actions">' +
+        '<button type="button" class="dt-btn danger" data-inv-act="drop">丢出</button>' +
+      '</div>' +
       '<div class="dt-touch">' +
         '<button type="button" class="dt-btn" data-inv-act="rotate">旋转</button>' +
         '<button type="button" class="dt-btn danger" data-inv-act="dismantle">分解</button>' +
@@ -1177,7 +1310,7 @@ const Inventory = (function () {
       const wi = p.carried[s].weaponId;
       const w = WEAPONS[wi];
       const spare = p.spares[s] || 0;
-      const chipN = (p.weaponChips && p.weaponChips[wi] ? p.weaponChips[wi].length : 0);
+      const chipN = (p.carried[s].chips || []).length;
       const row = UI.el('div', 'craft-row');
       row.style.setProperty('--wc', w.color);
       const full = spare >= w.maxSpare;
@@ -1222,6 +1355,7 @@ const Inventory = (function () {
   /* ---------------- 拖拽 ---------------- */
   function onDown(e, it) {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (isDismantling(it)) { HUD.toast('分解中无法移动物品', 'warn'); return; }
     e.preventDefault();
     const p = P();
     const rect = el.grid.getBoundingClientRect();
@@ -1264,6 +1398,7 @@ const Inventory = (function () {
   function onChestDown(e, it) {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     if (!it.found) return;
+    if (isDismantling(it)) { HUD.toast('分解中无法移动物品', 'warn'); return; }
     e.preventDefault();
     const rect = el.chestGrid.getBoundingClientRect();
     const d = Grid.dims(it);
@@ -1273,7 +1408,8 @@ const Inventory = (function () {
       it: it, pointerId: e.pointerId,
       sx: e.clientX, sy: e.clientY, moved: false,
       fx: clamp((e.clientX - itemX) / PITCH, 0, d.w - 0.01),
-      fy: clamp((e.clientY - itemY) / PITCH, 0, d.h - 0.01)
+      fy: clamp((e.clientY - itemY) / PITCH, 0, d.h - 0.01),
+      corpseSlot: null, weaponCard: null, socket: null, chipCard: null
     };
     const g = ensureGhost(it);
     g.style.width = (d.w * CELL + (d.w - 1) * GAP) + 'px';
@@ -1291,21 +1427,58 @@ const Inventory = (function () {
     if (ghost) {
       ghost.style.left = (e.clientX - chestDrag.fx * PITCH) + 'px';
       ghost.style.top = (e.clientY - chestDrag.fy * PITCH) + 'px';
+      ghost.style.visibility = 'visible';
     }
-    const chipCard = chestDrag.it.kind === 'chip' ? weaponCardAtPoint(e) : null;
+    const it = chestDrag.it;
+    const isWeapon = it.kind === 'weapon';
+    const isChip = it.kind === 'chip';
+
+    /* 尸体武器槽 */
+    const cslot = (chest && chest.corpse && isWeapon) ? corpseSlotAtPoint(e) : null;
+    chestDrag.corpseSlot = cslot;
+    if (cslot !== null) {
+      const slots = corpseWeaponSlots();
+      markCorpseSlotHover(cslot, !slots[cslot]);
+      markWeaponCardHover(null);
+      markSocketHover(null);
+      markChipCardHover(null);
+      hideDrop();
+      hideChestDrop();
+      if (el.chestGrid) {
+        el.chestGrid.classList.remove('drop-over');
+        el.chestGrid.classList.remove('bad');
+      }
+      return;
+    }
+    clearCorpseSlotHover();
+
+    /* 武器栏：武器直接装备到武器卡 / 武器栏区域 */
+    const overWeapons = !!(isWeapon && el.weapons && pointIn(el.weapons, e));
+    const wcard = overWeapons ? weaponCardAtPoint(e) : null;
+    const chipCard = isChip ? weaponCardAtPoint(e) : null;
+    const sock = isChip ? chipTargetAtPoint(e, it) : null;
+    chestDrag.weaponCard = wcard;
     chestDrag.chipCard = chipCard;
-    const sock = chestDrag.it.kind === 'chip' ? chipTargetAtPoint(e, chestDrag.it) : null;
     chestDrag.socket = sock;
+    markWeaponCardHover(wcard);
     markSocketHover(sock);
     markChipCardHover(chipCard);
-    if (ghost) ghost.style.visibility = 'visible';
-    if (sock) { hideDrop(); hideChestDrop(); return; }
+    if (overWeapons || sock || chipCard) {
+      hideDrop();
+      hideChestDrop();
+      if (el.chestGrid) {
+        el.chestGrid.classList.remove('drop-over');
+        el.chestGrid.classList.remove('bad');
+      }
+      return;
+    }
+
     if (pointIn(el.grid, e)) {
       const r = el.grid.getBoundingClientRect();
       const tx = Math.round((e.clientX - r.left) / PITCH - chestDrag.fx);
       const ty = Math.round((e.clientY - r.top) / PITCH - chestDrag.fy);
-      const valid = Grid.fits(P().inv, chestDrag.it, tx, ty, chestDrag.it.rot, cols(), rows());
-      showDrop(tx, ty, chestDrag.it, valid);
+      const valid = Grid.fits(P().inv, it, tx, ty, it.rot, cols(), rows());
+      showDrop(tx, ty, it, valid);
       hideChestDrop();
       if (el.chestGrid) {
         el.chestGrid.classList.remove('drop-over');
@@ -1316,8 +1489,8 @@ const Inventory = (function () {
       const r = el.chestGrid.getBoundingClientRect();
       const tx = Math.round((e.clientX - r.left) / PITCH - chestDrag.fx);
       const ty = Math.round((e.clientY - r.top) / PITCH - chestDrag.fy);
-      const valid = Grid.fits(chest.inv, chestDrag.it, tx, ty, chestDrag.it.rot, chestCols(), chestRows(), chestDrag.it);
-      showChestDrop(tx, ty, chestDrag.it, valid);
+      const valid = Grid.fits(chest.inv, it, tx, ty, it.rot, chestCols(), chestRows(), it);
+      showChestDrop(tx, ty, it, valid);
     } else {
       hideDrop();
       hideChestDrop();
@@ -1335,19 +1508,22 @@ const Inventory = (function () {
     removeGhost();
     hideDrop();
     clearChestHighlight();
+    clearCorpseSlotHover();
+    markWeaponCardHover(null);
     markSocketHover(null);
     markChipCardHover(null);
     if (!e || e.type === 'pointercancel') { refresh(); return; }
     if (!d.moved) { transferToBag(d.it); return; }
     if (d.socket && d.it.kind === 'chip') {
-      const wi = parseInt(d.socket.getAttribute('data-wi'), 10);
-      if (!G.chipFits(wi, d.it)) {
+      const wslot = parseInt(d.socket.getAttribute('data-wslot'), 10);
+      if (!G.chipFits(wslot, d.it)) {
         HUD.toast(chipMismatchMsg(d.it), 'warn');
         refresh();
-      } else if (G.installChip(wi, d.it)) {
+      } else if (G.installChip(wslot, d.it)) {
         const i = chest.inv.indexOf(d.it);
         if (i >= 0) chest.inv.splice(i, 1);
-        HUD.toast('芯片已装入 ' + WEAPONS[wi].name, 'good');
+        const carried = P().carried[wslot];
+        HUD.toast('芯片已装入 ' + (carried ? carried.name : '武器'), 'good');
         refresh();
       } else {
         HUD.toast('芯片槽已满（最多 3 个）', 'warn');
@@ -1357,13 +1533,26 @@ const Inventory = (function () {
     }
     if (d.it.kind === 'chip' && d.chipCard) {
       const slots = d.chipCard.querySelectorAll('.iw-slot');
-      const wi = slots.length ? parseInt(slots[0].getAttribute('data-wi'), 10) : -1;
-      if (wi >= 0 && !G.chipFits(wi, d.it)) {
+      const wslot = slots.length ? parseInt(slots[0].getAttribute('data-wslot'), 10) : -1;
+      if (wslot >= 0 && !G.chipFits(wslot, d.it)) {
         HUD.toast(chipMismatchMsg(d.it), 'warn');
       } else {
         HUD.toast('芯片槽已满（最多 3 个）', 'warn');
       }
       refresh();
+      return;
+    }
+    if (d.corpseSlot !== null && d.corpseSlot !== undefined && d.it.kind === 'weapon') {
+      if (!putChestWeaponInCorpseSlot(d.it, d.corpseSlot)) {
+        HUD.toast('该尸体武器槽已占用', 'warn');
+        refresh();
+      } else {
+        HUD.toast('已放入尸体武器槽', 'good');
+      }
+      return;
+    }
+    if (d.it.kind === 'weapon' && el.weapons && pointIn(el.weapons, e)) {
+      equipFromChest(d.it);
       return;
     }
     if (el.weapons && pointIn(el.weapons, e)) { refresh(); return; }
@@ -1394,6 +1583,7 @@ const Inventory = (function () {
     const slots = corpseWeaponSlots();
     const it = slots[slot];
     if (!it) return;
+    if (isDismantling(it)) { HUD.toast('分解中无法移动物品', 'warn'); return; }
     e.preventDefault();
     const d = Grid.dims(it);
     corpseDrag = {
@@ -1474,10 +1664,19 @@ const Inventory = (function () {
 
     const overChest = !!(chest && pointIn(el.chestGrid, e));
     if (el.chestGrid) {
-      el.chestGrid.classList.remove('drop-over');
-      el.chestGrid.classList.toggle('bad', overChest);
+      el.chestGrid.classList.toggle('drop-over', overChest);
+      if (overChest) {
+        const r = el.chestGrid.getBoundingClientRect();
+        const tx = Math.round((e.clientX - r.left) / PITCH - corpseDrag.fx);
+        const ty = Math.round((e.clientY - r.top) / PITCH - corpseDrag.fy);
+        const valid = Grid.fits(chest.inv, it, tx, ty, it.rot, chestCols(), chestRows());
+        el.chestGrid.classList.toggle('bad', !valid);
+        showChestDrop(tx, ty, it, valid);
+      } else {
+        el.chestGrid.classList.remove('bad');
+        hideChestDrop();
+      }
     }
-    hideChestDrop();
     g.style.visibility = 'visible';
   }
 
@@ -1524,7 +1723,11 @@ const Inventory = (function () {
     }
 
     if (chest && pointIn(el.chestGrid, e)) {
-      HUD.toast('武器请放入尸体武器槽', 'warn');
+      const r = el.chestGrid.getBoundingClientRect();
+      const tx = Math.round((e.clientX - r.left) / PITCH - d.fx);
+      const ty = Math.round((e.clientY - r.top) / PITCH - d.fy);
+      moveCorpseWeaponToChest(d.slot, tx, ty);
+      return;
     }
     refresh();
   }
@@ -1574,13 +1777,14 @@ const Inventory = (function () {
       return;
     }
     if (d.moved && d.socket && d.it.kind === 'chip' && !canceled) {
-      const wi = parseInt(d.socket.getAttribute('data-wi'), 10);
-      if (!G.chipFits(wi, d.it)) {
+      const wslot = parseInt(d.socket.getAttribute('data-wslot'), 10);
+      if (!G.chipFits(wslot, d.it)) {
         HUD.toast(chipMismatchMsg(d.it), 'warn');
         refresh();
-      } else if (G.installChip(wi, d.it)) {
+      } else if (G.installChip(wslot, d.it)) {
         removeItem(d.it);
-        HUD.toast('芯片已装入 ' + WEAPONS[wi].name, 'good');
+        const carried = P().carried[wslot];
+        HUD.toast('芯片已装入 ' + (carried ? carried.name : '武器'), 'good');
       } else {
         HUD.toast('芯片槽已满（最多 3 个）', 'warn');
         refresh();
@@ -1589,8 +1793,8 @@ const Inventory = (function () {
     }
     if (d.moved && d.it.kind === 'chip' && d.chipCard && !canceled) {
       const slots = d.chipCard.querySelectorAll('.iw-slot');
-      const wi = slots.length ? parseInt(slots[0].getAttribute('data-wi'), 10) : -1;
-      if (wi >= 0 && !G.chipFits(wi, d.it)) {
+      const wslot = slots.length ? parseInt(slots[0].getAttribute('data-wslot'), 10) : -1;
+      if (wslot >= 0 && !G.chipFits(wslot, d.it)) {
         HUD.toast(chipMismatchMsg(d.it), 'warn');
       } else {
         HUD.toast('芯片槽已满（最多 3 个）', 'warn');
@@ -1598,7 +1802,8 @@ const Inventory = (function () {
       refresh();
       return;
     }
-    if (d.moved && d.weaponCard && d.it.kind === 'weapon' && !canceled) {
+    const overWeapons = !!(e && el.weapons && pointIn(el.weapons, e));
+    if (d.moved && d.it.kind === 'weapon' && overWeapons && !canceled) {
       if (G.equipWeaponItem(d.it)) {
         HUD.toast('已装备 ' + d.it.name, 'good');
         refresh();
@@ -1624,6 +1829,14 @@ const Inventory = (function () {
         transferToChest(d.it, tx, ty);
         return;
       }
+    }
+    /* 拖出背包面板 = 丢到地上。
+       用最后一次 pointermove 的位置判断；pointerup 偶尔没有坐标（合成事件 / 部分浏览器）。 */
+    const upX = lastMouse ? lastMouse.clientX : (e ? e.clientX : null);
+    const upY = lastMouse ? lastMouse.clientY : (e ? e.clientY : null);
+    if (d.moved && !canceled && el.panel && upX !== null && upY !== null &&
+        !pointIn(el.panel, { clientX: upX, clientY: upY })) {
+      if (dropItem(d.it)) return;
     }
     if (d.moved && d.valid) {
       d.it.gx = d.tx;
@@ -1793,6 +2006,7 @@ const Inventory = (function () {
     }
     const it = (hover && p.inv.indexOf(hover) >= 0) ? hover : p.sel;
     if (!it) return false;
+    if (isDismantling(it)) { HUD.toast('分解中无法旋转物品', 'warn'); return false; }
     const nr = it.rot ? 0 : 1;
     if (!Grid.fits(p.inv, it, it.gx, it.gy, nr, cols(), rows(), it)) {
       HUD.toast('空间不足，无法旋转', 'warn');
@@ -1894,8 +2108,26 @@ const Inventory = (function () {
     return false;
   }
 
+  function clearItemProgress() {
+    if (!el.root) return;
+    const bars = el.root.querySelectorAll('.item-prog.on');
+    for (let i = 0; i < bars.length; i++) {
+      bars[i].classList.remove('on');
+      if (bars[i].firstElementChild) bars[i].firstElementChild.style.width = '0%';
+    }
+  }
+
+  function syncItemProgress(pct) {
+    if (!el.root) return;
+    const bars = el.root.querySelectorAll('.item-prog.on');
+    for (let i = 0; i < bars.length; i++) {
+      if (bars[i].firstElementChild) bars[i].firstElementChild.style.width = pct.toFixed(1) + '%';
+    }
+  }
+
   function startAction(type, it, from) {
     if (!isOpen() || busy()) return;
+    if (drag || chestDrag || corpseDrag || socketDrag) return;
     const p = P();
     const src = from || 'bag';
     const data = {
@@ -1906,9 +2138,15 @@ const Inventory = (function () {
     if (!data) return;
     action = { type: type, item: it, t: 0, dur: data.dur, label: data.label, from: src };
     if (!(type === 'dismantle' && src === 'chest')) p.sel = it || p.sel;
-    el.prog.classList.remove('hidden');
-    el.progFill.style.width = '0%';
-    el.progLabel.textContent = data.label + ' · 0%';
+    if (type === 'dismantle') {
+      /* 分解进度显示在目标物品下方，不再使用右侧全局进度条 */
+      if (el.prog) el.prog.classList.add('hidden');
+    } else {
+      clearItemProgress();
+      if (el.prog) el.prog.classList.remove('hidden');
+      if (el.progFill) el.progFill.style.width = '0%';
+      if (el.progLabel) el.progLabel.textContent = data.label + ' · 0%';
+    }
     refresh();
   }
 
@@ -1946,6 +2184,7 @@ const Inventory = (function () {
   function cancelAction(msg) {
     if (!action) return;
     action = null;
+    clearItemProgress();
     if (el.prog) el.prog.classList.add('hidden');
     if (el.progFill) el.progFill.style.width = '0%';
     if (msg) HUD.toast(msg, 'warn');
@@ -1955,8 +2194,9 @@ const Inventory = (function () {
     const p = P();
     const a = action;
     action = null;
-    el.prog.classList.add('hidden');
-    el.progFill.style.width = '0%';
+    clearItemProgress();
+    if (el.prog) el.prog.classList.add('hidden');
+    if (el.progFill) el.progFill.style.width = '0%';
     if (!a) return;
 
     if (a.type === 'dismantle') {
@@ -1997,13 +2237,18 @@ const Inventory = (function () {
     if (p.moving || p.dead) { cancelAction('操作中断'); return; }
     action.t += dt;
     const pct = clamp(action.t / action.dur, 0, 1) * 100;
-    el.progFill.style.width = pct.toFixed(1) + '%';
-    el.progLabel.textContent = action.label + ' · ' + Math.floor(pct) + '%';
+    if (action.type === 'dismantle') {
+      syncItemProgress(pct);
+    } else {
+      if (el.progFill) el.progFill.style.width = pct.toFixed(1) + '%';
+      if (el.progLabel) el.progLabel.textContent = action.label + ' · ' + Math.floor(pct) + '%';
+    }
     if (action.t >= action.dur) complete();
   }
 
   function reset() {
     drag = null; hover = null; action = null;
+    clearItemProgress();
     chest = null; chestDrag = null; corpseDrag = null; socketDrag = null;
     if (typeof ItemTip !== 'undefined') ItemTip.hide();
     removeGhost();

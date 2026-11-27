@@ -14,7 +14,13 @@ const Lobby = (function () {
     { key: 'tactical', name: '战术干员', role: '战术型', desc: '夜战装备 · 战术护甲', color: '#8d9aa3' },
     { key: 'scav', name: '拾荒者 · 灰鼠', role: '拾荒者', desc: '破烂兜帽 · 潜行', color: '#8a7656' },
     { key: 'raider', name: '拾荒者 · 暴徒', role: '拾荒者', desc: '废铁护甲 · 近战', color: '#a36a4f' },
-    { key: 'veteran', name: '拾荒者 · 老油条', role: '拾荒者', desc: '旧风衣 · 捡漏', color: '#7f8474' }
+    { key: 'veteran', name: '拾荒者 · 老油条', role: '拾荒者', desc: '旧风衣 · 捡漏', color: '#7f8474' },
+    { key: 'specter', name: '特种干员 · 幽影', role: '特种型', desc: '长条目镜 · 夜战装甲', color: '#5fb8c9' },
+    { key: 'ranger', name: '侦察队员 · 游隼', role: '侦察型', desc: '轻型护甲 · 琥珀条镜', color: '#93a06a' },
+    { key: 'breacher', name: '破障队员 · 铁砧', role: '破障型', desc: '重型胸甲 · 破门工具', color: '#d07b44' },
+    { key: 'juggernaut', name: '动力甲 · 铁壁', role: '重装型', desc: '全身动力装甲 · 反应堆背包', color: '#9aa3ad' },
+    { key: 'vanguard', name: '动力甲 · 先锋', role: '突击型', desc: '白色装甲 · 推进背包', color: '#d8dde2' },
+    { key: 'sentinel', name: '动力甲 · 哨戒', role: '哨戒型', desc: '琥珀条镜 · 警戒涂装', color: '#7f8f74' }
   ];
   const TABS = [
     { id: 'home', name: '机库' },
@@ -33,6 +39,7 @@ const Lobby = (function () {
   let chipPicker = -1;
   let weaponPicker = -1;
   let gadgetPick = -1;
+  let mapPickTouched = false;
   let msgTimer = 0;
   let chipDrag = null, chipGhost = null, chipDragMovedAt = 0;
 
@@ -60,6 +67,9 @@ const Lobby = (function () {
     el.msg = UI.$('lobbyMsg');
     el.mainMsg = UI.$('lobbyMainMsg');
     el.footHint = UI.$('lobbyFootHint');
+    el.mapPick = UI.$('lobbyMapPick');
+    el.mapCount = UI.$('lobbyMapCount');
+    el.mapHint = UI.$('lobbyMapHint');
 
     el.root.classList.remove('hidden');
 
@@ -67,6 +77,7 @@ const Lobby = (function () {
     buildTabs();
     buildChars();
     bindStatic();
+    refreshMapPick();
     refreshBank();
     refresh();
   }
@@ -112,6 +123,21 @@ const Lobby = (function () {
       if (typeof MOBILE !== 'undefined') MOBILE.enterGame();
       G.beginTestMap();
     });
+    const editorBtn = UI.$('openMapEditor');
+    if (editorBtn) editorBtn.addEventListener('click', function () {
+      window.open('editor.html', '_blank', 'noopener');
+    });
+    if (el.mapPick) {
+      el.mapPick.addEventListener('change', function () {
+        mapPickTouched = true;
+        if (typeof MAPSTORE !== 'undefined') MAPSTORE.setPicked(el.mapPick.value === 'random' ? '' : el.mapPick.value);
+        updateMapHint();
+      });
+    }
+    window.addEventListener('storage', function (e) {
+      if (e && e.key && typeof MAPSTORE !== 'undefined' && e.key === MAPSTORE.KEY) refreshMapPick();
+    });
+    window.addEventListener('focus', refreshMapPick);
     UI.$('carryMinus').addEventListener('click', function () { addCarry(-CFG.CARRY_UNIT); });
     UI.$('carryPlus').addEventListener('click', function () { addCarry(CFG.CARRY_UNIT); });
     UI.$('carryAll').addEventListener('click', function () {
@@ -129,6 +155,48 @@ const Lobby = (function () {
       if (e.code === 'Enter') { e.preventDefault(); launch(); }
       if (e.code === 'Escape' && tab !== 'home') setTab('home');
     });
+  }
+
+  /* ---------------- 地图 ---------------- */
+  function refreshMapPick() {
+    if (!el.mapPick || typeof MAPSTORE === 'undefined') return;
+    const maps = MAPSTORE.list();
+    const qsMap = (typeof QS !== 'undefined') ? QS.get('map') : '';
+    const stored = MAPSTORE.picked();
+    const current = mapPickTouched && el.mapPick.value ? el.mapPick.value : '';
+    const wanted = current || qsMap || stored;
+    el.mapPick.innerHTML = '';
+    const random = UI.el('option');
+    random.value = 'random';
+    random.textContent = '程序化随机设施';
+    el.mapPick.appendChild(random);
+    maps.forEach(function (m) {
+      const o = UI.el('option');
+      o.value = m.id;
+      o.textContent = m.name + ' · ' + m.cols + '×' + m.rows;
+      el.mapPick.appendChild(o);
+    });
+    const exists = maps.some(function (m) { return m.id === wanted; });
+    el.mapPick.value = exists ? wanted : 'random';
+    if (exists) MAPSTORE.setPicked(wanted);
+    if (el.mapCount) el.mapCount.textContent = maps.length + ' 张自定义';
+    updateMapHint();
+  }
+
+  function updateMapHint() {
+    if (!el.mapHint || !el.mapPick) return;
+    if (el.mapPick.value === 'random') {
+      el.mapHint.textContent = '程序化随机设施 · 每局重新生成';
+      return;
+    }
+    const m = (typeof MAPSTORE !== 'undefined') ? MAPSTORE.get(el.mapPick.value) : null;
+    if (!m) {
+      el.mapHint.textContent = '地图不存在，将回退到随机设施';
+      return;
+    }
+    const v = MAPSTORE.validate(m);
+    el.mapHint.textContent = m.name + ' · ' + m.cols + '×' + m.rows +
+      (v.errors.length ? ' · ' + v.errors.length + ' 处错误' : ' · 校验通过');
   }
 
   /* ---------------- 状态 ---------------- */
@@ -274,7 +342,7 @@ const Lobby = (function () {
         const wi = item.weaponId;
         const w = WEAPONS[wi];
         const n = mags[slot] || 0;
-        const chips = Store.weaponChips(wi);
+        const chips = Store.weaponChips(slot);
         row.style.setProperty('--wc', w.color);
         row.innerHTML =
           '<div class="lr-body">' +
@@ -291,11 +359,14 @@ const Lobby = (function () {
               '</div>' +
               '<div class="lr-chips">' +
                 '<span class="lr-chiplabel">芯片</span>' +
-                chipSlotsHtml(wi, chips) +
-                '<span class="lr-modtext">' + Store.modsSummary(wi) + '</span>' +
+                chipSlotsHtml(chips) +
+                '<span class="lr-modtext">' + Store.modsSummary(slot) + '</span>' +
               '</div>' +
             '</div>' +
           '</div>';
+        if (typeof ItemTip !== 'undefined') {
+          ItemTip.bind(row, item, { touch: false, showElements: true });
+        }
         row.querySelector('[data-unequip]').addEventListener('click', function (e) {
           e.stopPropagation();
           unequipWeapon(slot);
@@ -322,12 +393,12 @@ const Lobby = (function () {
           (function (btn) {
             const ci = parseInt(btn.getAttribute('data-chip-slot'), 10);
             if (chips[ci] && typeof ItemTip !== 'undefined') {
-              ItemTip.bind(btn, ITEMS.makeChipItem(chips[ci]), { touch: false });
+              ItemTip.bind(btn, ITEMS.makeChipItem(chips[ci]), { touch: false, showElements: true });
             }
             btn.addEventListener('pointerdown', function (e) {
               if (!chips[ci] || (e.pointerType === 'mouse' && e.button !== 0)) return;
               chipDrag = {
-                wi: wi, ci: ci, entry: chips[ci],
+                wslot: slot, ci: ci, entry: chips[ci],
                 id: e.pointerId, sx: e.clientX, sy: e.clientY,
                 moved: false
               };
@@ -338,7 +409,7 @@ const Lobby = (function () {
                 e.preventDefault();
                 return;
               }
-              if (chips[ci]) removeLobbyChip(wi, ci);
+              if (chips[ci]) removeLobbyChip(slot, ci);
               else {
                 chipPicker = chipPicker === slot ? -1 : slot;
                 weaponPicker = -1;
@@ -350,7 +421,7 @@ const Lobby = (function () {
       }
       el.load.appendChild(row);
       if (weaponPicker === slot) el.load.appendChild(buildWeaponPicker(slot));
-      if (item && chipPicker === slot) el.load.appendChild(buildChipPicker(item.weaponId));
+      if (item && chipPicker === slot) el.load.appendChild(buildChipPicker(slot));
     }
   }
 
@@ -364,7 +435,7 @@ const Lobby = (function () {
         continue;
       }
       const w = WEAPONS[item.weaponId];
-      const chips = Store.weaponChips(item.weaponId);
+      const chips = Store.weaponChips(slot);
       html += '<div class="summary-row" style="--wc:' + w.color + '">' +
         '<span class="sr-slot">' + (slot + 1) + '</span>' +
         '<span class="sr-art">' + (typeof WeaponView !== 'undefined' ? WeaponView.svg(item.weaponId) : '') + '</span>' +
@@ -459,7 +530,7 @@ const Lobby = (function () {
     }
   }
 
-  function chipSlotsHtml(wi, chips) {
+  function chipSlotsHtml(chips) {
     let out = '';
     for (let i = 0; i < 3; i++) {
       const c = chips[i];
@@ -508,8 +579,10 @@ const Lobby = (function () {
     return box;
   }
 
-  function buildChipPicker(wi) {
+  function buildChipPicker(loadoutSlot) {
     const box = UI.el('div', 'chip-picker');
+    const eq = Store.loadout().weapons[loadoutSlot];
+    const wi = eq ? eq.weaponId : -1;
     const tag = WEAPONS[wi] ? WEAPONS[wi].tag : '';
     const chips = Store.stash().filter(function (it) {
       return it.kind === 'chip' && ITEMS.chipFitsWeapon(it, wi);
@@ -533,7 +606,7 @@ const Lobby = (function () {
         '<span class="cp-val">' + it.value + ' NB</span>';
       b.addEventListener('click', function (e) {
         e.stopPropagation();
-        const r = Store.installChip(wi, it);
+        const r = Store.installChip(loadoutSlot, it);
         chipPicker = -1;
         msg(r.msg || (r.ok ? '芯片已装入' : '无法装入'));
         refresh();
@@ -544,8 +617,8 @@ const Lobby = (function () {
     return box;
   }
 
-  function removeLobbyChip(wi, slot) {
-    const r = Store.uninstallChip(wi, slot);
+  function removeLobbyChip(loadoutSlot, chipSlot) {
+    const r = Store.uninstallChip(loadoutSlot, chipSlot);
     chipPicker = -1;
     msg(r.msg || (r.ok ? '芯片已卸下' : '无法卸下'));
     refresh();
@@ -599,7 +672,7 @@ const Lobby = (function () {
     const r = load ? load.getBoundingClientRect() : null;
     const inside = r && e.clientX >= r.left && e.clientX <= r.right &&
       e.clientY >= r.top && e.clientY <= r.bottom;
-    if (!inside) removeLobbyChip(d.wi, d.ci);
+    if (!inside) removeLobbyChip(d.wslot, d.ci);
   }
 
   function unequipWeapon(slot) {
@@ -635,16 +708,19 @@ const Lobby = (function () {
     Store.setChar(character);
     Store.save();
 
+    const mapId = (el.mapPick && el.mapPick.value !== 'random') ? el.mapPick.value : '';
     el.root.classList.add('hidden');
     G.beginMission({
       data: carry,
-      character: character
+      character: character,
+      mapId: mapId || undefined
     });
   }
 
   function show() {
     el.root.classList.remove('hidden');
     reloadFromSave();
+    refreshMapPick();
     setTab('home');
   }
 

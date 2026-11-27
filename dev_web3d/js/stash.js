@@ -49,13 +49,14 @@ const Stash = (function () {
     el.value = UI.$('stashValue');
     el.cells = UI.$('stashCells');
     el.detail = UI.$('stashDetail');
+    el.elements = UI.$('stashElements');
     el.breakdown = UI.$('stashBreak');
     el.all = UI.$('stashAll');
     el.sort = UI.$('stashSort');
     el.msg = UI.$('stashMsg');
     const tip = el.root.querySelector('.pane-tip');
     if (tip && window.__touchMode) {
-      tip.innerHTML = '点选物资行 → 直接分解（不消耗时间）<br>撤离成功才会入库';
+      tip.innerHTML = '点选物资行 → 直接分解（数据 + 元素）<br>撤离成功才会入库';
     }
 
     layout();
@@ -81,7 +82,8 @@ const Stash = (function () {
       selected = null;
       refresh();
       Lobby.refreshBank();
-      msg('全部拆解 · +' + UI.fmt(r.value) + ' NB');
+      const elems = ITEMS.elementSummary(r.elements);
+      msg('全部拆解 · +' + UI.fmt(r.value) + ' NB' + (elems ? ' · 元素 +' + elems : ''));
     });
 
     el.sort.addEventListener('click', function () {
@@ -133,6 +135,24 @@ const Stash = (function () {
   }
 
   function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
+
+  /* 物品元素：网格用色点，详情 / 提示用带数值的标签 */
+  function elementDots(it, withNums) {
+    const list = ITEMS.elementEntries(it.elements);
+    if (!list.length) return '';
+    let html = '<span class="elems">';
+    for (let i = 0; i < list.length; i++) {
+      html += '<i style="--ec:' + list[i].color + '"></i>' +
+        (withNums ? '<b>' + list[i].amount + '</b>' : '');
+    }
+    return html + '</span>';
+  }
+
+  function elementLine(it) {
+    const tags = UI.elementTags(it.elements);
+    if (!tags) return '<div class="dt-line"><span>元素属性</span><b style="color:var(--dim2)">无元素</b></div>';
+    return '<div class="dt-line"><span>元素属性</span><b>' + tags + '</b></div>';
+  }
 
   function ensureGhost(it) {
     if (sGhost) return sGhost;
@@ -301,6 +321,7 @@ const Stash = (function () {
           : (chip ? '<span class="chip-ico"></span>' : '')) +
         '<span class="sz">' + d.w + '×' + d.h + '</span>' +
         '<span class="nm">' + UI.esc(it.name) + '</span>' +
+        elementDots(it, false) +
         '<span class="val">' + it.value + '</span>';
       div.addEventListener('click', function (e) {
         e.stopPropagation();
@@ -316,7 +337,7 @@ const Stash = (function () {
         if (e.target.closest('button')) return;
         onItemDown(e, it, div);
       });
-      if (typeof ItemTip !== 'undefined') ItemTip.bind(div, it);
+      if (typeof ItemTip !== 'undefined') ItemTip.bind(div, it, { showElements: true });
       el.items.appendChild(div);
     }
   }
@@ -345,11 +366,12 @@ const Stash = (function () {
         '<span class="sr-dot"></span>' +
         '<span class="sr-name">' + UI.esc(it.name) + '</span>' +
         '<span class="sr-tier">' + (weapon && wdef ? wdef.tag + ' · 武器' : (chipDef ? t.name + ' · ' + chipDef.desc : t.name)) + '</span>' +
+        elementDots(it, true) +
         '<span class="sr-size">' + d.w + '×' + d.h + '</span>' +
         '<span class="sr-val">' + it.value + '</span>' +
         (weapon ? '<button type="button" class="sr-btn" data-stash-equip="' + i + '">装备</button>' : '') +
         '<button type="button" class="sr-btn" data-stash-dismantle="' + i + '">分解</button>';
-      if (typeof ItemTip !== 'undefined') ItemTip.bind(row, it);
+      if (typeof ItemTip !== 'undefined') ItemTip.bind(row, it, { showElements: true });
       el.list.appendChild(row);
     }
   }
@@ -358,8 +380,8 @@ const Stash = (function () {
     const list = Store.stash();
     if (!selected || list.indexOf(selected) < 0) {
       el.detail.innerHTML = window.__touchMode
-        ? '<div class="dt-empty">仓库物资会跨局保存<br><span>点选物资后在下方分解</span></div>'
-        : '<div class="dt-empty">仓库物资会跨局保存<br><span>右键单件立即分解</span></div>';
+        ? '<div class="dt-empty">仓库物资会跨局保存<br><span>点选物资后在下方分解（数据 + 元素）</span></div>'
+        : '<div class="dt-empty">仓库物资会跨局保存<br><span>右键单件立即分解（数据 + 元素）</span></div>';
       return;
     }
     const it = selected;
@@ -377,6 +399,7 @@ const Stash = (function () {
         '<div class="dt-line"><span>类型</span><b style="color:' + (w.color || '#e8e2d6') + '">' + w.tag + ' · 武器</b></div>' +
         '<div class="dt-line"><span>弹夹 / 射速</span><b>' + (w.mag || 0) + ' 发 · ' + (w.rate || 0).toFixed(2) + 's</b></div>' +
         '<div class="dt-line"><span>已装芯片</span><b>' + chips + ' / 3</b></div>' +
+        elementLine(it) +
         '<div class="dt-line"><span>数据价值</span><b>' + it.value + ' NB</b></div>' +
         '<div class="dt-line"><span>尺寸</span><b>' + d.w + '×' + d.h + '</b></div>' +
         '<div class="dt-actions">' +
@@ -395,9 +418,10 @@ const Stash = (function () {
           '<div class="dt-line"><span>品质 / 类型</span><b>' + t.name + ' · ' + (def.forTag ? def.forTag + '专属芯片' : '通用芯片') + '</b></div>' +
           (def.forTag ? '<div class="dt-line"><span>安装限制</span><b style="color:' + def.color + '">仅限 ' + def.forTag + ' 武器</b></div>' : '')
         : '<div class="dt-line"><span>' + t.name + ' · 数据载体</span><b>' + it.value + ' NB</b></div>') +
+      elementLine(it) +
       '<div class="dt-line"><span>尺寸</span><b>' + d.w + '×' + d.h + '</b></div>' +
       '<div class="dt-line"><span>分解耗时</span><b>仓库内瞬发</b></div>' +
-      '<div class="dt-hint">' + (def ? '在机库「配装」页点芯片槽装备' : '[右键] 立即分解为数据') + '</div>' +
+      '<div class="dt-hint">' + (def ? '在机库「配装」页点芯片槽装备' : '[右键] 立即分解为数据 + 元素') + '</div>' +
       '<div class="dt-touch"><button type="button" class="dt-btn danger" data-stash-act="dismantle">分解</button></div>';
   }
 
@@ -406,12 +430,13 @@ const Stash = (function () {
       msg('武器上还有芯片 · 先装备后卸下芯片再分解');
       return;
     }
+    const elems = ITEMS.elementSummary(it.elements);
     const v = Store.stashDismantle(it);
     if (!v) return;
     if (selected === it) selected = null;
     refresh();
     Lobby.refreshBank();
-    msg('+' + UI.fmt(v) + ' NB');
+    msg('+' + UI.fmt(v) + ' NB' + (elems ? ' · 元素 +' + elems : ''));
   }
 
   function equip(it, slot) {
@@ -455,12 +480,13 @@ const Stash = (function () {
 
   function chipTargetForRow(row, it) {
     const slot = parseInt(row.dataset.eqSlot, 10);
-    if (!(slot >= 0)) return { valid: false, wi: -1 };
+    if (!(slot >= 0)) return { valid: false, slot: -1, wi: -1 };
     const eq = Store.loadout().weapons[slot];
-    if (!eq) return { valid: false, wi: -1 };
-    const chips = Store.weaponChips(eq.weaponId);
+    if (!eq) return { valid: false, slot: -1, wi: -1 };
+    const chips = Store.weaponChips(slot);
     return {
       valid: ITEMS.chipFitsWeapon(it, eq.weaponId) && chips.length < 3,
+      slot: slot,
       wi: eq.weaponId
     };
   }
@@ -470,8 +496,8 @@ const Stash = (function () {
     for (let i = 0; i < rows.length; i++) {
       if (!pointInRect(rows[i].getBoundingClientRect(), x, y)) continue;
       const target = chipTargetForRow(rows[i], it);
-      if (!(target.wi >= 0)) { msg('该配装槽没有武器'); return; }
-      const r = Store.installChip(target.wi, it);
+      if (!(target.slot >= 0)) { msg('该配装槽没有武器'); return; }
+      const r = Store.installChip(target.slot, it);
       msg(r.msg || (r.ok ? '芯片已安装' : '无法安装'));
       if (!r.ok) return;
       selected = null;
@@ -479,6 +505,10 @@ const Stash = (function () {
       if (typeof Lobby !== 'undefined') { Lobby.refreshBank(); Lobby.refresh(); }
       return;
     }
+  }
+
+  function renderElementPool() {
+    if (el.elements) el.elements.innerHTML = UI.elementStrip(Store.elements());
   }
 
   function renderBreakdown() {
@@ -522,6 +552,7 @@ const Stash = (function () {
     renderItems();
     renderList();
     renderDetail();
+    renderElementPool();
     renderBreakdown();
   }
 

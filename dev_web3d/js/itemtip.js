@@ -54,6 +54,12 @@ const ItemTip = (function () {
       '<div class="it-line"><span>已装芯片</span><b>' + chips + ' / 3</b></div>';
   }
 
+  function elementsHtml(item) {
+    const tags = UI.elementTags(item && item.elements);
+    if (!tags) return '<div class="it-line it-elements"><span>元素属性</span><b class="dim">无元素</b></div>';
+    return '<div class="it-line it-elements"><span>元素属性</span><b>' + tags + '</b></div>';
+  }
+
   function position(x, y) {
     if (!el) return;
     const r = el.getBoundingClientRect();
@@ -65,7 +71,7 @@ const ItemTip = (function () {
     el.style.top = clamp(top, 8, window.innerHeight - r.height - 8) + 'px';
   }
 
-  function show(item, x, y) {
+  function show(item, x, y, showElements) {
     if (!item) { hide(); return; }
     const node = ensure();
     currentItem = item;
@@ -76,6 +82,10 @@ const ItemTip = (function () {
     const wdef = weapon ? WEAPONS[item.weaponId] : null;
     const typeColor = weapon ? (wdef ? wdef.color : tier.color) : (def ? def.color : tier.color);
     const d = Grid.dims(item);
+    const hasEl = (typeof ITEMS !== 'undefined' && ITEMS.hasElements(item.elements));
+    const inRaid = (typeof G !== 'undefined' && G.mode === 'mission');
+    const dismantleGain = (showElements && hasEl && !inRaid) ? '数据 + 元素' : '数据';
+    const elementRaidNote = (showElements && hasEl && inRaid) ? ' · 元素需在仓库分解' : '';
 
     node.style.setProperty('--qc', tier.color);
     node.style.setProperty('--cc', typeColor);
@@ -84,14 +94,15 @@ const ItemTip = (function () {
       '<div class="it-tags"><i></i><span>' + tier.name + '</span><em>' +
         (weapon ? (wdef ? wdef.tag + ' · 武器' : '武器') : (chip ? (def && def.forTag ? def.forTag + '专属' : '通用芯片') : '物资')) + '</em></div>' +
       (chip ? chipHtml(item, tier, def) : (weapon ? weaponHtml(item) : materialHtml(item, tier))) +
+      (showElements ? elementsHtml(item) : '') +
       '<div class="it-line"><span>数据价值</span><b>' + (item.value || 0) + ' NB</b></div>' +
       '<div class="it-grid">' +
         '<div><span>尺寸</span><b>' + d.w + '×' + d.h + '</b></div>' +
         '<div><span>分解耗时</span><b>' + (item.time || 1).toFixed(1) + 's</b></div>' +
       '</div>' +
-      (weapon ? '<div class="it-foot">可在仓库装备 · 阵亡会丢失已装备武器</div>'
-        : (chip ? '<div class="it-foot">可装入武器芯片槽 · 分解获得数据价值</div>'
-                : '<div class="it-foot">右键 / 分解按钮可提取数据</div>'));
+      (weapon ? '<div class="it-foot">可在仓库装备 · 分解获得' + dismantleGain + elementRaidNote + '</div>'
+        : (chip ? '<div class="it-foot">可装入武器芯片槽 · 分解获得' + dismantleGain + elementRaidNote + '</div>'
+                : '<div class="it-foot">右键 / 分解按钮可提取' + dismantleGain + elementRaidNote + '</div>'));
 
     node.style.display = 'block';
     node.style.left = '0px';
@@ -107,11 +118,12 @@ const ItemTip = (function () {
   function bind(node, item, opts) {
     if (!node) return;
     const touchEnabled = !opts || opts.touch !== false;
+    const showElements = !!(opts && opts.showElements);
 
     node.addEventListener('mouseenter', function (e) {
       if (lastPointerType === 'touch') return;
       if (e.buttons) return;
-      show(item, e.clientX, e.clientY);
+      show(item, e.clientX, e.clientY, showElements);
     });
     node.addEventListener('mousemove', function (e) {
       if (lastPointerType === 'touch' || e.buttons) return;
@@ -130,7 +142,7 @@ const ItemTip = (function () {
       press.timer = setTimeout(function () {
         if (!press || press.id !== e.pointerId) return;
         suppress = { id: e.pointerId, t: Date.now() };
-        show(press.item, press.x, press.y);
+        show(press.item, press.x, press.y, showElements);
       }, 450);
     });
   }

@@ -31,6 +31,27 @@ const UI = (function () {
     return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
   }
 
+  /* 元素库存条：固定显示五系元素，数量为 0 也保留，便于看出资源缺口 */
+  function elementStrip(pool) {
+    let html = '';
+    for (let i = 0; i < ELEMENTS.length; i++) {
+      const e = ELEMENTS[i];
+      const n = Math.max(0, Math.round((pool && pool[e.id]) || 0));
+      html += '<span class="element-pill" style="--ec:' + e.color + '"><i></i>' +
+        e.name + '<b>' + fmt(n) + '</b></span>';
+    }
+    return html;
+  }
+
+  /* 单件物品的元素标签 */
+  function elementTags(elements) {
+    if (typeof ITEMS === 'undefined' || !ITEMS.elementEntries) return '';
+    return ITEMS.elementEntries(elements).map(function (e) {
+      return '<span class="element-tag" style="--ec:' + e.color + '"><i></i>' +
+        e.name + '<b>' + e.amount + '</b></span>';
+    }).join('');
+  }
+
   /* 1×1 芯片小方块（武器槽内展示） */
   function chipTile(entry) {
     const def = (typeof CHIP_BY_ID !== 'undefined' && entry) ? CHIP_BY_ID[entry.chipId] : null;
@@ -49,5 +70,9 @@ const UI = (function () {
     toastTimer = setTimeout(function () { node.classList.remove('show'); }, 1900);
   }
 
-  return { $: $, el: el, esc: esc, fmt: fmt, time: time, toast: toast, chipTile: chipTile };
+  return {
+    $: $, el: el, esc: esc, fmt: fmt, time: time,
+    elementStrip: elementStrip, elementTags: elementTags,
+    toast: toast, chipTile: chipTile
+  };
 })();

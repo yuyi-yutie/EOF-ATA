@@ -201,7 +201,6 @@ const MODELS = (function () {
     parts.push(part(0.04, 0.70, 0.16, 0.15, 0.10, 0.02, G));
     parts.push(part(-0.29, 0.83, 0, 0.10, 0.30, 0.15, B));
     parts.push(part(0.29, 0.83, 0, 0.10, 0.28, 0.15, SK));
-    parts.push(part(0.29, 0.70, 0, 0.11, 0.10, 0.16, BL, { outline: 0 }));
     parts.push(part(0, 0.86, -0.22, 0.36, 0.32, 0.12, G));
     parts.push(part(0, 1.02, -0.27, 0.28, 0.10, 0.10, BL));
     parts.push(part(0.19, 0.72, 0.15, 0.08, 0.12, 0.07, O));
@@ -211,7 +210,6 @@ const MODELS = (function () {
     parts.push(part(0.02, 0.565, 0.14, 0.07, 0.17, 0.025, O, { outline: 0 }));
     parts.push(part(0.18, 0.595, 0.12, 0.06, 0.10, 0.02, R, { outline: 0 }));
     parts.push(part(-0.05, 0.56, -0.15, 0.10, 0.16, 0.02, G, { outline: 0 }));
-    parts.push(part(-0.29, 0.675, 0.02, 0.105, 0.09, 0.15, BL, { outline: 0 }));
     parts.push(part(-0.20, 0.62, 0.055, 0.035, 0.10, 0.035, R, { outline: 0 }));
     parts.push(part(-0.07, 1.65, 0.12, 0.09, 0.08, 0.06, H, { outline: 0 }));
     parts.push(part(0.03, 1.66, 0.02, 0.08, 0.10, 0.08, H, { outline: 0 }));
@@ -253,8 +251,6 @@ const MODELS = (function () {
     parts.push(part(0, 0.86, 0.21, 0.34, 0.045, 0.02, R));
     parts.push(part(-0.34, 0.84, 0, 0.13, 0.34, 0.17, SK));
     parts.push(part(0.34, 0.84, 0, 0.13, 0.34, 0.17, SK));
-    parts.push(part(-0.34, 0.69, 0, 0.14, 0.10, 0.18, L, { outline: 0 }));
-    parts.push(part(0.34, 0.69, 0, 0.14, 0.10, 0.18, L, { outline: 0 }));
     parts.push(part(-0.36, 0.99, 0, 0.18, 0.16, 0.32, L));
     parts.push(part(-0.36, 1.00, 0.02, 0.15, 0.10, 0.26, R, { outline: 0 }));
     parts.push(part(0.34, 0.98, 0, 0.16, 0.12, 0.28, L));
@@ -304,7 +300,6 @@ const MODELS = (function () {
     parts.push(part(0.13, 0.93, 0.19, 0.12, 0.12, 0.02, R));
     parts.push(part(-0.29, 0.84, 0, 0.11, 0.32, 0.16, B));
     parts.push(part(0.29, 0.84, 0, 0.11, 0.32, 0.16, B));
-    parts.push(part(0.29, 0.70, 0, 0.12, 0.10, 0.17, L, { outline: 0 }));
     parts.push(part(0, 0.88, -0.23, 0.40, 0.38, 0.15, G));
     parts.push(part(0, 1.08, -0.30, 0.30, 0.12, 0.10, L));
     parts.push(part(-0.23, 0.72, 0.15, 0.10, 0.14, 0.08, O));
@@ -313,7 +308,6 @@ const MODELS = (function () {
     parts.push(part(-0.18, 0.47, -0.17, 0.10, 0.18, 0.025, BL, { outline: 0 }));
     parts.push(part(0.03, 0.45, -0.18, 0.08, 0.22, 0.025, BL, { outline: 0 }));
     parts.push(part(0.20, 0.49, -0.16, 0.07, 0.14, 0.02, G, { outline: 0 }));
-    parts.push(part(-0.29, 0.68, 0.02, 0.12, 0.09, 0.16, G, { outline: 0 }));
     parts.push(part(0.28, 0.75, 0.10, 0.04, 0.08, 0.05, R, { outline: 0 }));
     parts.push(part(-0.20, 1.66, 0.06, 0.07, 0.10, 0.07, H, { outline: 0 }));
     parts.push(part(0.18, 1.63, -0.02, 0.07, 0.12, 0.08, H, { outline: 0 }));
@@ -430,6 +424,14 @@ const MODELS = (function () {
     spitter: squash(spitter()),
     gaunt: squash(gaunt())
   };
+
+  /* Blender 导出的角色几何（assets/chars/build_characters.py -> js/charmodels.js）：
+     坐标已包含 0.78 压矮，直接覆盖同名内置定义，并加入新角色。 */
+  if (typeof CHARMODELS !== 'undefined' && CHARMODELS) {
+    for (const k in CHARMODELS) {
+      if (Object.prototype.hasOwnProperty.call(CHARMODELS, k)) UNITS[k] = CHARMODELS[k];
+    }
+  }
 
   /* ---------------- 武器 ---------------- */
   function gunBase(accent) {
@@ -578,11 +580,12 @@ const MODELS = (function () {
       } else if (p.leg) {
         const ph2 = ph + (p.leg === 'L' ? 0 : Math.PI);
         rotX = Math.sin(ph2) * st.swing * (moving ? 1 : 0);
-        pvy = p.sy * 0.5 * sc;
+        /* 所有腿部零件共用髋关节作为转轴，靴子 / 膝甲 / 护胫不会脱节 */
+        pvy = hipsY - ly;
         ly += Math.max(0, Math.sin(ph2)) * 0.028 * sc * moving;
         yaw = legYaw;
       } else {
-        const isHead = p.y > 1.05 * YS;
+        const isHead = p.grp === 'head';
         /* 髋部仍按移动方向，躯干 / 头 / 枪随奔跑左右摆 */
         const baseYaw = p.hips ? legYaw : o.yaw;
         yaw = baseYaw + bodySway;
@@ -677,6 +680,84 @@ const MODELS = (function () {
     });
   }
 
+  /* ---------------- 屏幕外敌人头像 ----------------
+     用现有方块模型的 head 分组做正面正交投影：
+     只取 head 组零件，按 z 从前到后绘制，保留模型本身的配色、发光件和墨线。
+     返回 dataURL，供 HUD 的边缘头像直接使用。 */
+  const PORTRAIT_CACHE = {};
+  function headPortrait(key, px) {
+    px = Math.max(24, Math.round(px || 128));
+    const cacheKey = key + ':' + px;
+    if (PORTRAIT_CACHE[cacheKey]) return PORTRAIT_CACHE[cacheKey];
+    const model = UNITS[key];
+    if (!model || typeof document === 'undefined') return '';
+
+    const parts = [];
+    for (let i = 0; i < model.parts.length; i++) {
+      const p = model.parts[i];
+      if (p.grp === 'head' && !p.castOnly) parts.push(p);
+    }
+    if (!parts.length) return '';
+
+    let minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9;
+    for (let i = 0; i < parts.length; i++) {
+      const p = parts[i];
+      minX = Math.min(minX, p.x - p.sx * 0.5);
+      maxX = Math.max(maxX, p.x + p.sx * 0.5);
+      minY = Math.min(minY, p.y - p.sy * 0.5);
+      maxY = Math.max(maxY, p.y + p.sy * 0.5);
+    }
+    const cx = (minX + maxX) * 0.5;
+    const cy = (minY + maxY) * 0.5;
+    const span = Math.max(maxX - minX, maxY - minY);
+    const scale = px * 0.92 / (span || 1);
+
+    const cv = document.createElement('canvas');
+    cv.width = px;
+    cv.height = px;
+    const g = cv.getContext('2d');
+    if (!g) return '';
+
+    /* 模型朝 +Z；观察者在 +Z 正面。按每个零件前表面的 z 排序，
+       近的零件覆盖远的零件。 */
+    const list = parts.slice().sort(function (a, b) {
+      return (a.z + a.sz * 0.5) - (b.z + b.sz * 0.5);
+    });
+    const ink = '#14171a';
+    const lw = Math.max(1, px * 0.014);
+    for (let i = 0; i < list.length; i++) {
+      const p = list[i];
+      const x0 = (p.x - p.sx * 0.5 - cx) * scale + px * 0.5;
+      const x1 = (p.x + p.sx * 0.5 - cx) * scale + px * 0.5;
+      const y0 = -(p.y + p.sy * 0.5 - cy) * scale + px * 0.5;
+      const y1 = -(p.y - p.sy * 0.5 - cy) * scale + px * 0.5;
+      const c = p.color || [0.5, 0.5, 0.5];
+      const r = Math.round(Math.max(0, Math.min(1, c[0])) * 255);
+      const gg = Math.round(Math.max(0, Math.min(1, c[1])) * 255);
+      const b = Math.round(Math.max(0, Math.min(1, c[2])) * 255);
+      g.fillStyle = 'rgb(' + r + ',' + gg + ',' + b + ')';
+      g.fillRect(x0, y0, x1 - x0, y1 - y0);
+      if (p.outline !== 0) {
+        g.strokeStyle = ink;
+        g.lineWidth = lw;
+        g.strokeRect(x0, y0, x1 - x0, y1 - y0);
+      }
+    }
+
+    /* 统一的三渲二光感：左上受光、右下压暗，只作用于头像像素 */
+    const grd = g.createLinearGradient(0, 0, px, px);
+    grd.addColorStop(0, 'rgba(255,255,255,.16)');
+    grd.addColorStop(0.42, 'rgba(255,255,255,0)');
+    grd.addColorStop(1, 'rgba(0,0,0,.22)');
+    g.globalCompositeOperation = 'source-atop';
+    g.fillStyle = grd;
+    g.fillRect(0, 0, px, px);
+    g.globalCompositeOperation = 'source-over';
+
+    PORTRAIT_CACHE[cacheKey] = cv.toDataURL('image/png');
+    return PORTRAIT_CACHE[cacheKey];
+  }
+
   function carryPose(u) {
     return {
       yawOffset: animValue('sprint', 'gunYaw', u, 1.52),
@@ -703,6 +784,7 @@ const MODELS = (function () {
     drawUnit: drawUnit,
     drawGun: drawGun,
     drawGunMag: drawGunMag,
+    headPortrait: headPortrait,
     carryPose: carryPose,
     reloadPose: reloadPose,
     runSway: runSway,

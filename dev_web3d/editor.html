@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="theme-color" content="#14171a" />
+<title>EOFATA 地图编辑器</title>
+<link rel="icon" href="data:," />
+<link rel="stylesheet" href="css/editor.css?v=20261127i" />
+</head>
+<body>
+<div id="edApp">
+  <header class="ed-top">
+    <div class="ed-brand">EOFATA<span>// 地图编辑器</span></div>
+    <input id="edName" class="ed-name" maxlength="32" spellcheck="false" title="地图名称" />
+    <div class="ed-top-actions">
+      <button type="button" class="ed-btn" id="edNew" title="新建地图">新建</button>
+      <button type="button" class="ed-btn" id="edLib" title="本地地图库">地图库</button>
+      <button type="button" class="ed-btn" id="edSave" title="保存到浏览器 (Ctrl+S)">保存</button>
+      <button type="button" class="ed-btn" id="edImport" title="导入 JSON">导入</button>
+      <button type="button" class="ed-btn" id="edExport" title="导出 JSON">导出</button>
+      <button type="button" class="ed-btn primary" id="edPlay" title="保存并在游戏中试玩">▶ 试玩</button>
+      <button type="button" class="ed-btn side-toggle" id="edSideToggle" title="显示 / 隐藏属性面板">属性</button>
+      <a class="ed-btn ghost" href="index.html">返回游戏</a>
+    </div>
+  </header>
+
+  <aside class="ed-tools" id="edTools" aria-label="编辑工具"></aside>
+
+  <main class="ed-stage" id="edStage">
+    <canvas id="edCanvas"></canvas>
+    <div class="ed-stage-hint" id="edHint"></div>
+    <div class="ed-zoom">
+      <button type="button" id="edZoomOut" title="缩小">−</button>
+      <span id="edZoomLabel">100%</span>
+      <button type="button" id="edZoomIn" title="放大">＋</button>
+      <button type="button" id="edFit" title="适应窗口 (F)">适应</button>
+    </div>
+  </main>
+
+  <aside class="ed-side">
+    <div class="ed-panel">
+      <div class="ed-panel-head">属性 <em id="edSelKind">地图</em></div>
+      <div class="ed-inspector" id="edInspector"></div>
+    </div>
+    <div class="ed-panel grow">
+      <div class="ed-panel-head">图层</div>
+      <div class="ed-layers" id="edLayers"></div>
+      <div class="ed-panel-head" style="margin-top:10px">校验 <em id="edValidState">OK</em></div>
+      <div class="ed-issues" id="edIssues"></div>
+    </div>
+  </aside>
+
+  <footer class="ed-status">
+    <span id="edStatusTool">选择</span>
+    <span id="edStatusCursor">x 0.0 · z 0.0</span>
+    <span id="edStatusHouse"></span>
+    <span id="edStatusCount"></span>
+    <span class="ed-status-right" id="edStatusSaved">未保存</span>
+  </footer>
+</div>
+
+<input type="file" id="edFile" accept=".json,application/json" hidden />
+
+<div id="edModal" class="ed-modal hidden">
+  <div class="ed-modal-box">
+    <div class="ed-modal-head">
+      <b id="edModalTitle">标题</b>
+      <button type="button" class="ed-modal-x" id="edModalClose">×</button>
+    </div>
+    <div class="ed-modal-body" id="edModalBody"></div>
+    <div class="ed-modal-foot" id="edModalFoot"></div>
+  </div>
+</div>
+
+<div id="edToast" class="ed-toast"></div>
+
+<script src="js/config.js?v=20261127i"></script>
+<script src="js/items.js?v=20261127i"></script>
+<script src="js/mapstore.js?v=20261127i"></script>
+<script src="js/editor.js?v=20261127i"></script>
+</body>
+</html>

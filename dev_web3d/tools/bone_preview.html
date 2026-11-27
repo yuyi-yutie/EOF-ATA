@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>EOFATA bone preview</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0a0d10; }
+  #c { display: block; width: 100vw; height: 100vh; }
+  #meta { position: fixed; left: 12px; top: 10px; color: #d8d2c4; font: 12px monospace; letter-spacing: .1em; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="meta"></div>
+<script src="../js/config.js"></script>
+<script src="../js/animdata.js"></script>
+<script src="../js/charmodels.js"></script>
+<script src="../js/models.js"></script>
+<script src="../js/gl.js"></script>
+<script>
+(function () {
+  const q = new URLSearchParams(location.search);
+  const key = q.get('key') || 'tactical';
+  const pose = q.get('pose') || 'walk';
+  const view = q.get('view') || 'side';
+  const fixedT = q.get('t') !== null ? parseFloat(q.get('t')) : null;
+  const canvas = document.getElementById('c');
+  const meta = document.getElementById('meta');
+  meta.textContent = key + ' · ' + pose + ' · ' + view + (fixedT === null ? '' : ' · t=' + fixedT);
+
+  R.init(canvas);
+  R.resize(canvas);
+  R.setFog(80, 180);
+  R.setSky([0.055, 0.07, 0.085]);
+
+  const eye = view === 'front' ? [0, 1.15, 4.4]
+    : view === 'back' ? [0, 1.15, -4.4]
+    : view === 'three' ? [3.4, 1.7, 3.4]
+    : [4.4, 1.15, 0];
+  R.setCamera(eye, [0, 0.82, 0], 34);
+  const headYaw = q.get('head') !== null ? parseFloat(q.get('head')) : 0;
+
+  let t = fixedT === null ? 0 : fixedT;
+  let last = 0;
+  function frame(now) {
+    if (!last) last = now;
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    if (fixedT === null) t += dt;
+    const sprint = pose === 'sprint';
+    R.begin();
+    MODELS.drawUnit(R.dyn, key, {
+      x: 0, y: 0, z: 0, yaw: 0,
+      moving: pose !== 'idle', animT: t,
+      moveYaw: 0, sprint: sprint,
+      sprintMix: sprint ? 1 : 0,
+      headYaw: headYaw
+    });
+    R.end();
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
