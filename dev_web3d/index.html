@@ -30,7 +30,7 @@
     if (standalone) document.documentElement.classList.add('standalone');
   })();
 </script>
-<link rel="stylesheet" href="css/app.css?v=20261128a9" />
+<link rel="stylesheet" href="css/app.css?v=20261128a34" />
 </head>
 <body>
 <div id="app">
@@ -44,6 +44,7 @@
   <div id="hud" class="hidden">
     <div class="dmg-layer" id="dmgLayer"></div>
     <div class="edge-layer" id="edgeLayer"></div>
+    <div class="speech-layer hidden" id="speechLayer"></div>
     <div class="hud-tl">
       <div class="vbar shd"><i id="shdFill"></i><span class="lab">SHD</span><span class="num" id="shdNum">60</span></div>
       <div class="vbar hp"><i id="hpFill"></i><span class="lab">VIT</span><span class="num" id="hpNum">100</span></div>
@@ -119,13 +120,28 @@
   <!-- ================= 大厅 / 机库 ================= -->
   <div id="lobby" class="hidden">
     <div class="lobby-top">
-      <div class="lobby-brand">EOFATA<span>// 机库</span></div>
+      <div class="lobby-brand">EOFATA<span>// 大厅终端</span></div>
       <div class="lobby-tabs" id="lobbyTabs"></div>
       <div class="lobby-money">
         <span>数据</span><b id="lobbyBank">10000</b><em>NB</em>
         <span class="lobby-best">最佳 <i id="lobbyBest">0</i></span>
       </div>
       <button type="button" class="fs-btn" data-fullscreen>全屏</button>
+    </div>
+
+    <div class="device-bar hidden" id="deviceBar">
+      <div class="device-name">
+        <span id="deviceKicker">// TERMINAL</span>
+        <b id="deviceTitle">军械库</b>
+      </div>
+      <div class="device-money"><span>数据</span><b id="deviceBank">0</b><em>NB</em></div>
+      <div class="device-subtabs" id="deviceSubtabs"></div>
+      <button type="button" class="device-close" id="deviceClose">ESC 返回大厅</button>
+    </div>
+
+    <div class="device-label hidden" id="deviceLabel" aria-hidden="true">
+      <span id="deviceLabelKicker">// ARMORY</span>
+      <b id="deviceLabelName">军械库</b>
     </div>
 
     <div class="lobby-main">
@@ -135,9 +151,23 @@
           <div class="char-list" id="lobbyChars"></div>
         </div>
 
-        <div class="panel-sec">
+        <div class="panel-sec" id="lobbyGadgetSec">
           <div class="sec-head">战术道具 <em>Q / E · 点击槽位更换</em></div>
           <div class="gadget-line" id="lobbyGadgets"></div>
+        </div>
+
+        <div class="panel-sec tele-manifest" id="teleManifest">
+          <div class="sec-head">出击清单 <em id="teleManifestState">待命</em></div>
+          <div class="tm-list">
+            <div class="tm-row"><span>角色</span><b id="tmChar">潜行者</b></div>
+            <div class="tm-row"><span>主武器</span><b id="tmWeapon1">未配置</b></div>
+            <div class="tm-row"><span>副武器</span><b id="tmWeapon2">未配置</b></div>
+            <div class="tm-row"><span>战术道具</span><b id="tmGadgets">未配置</b></div>
+            <div class="tm-row"><span>弹夹配给</span><b id="tmAmmo">0 匣</b></div>
+            <div class="tm-row"><span>战局地图</span><b id="tmMap">随机设施</b></div>
+            <div class="tm-row"><span>预计消耗</span><b id="tmCost">0 NB</b></div>
+          </div>
+          <div class="tm-foot" id="tmFoot">确认配置后即可传送到设施入口</div>
         </div>
       </div>
 
@@ -172,9 +202,50 @@
           </div>
           <div class="map-hint" id="lobbyMapHint">程序化随机设施 · 每局重新生成</div>
         </div>
+
+        <div class="panel-sec tele-brief" id="teleBrief">
+          <div class="sec-head">行动简报 <em id="teleBriefType">随机设施</em></div>
+          <div class="tele-brief-map" id="teleBriefMap"></div>
+          <div class="tele-brief-facts" id="teleBriefFacts"></div>
+        </div>
+
         <div class="lobby-msg" id="lobbyMainMsg"></div>
         <button class="btn test-entry" id="testMapBtn">进入测试场 · 训练配装</button>
         <div class="test-hint">初始空手 / 配装台选武器与道具 / 1 秒刷新敌人</div>
+      </div>
+
+      <!-- ---------- 军械库 ---------- -->
+      <div class="tab-pane" id="paneArmory">
+        <div class="pane-head">
+          <div class="pane-title">军械库<span>// ARMORY</span></div>
+          <div class="pane-meta">
+            <span>数据 <b id="armoryBank">0</b> NB</span>
+            <span>仓库武器 <b id="armoryWeaponCount">0</b></span>
+            <span>仓库芯片 <b id="armoryChipCount">0</b></span>
+          </div>
+        </div>
+        <div class="armory-body">
+          <div class="armory-col">
+            <div class="sec-head">配装槽 <em>点击卸下 / 装备</em></div>
+            <div class="armory-slots" id="armorySlots"></div>
+            <div class="sec-head">仓库武器 <em>3×1 · 点击装备到配装槽</em></div>
+            <div class="armory-list" id="armoryWeapons"></div>
+          </div>
+          <div class="armory-col">
+            <div class="sec-head">已装芯片 <em>每把最多 3 个</em></div>
+            <div class="armory-installed" id="armoryInstalled"></div>
+            <div class="sec-head">仓库芯片 <em>点击装入武器</em></div>
+            <div class="armory-list" id="armoryChips"></div>
+          </div>
+          <div class="armory-col">
+            <div class="sec-head">战术道具 <em>Q / E 两个槽位</em></div>
+            <div class="armory-gadgets" id="armoryGadgets"></div>
+            <div class="armory-note">
+              武器与芯片从仓库装备；卸下会放回仓库。战术道具不占仓库格，每局最多携带两个。
+            </div>
+          </div>
+        </div>
+        <div class="pane-msg" id="armoryMsg"></div>
       </div>
 
       <!-- ---------- 仓库 ---------- -->
@@ -227,7 +298,7 @@
       <!-- ---------- 制造 ---------- -->
       <div class="tab-pane" id="paneCraft">
         <div class="pane-head">
-          <div class="pane-title">制造工坊<span>// FAB</span></div>
+          <div class="pane-title">制造台<span>// FABRICATOR</span></div>
           <div class="pane-meta">
             <span>数据 <b id="craftBank">0</b> NB</span>
             <span>仓库芯片 <b id="craftOwned">0</b> 块</span>
@@ -260,14 +331,14 @@
       <!-- ---------- 补给站 ---------- -->
       <div class="tab-pane" id="paneShop">
         <div class="pane-head">
-          <div class="pane-title">补给站<span>// QUARTERMASTER</span></div>
+          <div class="pane-title">躯体打印机<span>// BODY PRINTER</span></div>
           <div class="pane-meta"><span>数据 <b id="shopBank">0</b> NB</span></div>
         </div>
         <div class="shop-body">
           <div class="shop-col">
             <div class="sec-head">战术道具 <em>默认全部解锁</em></div>
             <div class="shop-list" id="shopSupplies"></div>
-            <div class="pane-tip">在机库选择携带哪两种；局内无法更换。</div>
+            <div class="pane-tip">在军械库选择携带哪两种；局内无法更换。</div>
             <div class="shop-note">
               <div class="sec-head">使用方式</div>
               <div class="rule-list">
@@ -310,7 +381,7 @@
               <div class="cts-bar"><i id="contractFill"></i></div>
             </div>
             <button class="btn" id="contractReroll">完成并领取全部合约后可刷新</button>
-            <div class="pane-tip">完成合约后回到机库，在本页领取数据奖励。</div>
+            <div class="pane-tip">完成合约后回到大厅，在本页领取数据奖励。</div>
           </div>
         </div>
       </div>
@@ -430,7 +501,7 @@
       <div class="mini-title">行动暂停</div>
       <button class="btn primary" id="resumeBtn">继续行动</button>
       <button class="btn touch-only fs-only" data-fullscreen>全屏切换</button>
-      <button class="btn" id="abandonBtn">放弃行动 · 返回机库</button>
+      <button class="btn" id="abandonBtn">放弃行动 · 返回大厅</button>
       <div class="mini-foot">P / ESC 继续</div>
     </div>
   </div>
@@ -463,7 +534,7 @@
       <div class="end-grid" id="endBody"></div>
       <div class="end-note" id="endNote"></div>
       <div class="end-contract" id="endContracts"></div>
-      <button id="againBtn">返回机库</button>
+      <button id="againBtn">返回大厅</button>
     </div>
   </div>
 
@@ -491,18 +562,14 @@
       <div class="start-kicker">END OF FUTURE : ATA</div>
       <h1 class="start-logo" id="startTitle" data-text="EOFATA">EOFATA</h1>
       <div class="start-sub">末日撤离 · 轻量化战术射击</div>
-      <button type="button" id="startGameBtn" class="start-btn" data-start-choice="game">
-        <span class="start-btn-label">点击开始游戏</span>
-        <em>CLICK TO START</em>
-      </button>
-      <button type="button" id="startHallBtn" class="start-btn start-btn-hall" data-start-choice="hall">
-        <span class="start-btn-label">进入大厅</span>
-        <em>PHYSICAL LOBBY</em>
+      <button type="button" id="startGameBtn" class="start-btn" data-start-choice="hall">
+        <span class="start-btn-label">进入游戏</span>
+        <em>ENTER THE HALL</em>
       </button>
     </div>
 
     <div class="start-foot">
-      <span>机库终端 // HANGAR</span>
+      <span>大厅终端 // HALL</span>
       <span class="start-build">BUILD <b id="startBuild">—</b></span>
     </div>
   </div>
@@ -512,12 +579,39 @@
     <div class="hall-top">
       <span class="hall-title">EOFATA <em>// 大厅</em></span>
       <div class="hall-right">
-        <span class="hall-hint"><b>WASD</b> 移动 · <b>F</b> 互动 · <b>L</b> 锁定鼠标 · <b>ESC</b> 返回</span>
-        <button type="button" class="hall-exit" id="hallExit">返回机库</button>
+        <span class="hall-hint"><b>WASD</b> 移动 · <b>F</b> 互动 · <b>L</b> 锁定鼠标 · <b>ESC</b> 设置</span>
+        <button type="button" class="hall-exit" id="hallExit">返回开始菜单</button>
       </div>
     </div>
     <div class="hall-prompt hidden" id="hallPrompt"></div>
     <div class="hall-toast" id="hallToast"></div>
+    <div class="ata-dialogue" id="ataDialogue" role="status" aria-live="polite">
+      <div class="ata-dialogue-box">
+        <div class="ata-dialogue-head">
+          <span class="ata-dialogue-mark" aria-hidden="true">A</span>
+          <span class="ata-dialogue-speaker">ATA</span>
+          <span class="ata-dialogue-tag" id="ataDialogueTag">// 大厅</span>
+        </div>
+        <div class="ata-dialogue-text" id="ataDialogueText"></div>
+      </div>
+      <i class="ata-dialogue-tail" aria-hidden="true"></i>
+    </div>
+  </div>
+
+  <!-- ================= 大厅设置 ================= -->
+  <div id="hallPause" class="screen hidden">
+    <div class="mini-panel hall-pause-panel">
+      <div class="mini-tag">// HALL SETTINGS</div>
+      <div class="mini-title">大厅设置</div>
+      <div class="hall-set-row">
+        <span>默认镜头俯角</span>
+        <div class="chip-row" id="hallPausePitch"></div>
+      </div>
+      <button type="button" class="btn" id="hallFullscreenBtn">切换全屏</button>
+      <button type="button" class="btn primary" id="hallResumeBtn">继续游戏</button>
+      <button type="button" class="btn" id="hallStartMenuBtn">返回开始菜单</button>
+      <div class="mini-foot">ESC 继续</div>
+    </div>
   </div>
 
   <div class="toast" id="toast"></div>
@@ -538,7 +632,7 @@
 
 <script>
   window.__errs = [];
-  window.__build = '20261128a9';
+  window.__build = '20261128a34';
   console.info('EOFATA build ' + window.__build);
   document.title = 'EOFATA 3D — End of Future : ATA · ' + window.__build;
   window.addEventListener('error', function (e) {
@@ -553,7 +647,7 @@
       'config', 'items', 'grid', 'store', 'mapstore', 'animdata', 'charmodels', 'models', 'weaponview', 'weapondrag',
       'world', 'hangar', 'hall', 'gl', 'asset', 'ui', 'mobile', 'minimap', 'hud',
       'itemtip', 'inventory', 'stash', 'shop', 'chipshop', 'contracts',
-      'startmenu', 'lobby', 'touch', 'game', 'selftest'
+      'startmenu', 'armory', 'lobby', 'dialogue', 'speech', 'aidebug', 'touch', 'game', 'selftest'
     ];
     var v = window.__build + '.' + Date.now();
     for (var i = 0; i < files.length; i++) {

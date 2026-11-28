@@ -708,7 +708,7 @@ const R = (function () {
     ensureTargets(W, H);
   }
 
-  function setCamera(eye, target, fovDeg) {
+  function setCamera(eye, target, fovDeg, shiftX) {
     camPos = [eye[0], eye[1], eye[2]];
     let fx = target[0] - eye[0], fy = target[1] - eye[1], fz = target[2] - eye[2];
     let fl = Math.hypot(fx, fy, fz) || 1;
@@ -725,6 +725,8 @@ const R = (function () {
     camTan = Math.tan(fovDeg * Math.PI / 360);
     camAspect = W / H;
     const proj = persp(mat4(), fovDeg, W / H, NEAR, FAR);
+    /* 离轴投影：整体平移画面，主体可偏离画面中心而保持正面平行 */
+    proj[8] = -(shiftX || 0);
     lookAt(viewMat, eye, target, [0, 1, 0]);
     mul(vpMat, proj, viewMat);
   }

@@ -42,6 +42,16 @@ const Lobby = (function () {
   let mapPickTouched = false;
   let msgTimer = 0;
   let chipDrag = null, chipGhost = null, chipDragMovedAt = 0;
+  let deviceKind = '';
+
+  const DEVICES = {
+    armory: { title: '军械库', kicker: '// ARMORY', tab: 'armory' },
+    printer: { title: '躯体打印机', kicker: '// BODY PRINTER', tab: 'shop', cls: 'device-printer' },
+    storage: { title: '仓库', kicker: '// STORAGE', tab: 'stash' },
+    fabricator: { title: '制造台', kicker: '// FABRICATOR', tab: 'craft' },
+    comms: { title: '联络台', kicker: '// COMMS', tab: 'contracts' },
+    teleporter: { title: '传送台', kicker: '// TELEPORTER', tab: 'home', cls: 'device-teleporter' }
+  };
 
   function init() {
     el.root = UI.$('lobby');
@@ -70,9 +80,26 @@ const Lobby = (function () {
     el.mapPick = UI.$('lobbyMapPick');
     el.mapCount = UI.$('lobbyMapCount');
     el.mapHint = UI.$('lobbyMapHint');
+    el.deviceBar = UI.$('deviceBar');
+    el.deviceTitle = UI.$('deviceTitle');
+    el.deviceKicker = UI.$('deviceKicker');
+    el.deviceSubtabs = UI.$('deviceSubtabs');
+    el.deviceClose = UI.$('deviceClose');
+    el.deviceBank = UI.$('deviceBank');
+    el.teleBriefType = UI.$('teleBriefType');
+    el.teleBriefMap = UI.$('teleBriefMap');
+    el.teleBriefFacts = UI.$('teleBriefFacts');
+    el.tmChar = UI.$('tmChar');
+    el.tmWeapon1 = UI.$('tmWeapon1');
+    el.tmWeapon2 = UI.$('tmWeapon2');
+    el.tmGadgets = UI.$('tmGadgets');
+    el.tmAmmo = UI.$('tmAmmo');
+    el.tmMap = UI.$('tmMap');
+    el.tmCost = UI.$('tmCost');
+    el.tmFoot = UI.$('tmFoot');
+    el.tmState = UI.$('teleManifestState');
 
-    el.root.classList.remove('hidden');
-
+    /* 旧机库界面不再作为启动入口；等装置交互时再显示 */
     reloadFromSave();
     buildTabs();
     buildChars();
@@ -80,6 +107,9 @@ const Lobby = (function () {
     refreshMapPick();
     refreshBank();
     refresh();
+    window.addEventListener('resize', function () {
+      if (deviceKind === 'teleporter') refreshTeleporterBrief();
+    });
   }
 
   /* ---------------- 结构 ---------------- */
@@ -132,6 +162,7 @@ const Lobby = (function () {
         mapPickTouched = true;
         if (typeof MAPSTORE !== 'undefined') MAPSTORE.setPicked(el.mapPick.value === 'random' ? '' : el.mapPick.value);
         updateMapHint();
+        refreshTeleporterBrief();
       });
     }
     window.addEventListener('storage', function (e) {
@@ -150,8 +181,18 @@ const Lobby = (function () {
     window.addEventListener('pointermove', onChipDragMove, { passive: false });
     window.addEventListener('pointerup', onChipDragUp);
     window.addEventListener('pointercancel', onChipDragUp);
+    if (el.deviceClose) {
+      el.deviceClose.addEventListener('click', function () {
+        if (typeof G !== 'undefined' && G.closeDevicePanel) G.closeDevicePanel();
+      });
+    }
     window.addEventListener('keydown', function (e) {
       if (el.root.classList.contains('hidden')) return;
+      if (el.root.classList.contains('device-mode')) {
+        /* 装置界面里不响应机库的 Enter 出击；ESC 由大厅统一处理 */
+        if (e.code === 'Enter') e.preventDefault();
+        return;
+      }
       if (e.code === 'Enter') { e.preventDefault(); launch(); }
       if (e.code === 'Escape' && tab !== 'home') setTab('home');
     });
@@ -181,6 +222,287 @@ const Lobby = (function () {
     if (exists) MAPSTORE.setPicked(wanted);
     if (el.mapCount) el.mapCount.textContent = maps.length + ' 张自定义';
     updateMapHint();
+    refreshTeleporterBrief();
+  }
+
+  function refreshTeleporterBrief() {
+    if (!el.teleBriefMap) return;
+    const customId = el.mapPick ? el.mapPick.value : 'random';
+    const isRandom = !customId || customId === 'random';
+    const map = (!isRandom && typeof MAPSTORE !== 'undefined') ? MAPSTORE.get(customId) : null;
+    if (el.teleBriefType) {
+      el.teleBriefType.textContent = map ? (map.name + ' · 自定义') : '程序化随机设施';
+    }
+    drawBriefMap(map, isRandom);
+    if (!el.teleBriefFacts) return;
+    const houses = map && map.houses ? map.houses.length : 0;
+    const enemies = map && map.enemies ? map.enemies.length : 0;
+    const loot = map ? ((map.chests ? map.chests.length : 0) + (map.loot ? map.loot.length : 0)) : 0;
+    const extracts = map && map.extractions ? map.extractions.length : 0;
+    const rows = [
+      ['类型', map ? '自定义地图' : '随机设施'],
+      ['尺寸', map ? (map.cols + ' × ' + map.rows + ' 格') : '44 × 44 格'],
+      ['房屋', map ? houses + ' 栋' : '自动生成'],
+      ['敌人刷新', map ? enemies + ' 组' : '动态'],
+      ['物资点', map ? loot + ' 处' : '动态'],
+      ['撤离点', map ? extracts + ' 个' : '1 个']
+    ];
+    el.teleBriefFacts.innerHTML = rows.map(function (r) {
+      return '<span>' + r[0] + '</span><b>' + UI.esc(r[1]) + '</b>';
+    }).join('');
+  }
+
+  /* 行动简报地图：按容器尺寸绘制，随机设施用房间式平面图 */
+  let briefSeed = 0;
+
+  function briefRng(seed) {
+    let s = (seed >>> 0) || 0x9e3779b9;
+    return function () {
+      s ^= s << 13; s >>>= 0;
+      s ^= s >> 17; s >>>= 0;
+      s ^= s << 5; s >>>= 0;
+      return s / 4294967296;
+    };
+  }
+
+  function briefPlan(cols, rows, seed) {
+    const cells = new Uint8Array(cols * rows);
+    const rnd = briefRng(seed);
+    function fill(x, z, w, h) {
+      for (let zz = z; zz < z + h; zz++) {
+        for (let xx = x; xx < x + w; xx++) {
+          if (xx >= 0 && zz >= 0 && xx < cols && zz < rows) cells[zz * cols + xx] = 1;
+        }
+      }
+    }
+    function split(x, z, w, h, depth) {
+      const minW = 9;
+      if (depth <= 0 || (w < minW * 2 && h < minW * 2)) {
+        if (w >= 5 && h >= 5) fill(x + 1, z + 1, w - 2, h - 2);
+        return;
+      }
+      if (w >= h) {
+        const cut = minW + Math.floor(rnd() * Math.max(1, w - minW * 2));
+        split(x, z, cut, h, depth - 1);
+        split(x + cut + 2, z, w - cut - 2, h, depth - 1);
+        const dz = z + 2 + Math.floor(rnd() * Math.max(1, h - 4));
+        fill(x + cut, dz, 2, 2);
+      } else {
+        const cut = minW + Math.floor(rnd() * Math.max(1, h - minW * 2));
+        split(x, z, w, cut, depth - 1);
+        split(x, z + cut + 2, w, h - cut - 2, depth - 1);
+        const dx = x + 2 + Math.floor(rnd() * Math.max(1, w - 4));
+        fill(dx, z + cut, 2, 2);
+      }
+    }
+    split(2, 2, cols - 4, rows - 4, 4);
+    return cells;
+  }
+
+  function drawBriefMap(map, isRandom) {
+    const box = el.teleBriefMap;
+    if (!box) return;
+    const rect = box.getBoundingClientRect();
+    const w = Math.round(rect.width);
+    const h = Math.round(rect.height);
+    if (w < 24 || h < 24) {
+      if (!box.dataset.retry) {
+        box.dataset.retry = '1';
+        requestAnimationFrame(function () {
+          delete box.dataset.retry;
+          drawBriefMap(map, isRandom);
+        });
+      }
+      return;
+    }
+    if (!briefSeed) briefSeed = (Date.now() ^ 0x2f6b1a3d) >>> 0;
+
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const cv = document.createElement('canvas');
+    cv.width = Math.round(w * dpr);
+    cv.height = Math.round(h * dpr);
+    const g = cv.getContext('2d');
+    if (!g) return;
+    g.scale(dpr, dpr);
+
+    const cols = map ? map.cols : 44;
+    const rows = map ? map.rows : 44;
+    const pad = 18;
+    const s = Math.max(1, Math.min((w - pad * 2) / cols, (h - pad * 2) / rows));
+    const ox = (w - cols * s) * 0.5;
+    const oy = (h - rows * s) * 0.5;
+
+    /* 底图 + 网格 */
+    g.fillStyle = '#050a0c';
+    g.fillRect(0, 0, w, h);
+    g.strokeStyle = 'rgba(111, 216, 239, .06)';
+    g.lineWidth = 1;
+    for (let gx = (w % 26) * 0.5; gx < w; gx += 26) {
+      g.beginPath(); g.moveTo(Math.round(gx) + .5, 0); g.lineTo(Math.round(gx) + .5, h); g.stroke();
+    }
+    for (let gy = (h % 26) * 0.5; gy < h; gy += 26) {
+      g.beginPath(); g.moveTo(0, Math.round(gy) + .5); g.lineTo(w, Math.round(gy) + .5); g.stroke();
+    }
+
+    /* 可行走区域 */
+    let cells;
+    if (map && map.floor) {
+      cells = new Uint8Array(cols * rows);
+      for (let z = 0; z < rows; z++) {
+        const line = String(map.floor[z] || '');
+        for (let x = 0; x < cols; x++) cells[z * cols + x] = line.charAt(x) === '0' ? 0 : 1;
+      }
+    } else {
+      cells = briefPlan(cols, rows, briefSeed);
+    }
+    for (let z = 0; z < rows; z++) {
+      for (let x = 0; x < cols; x++) {
+        if (!cells[z * cols + x]) continue;
+        g.fillStyle = ((x * 7 + z * 13) % 11 < 3) ? 'rgba(33, 51, 59, .95)' : 'rgba(22, 35, 42, .95)';
+        g.fillRect(ox + x * s, oy + z * s, Math.max(1, s - .35), Math.max(1, s - .35));
+      }
+    }
+    /* 房间墙体 */
+    g.strokeStyle = 'rgba(126, 168, 184, .34)';
+    g.lineWidth = 1;
+    g.beginPath();
+    for (let z = 0; z < rows; z++) {
+      for (let x = 0; x < cols; x++) {
+        if (!cells[z * cols + x]) continue;
+        const px = ox + x * s, pz = oy + z * s;
+        if (x === 0 || !cells[z * cols + x - 1]) { g.moveTo(px + .5, pz); g.lineTo(px + .5, pz + s); }
+        if (x === cols - 1 || !cells[z * cols + x + 1]) { g.moveTo(px + s - .5, pz); g.lineTo(px + s - .5, pz + s); }
+        if (z === 0 || !cells[(z - 1) * cols + x]) { g.moveTo(px, pz + .5); g.lineTo(px + s, pz + .5); }
+        if (z === rows - 1 || !cells[(z + 1) * cols + x]) { g.moveTo(px, pz + s - .5); g.lineTo(px + s, pz + s - .5); }
+      }
+    }
+    g.stroke();
+
+    function center(cx, cz) {
+      return { x: ox + (cx + 0.5) * s, y: oy + (cz + 0.5) * s };
+    }
+    function nearestWalk(cx, cz) {
+      cx = Math.round(cx); cz = Math.round(cz);
+      const lim = Math.max(cols, rows);
+      for (let r = 0; r < lim; r++) {
+        for (let dz = -r; dz <= r; dz++) {
+          for (let dx = -r; dx <= r; dx++) {
+            if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
+            const x = cx + dx, z = cz + dz;
+            if (x >= 0 && z >= 0 && x < cols && z < rows && cells[z * cols + x]) return { x: x, z: z };
+          }
+        }
+      }
+      return { x: cx, z: cz };
+    }
+
+    const spawnSrc = (map && map.playerSpawns && map.playerSpawns[0]) || nearestWalk(5, rows * 0.5);
+    const sp = center(spawnSrc.x, spawnSrc.z);
+    const scan = g.createRadialGradient(sp.x, sp.y, 4, sp.x, sp.y, Math.max(w, h) * 0.62);
+    scan.addColorStop(0, 'rgba(111, 216, 239, .16)');
+    scan.addColorStop(0.45, 'rgba(111, 216, 239, .05)');
+    scan.addColorStop(1, 'rgba(111, 216, 239, 0)');
+    g.fillStyle = scan;
+    g.fillRect(0, 0, w, h);
+
+    /* 撤离点 */
+    const exSrc = (map && map.extractions && map.extractions[0]) || nearestWalk(cols - 6, rows * 0.5);
+    const ep = center(exSrc.x, exSrc.z);
+    g.strokeStyle = 'rgba(111, 216, 239, .9)';
+    g.lineWidth = 1.4;
+    g.beginPath(); g.arc(ep.x, ep.y, Math.max(5, s * 0.85), 0, Math.PI * 2); g.stroke();
+    g.globalAlpha = 0.38;
+    g.beginPath(); g.arc(ep.x, ep.y, Math.max(9, s * 1.55), 0, Math.PI * 2); g.stroke();
+    g.globalAlpha = 1;
+    g.beginPath();
+    g.moveTo(ep.x - Math.max(8, s * 1.3), ep.y); g.lineTo(ep.x + Math.max(8, s * 1.3), ep.y);
+    g.moveTo(ep.x, ep.y - Math.max(8, s * 1.3)); g.lineTo(ep.x, ep.y + Math.max(8, s * 1.3));
+    g.stroke();
+
+    /* 物资点 */
+    const loot = [];
+    if (map && map.chests && map.chests.length) {
+      for (let i = 0; i < Math.min(8, map.chests.length); i++) loot.push(map.chests[i]);
+    } else {
+      const rnd = briefRng(briefSeed ^ 0x51f15e);
+      for (let i = 0; i < 5; i++) loot.push(nearestWalk(4 + rnd() * (cols - 8), 4 + rnd() * (rows - 8)));
+    }
+    g.fillStyle = 'rgba(240, 176, 76, .85)';
+    loot.forEach(function (l) {
+      const p = center(l.x || 0, l.z || 0);
+      g.fillRect(p.x - 1.6, p.y - 1.6, 3.2, 3.2);
+    });
+
+    /* 入场点 */
+    g.fillStyle = '#f0b04c';
+    g.beginPath();
+    g.moveTo(sp.x, sp.y - 5);
+    g.lineTo(sp.x + 4.2, sp.y + 3.2);
+    g.lineTo(sp.x - 4.2, sp.y + 3.2);
+    g.closePath();
+    g.fill();
+
+    /* 取景框 + 角标 */
+    const bx = ox - 8, by = oy - 8, bw = cols * s + 16, bh = rows * s + 16;
+    g.strokeStyle = 'rgba(111, 216, 239, .18)';
+    g.lineWidth = 1;
+    g.strokeRect(bx + .5, by + .5, bw, bh);
+    const arm = Math.min(24, bw * 0.14, bh * 0.14);
+    g.strokeStyle = 'rgba(111, 216, 239, .55)';
+    g.lineWidth = 1.6;
+    g.beginPath();
+    g.moveTo(bx, by + arm); g.lineTo(bx, by); g.lineTo(bx + arm, by);
+    g.moveTo(bx + bw - arm, by); g.lineTo(bx + bw, by); g.lineTo(bx + bw, by + arm);
+    g.moveTo(bx + bw, by + bh - arm); g.lineTo(bx + bw, by + bh); g.lineTo(bx + bw - arm, by + bh);
+    g.moveTo(bx + arm, by + bh); g.lineTo(bx, by + bh); g.lineTo(bx, by + bh - arm);
+    g.stroke();
+
+    /* 两侧留白时补上图例与扫描信息 */
+    const squareW = cols * s;
+    if ((w - squareW) * 0.5 > 64) {
+      g.font = '8px ui-monospace, SFMono-Regular, Consolas, monospace';
+      const lx = 14, ly = oy + 12;
+      g.fillStyle = 'rgba(111, 216, 239, .5)';
+      g.fillText('LEGEND', lx, ly);
+      const legend = [
+        ['#f0b04c', 'IN  入场点'],
+        ['#6fd8ef', 'EX  撤离点'],
+        ['#f0b04c', 'LT  物资点'],
+        ['#7ea8b8', 'FL  可行走']
+      ];
+      for (let i = 0; i < legend.length; i++) {
+        const yy = ly + 18 + i * 19;
+        g.fillStyle = legend[i][0];
+        g.fillRect(lx + 1, yy - 5, 4, 4);
+        g.fillStyle = 'rgba(214, 226, 231, .7)';
+        g.fillText(legend[i][1], lx + 11, yy);
+      }
+      const rx = w - 14;
+      g.textAlign = 'right';
+      g.fillStyle = 'rgba(111, 216, 239, .5)';
+      g.fillText('SCAN', rx, ly);
+      g.fillStyle = 'rgba(214, 226, 231, .7)';
+      g.fillText(map ? 'CUSTOM' : 'PROCEDURAL', rx, ly + 18);
+      g.fillStyle = 'rgba(111, 216, 239, .5)';
+      g.fillText('SEED', rx, ly + 42);
+      g.fillStyle = 'rgba(214, 226, 231, .7)';
+      g.fillText(String(briefSeed % 1000000), rx, ly + 60);
+      g.textAlign = 'left';
+    }
+
+    g.font = '8px ui-monospace, SFMono-Regular, Consolas, monospace';
+    g.fillStyle = 'rgba(111, 216, 239, .66)';
+    g.fillText('TAC-MAP // ' + cols + '×' + rows, 10, 14);
+    g.textAlign = 'right';
+    g.fillText(map ? 'CUSTOM SCAN' : 'PROCEDURAL SCAN', w - 10, 14);
+    g.textAlign = 'left';
+    g.fillStyle = 'rgba(240, 176, 76, .75)';
+    g.fillText('IN', sp.x + 7, sp.y + 3);
+    g.fillStyle = 'rgba(111, 216, 239, .85)';
+    g.fillText('EXFIL', ep.x + 9, ep.y + 3);
+
+    box.innerHTML = '';
+    box.appendChild(cv);
   }
 
   function updateMapHint() {
@@ -219,6 +541,8 @@ const Lobby = (function () {
     if (name === 'shop') Shop.refresh();
     if (name === 'contracts') Contracts.refresh();
     if (name === 'archive') renderArchive();
+    if (name === 'armory' && typeof Armory !== 'undefined') Armory.refresh();
+    refreshDeviceSubtabs();
     refresh();
   }
 
@@ -270,7 +594,63 @@ const Lobby = (function () {
     if (tab === 'craft') ChipShop.refresh();
     if (tab === 'shop') Shop.refresh();
     if (tab === 'contracts') Contracts.refresh();
+    if (tab === 'armory' && typeof Armory !== 'undefined') Armory.refresh();
     refresh();
+  }
+
+  /* ---------------- 装置终端 ---------------- */
+  function openDevice(kind) {
+    const def = DEVICES[kind];
+    if (!def) return;
+    deviceKind = kind;
+    el.root.classList.remove('hidden');
+    el.root.classList.add('device-mode');
+    el.root.classList.remove('device-teleporter', 'device-printer');
+    if (def.cls) el.root.classList.add(def.cls);
+    if (el.deviceBar) el.deviceBar.classList.remove('hidden');
+    if (el.deviceTitle) el.deviceTitle.textContent = def.title;
+    if (el.deviceKicker) el.deviceKicker.textContent = def.kicker;
+    if (el.deviceSubtabs) {
+      el.deviceSubtabs.innerHTML = '';
+      if (kind === 'comms') {
+        [['contracts', '合约'], ['archive', '档案']].forEach(function (pair) {
+          const b = UI.el('button', 'device-subtab', pair[1]);
+          b.type = 'button';
+          b.dataset.deviceTab = pair[0];
+          b.addEventListener('click', function () { setTab(pair[0]); });
+          el.deviceSubtabs.appendChild(b);
+        });
+      }
+    }
+    setTab(def.tab);
+    if (kind === 'teleporter') {
+      refreshMapPick();
+      refreshTeleporterBrief();
+      refresh();
+    }
+    if (kind === 'printer' && typeof Shop !== 'undefined') Shop.refresh();
+    if (kind === 'storage' && typeof Stash !== 'undefined') Stash.refresh();
+    if (kind === 'fabricator' && typeof ChipShop !== 'undefined') ChipShop.refresh();
+    if (kind === 'comms' && typeof Contracts !== 'undefined') Contracts.refresh();
+    if (kind === 'armory' && typeof Armory !== 'undefined') Armory.refresh();
+    refreshDeviceSubtabs();
+  }
+
+  function closeDevice() {
+    deviceKind = '';
+    if (!el.root) return;
+    el.root.classList.add('hidden');
+    el.root.classList.remove('device-mode', 'device-teleporter', 'device-printer', 'pane-mode');
+    if (el.deviceBar) el.deviceBar.classList.add('hidden');
+    if (el.deviceSubtabs) el.deviceSubtabs.innerHTML = '';
+  }
+
+  function refreshDeviceSubtabs() {
+    if (!el.deviceSubtabs || deviceKind !== 'comms') return;
+    const buttons = el.deviceSubtabs.querySelectorAll('[data-device-tab]');
+    for (let i = 0; i < buttons.length; i++) {
+      buttons[i].classList.toggle('on', buttons[i].dataset.deviceTab === tab);
+    }
   }
 
   /* ---------------- 渲染 ---------------- */
@@ -282,6 +662,7 @@ const Lobby = (function () {
     const count = list.filter(Boolean).length;
 
     el.bank.textContent = UI.fmt(bank);
+    if (el.deviceBank) el.deviceBank.textContent = UI.fmt(bank);
     el.best.textContent = UI.fmt(Store.best());
     el.pick.textContent = count + ' / 2';
     el.charName.textContent = CHARS[character] ? CHARS[character].name : '潜行者';
@@ -318,6 +699,44 @@ const Lobby = (function () {
     else if (count > 0 && list.every(function (it, k) { return !it || !(mags[k] || 0); })) warn = '未配给弹夹：进局后需用数据压装';
     else if (carry === 0) warn = '未携带数据：局内需先搜刮分解';
     el.warn.textContent = warn;
+
+    renderManifest(list, cost, warn);
+  }
+
+  function renderManifest(list, cost, warn) {
+    if (!el.tmChar) return;
+    const ch = CHARS[character] || CHARS[0];
+    const w1 = list[0] ? WEAPONS[list[0].weaponId] : null;
+    const w2 = list[1] ? WEAPONS[list[1].weaponId] : null;
+    const gset = Store.loadout().gadgets || [];
+    const gadgets = [];
+    for (let i = 0; i < gset.length; i++) {
+      const gd = gset[i] ? GADGET_BY_ID[gset[i]] : null;
+      if (gd) gadgets.push(gd.name);
+    }
+    let mapName = '随机设施';
+    const picked = el.mapPick ? el.mapPick.value : 'random';
+    if (picked && picked !== 'random' && typeof MAPSTORE !== 'undefined') {
+      const m = MAPSTORE.get(picked);
+      if (m) mapName = m.name;
+    }
+    const ammo = (mags[0] || 0) + (mags[1] || 0);
+
+    el.tmChar.textContent = ch.name;
+    el.tmWeapon1.textContent = w1 ? w1.name : '未配置';
+    el.tmWeapon2.textContent = w2 ? w2.name : '未配置';
+    el.tmGadgets.textContent = gadgets.length ? gadgets.join(' / ') : '未配置';
+    el.tmAmmo.textContent = ammo + ' 匣';
+    el.tmMap.textContent = mapName;
+    el.tmCost.textContent = UI.fmt(cost) + ' NB';
+    if (el.tmWeapon1) el.tmWeapon1.classList.toggle('tm-missing', !w1);
+    if (el.tmWeapon2) el.tmWeapon2.classList.toggle('tm-missing', !w2);
+    if (el.tmGadgets) el.tmGadgets.classList.toggle('tm-missing', !gadgets.length);
+    if (el.tmState) {
+      el.tmState.textContent = warn ? '需调整' : '就绪';
+      el.tmState.classList.toggle('bad', !!warn);
+    }
+    if (el.tmFoot) el.tmFoot.textContent = warn || '确认配置后即可传送到设施入口';
   }
 
   function renderLoadout(list) {
@@ -698,7 +1117,8 @@ const Lobby = (function () {
 
   /* ---------------- 出击 ---------------- */
   function launch() {
-    if (G.mode !== 'lobby') return;
+    if (G.mode !== 'lobby' && G.mode !== 'hall') return;
+    if (G.mode === 'hall' && deviceKind !== 'teleporter') return;
     if (tab !== 'home') { setTab('home'); return; }
     const cost = totalCost();
     if (cost > Store.bank()) { msg('数据不足，无法配给'); return; }
@@ -870,6 +1290,9 @@ const Lobby = (function () {
   return {
     init: init, show: show, hide: hide, refresh: refresh, refreshBank: refreshBank,
     setTab: setTab, launch: launch, reloadFromSave: reloadFromSave,
+    openDevice: openDevice, closeDevice: closeDevice,
+    isDeviceOpen: function () { return !!deviceKind; },
+    get device() { return deviceKind; },
     get picked() {
       return Store.loadout().weapons.map(function (it) { return it ? it.weaponId : -1; });
     }

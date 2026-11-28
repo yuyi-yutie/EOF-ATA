@@ -646,7 +646,7 @@
       ['paneStash', 'paneCraft', 'paneShop', 'paneContracts', 'paneArchive'].forEach(function (id) {
         check('pane ' + id, !!document.getElementById(id));
       });
-      check('lobby visible', !document.getElementById('lobby').classList.contains('hidden'));
+      check('lobby starts hidden', document.getElementById('lobby').classList.contains('hidden'));
       eq('char cards', document.querySelectorAll('#lobbyChars .char-card').length, 12);
       check('tactical unit exists', !!MODELS.UNITS.tactical);
       check('scav units exist', !!MODELS.UNITS.scav && !!MODELS.UNITS.raider && !!MODELS.UNITS.veteran);
@@ -922,7 +922,7 @@
       check('end title', document.getElementById('endTitle').textContent.indexOf('撤离') >= 0,
         document.getElementById('endTitle').textContent);
       document.getElementById('againBtn').click();
-      eq('again button returns', G.mode, 'lobby');
+      eq('again button returns to hall', G.mode, 'hall');
 
       /* ---------- 9. 阵亡丢失 ---------- */
       const bankDeath = Store.bank();
@@ -936,7 +936,7 @@
       eq('gadgets persist on death', Store.loadout().gadgets.join(','), gadgetsDeath);
       eq('stats deaths', Store.stats().deaths, 1);
       document.getElementById('againBtn').click();
-      eq('back to lobby after death', G.mode, 'lobby');
+      eq('back to hall after death', G.mode, 'hall');
 
       /* ---------- 10. 合约 ---------- */
       Contracts.ensure();
@@ -1032,6 +1032,7 @@
       Store.setLoadout({ weapons: Store.loadout().weapons, mags: [1, 0], carry: 100 });
       Lobby.reloadFromSave();
       Lobby.refresh();
+      Lobby.openDevice('teleporter');
       Lobby.setTab('home');
       const bankLaunch = Store.bank();
       document.getElementById('lobbyStart').click();

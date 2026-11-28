@@ -25,7 +25,7 @@ const StartMenu = (function () {
     if (buildEl) buildEl.textContent = window.__build || 'dev';
 
     root.addEventListener('click', function () {
-      start('game');
+      start('hall');
     });
     buttons = Array.prototype.slice.call(root.querySelectorAll('[data-start-choice]'));
     button = buttons[0] || null;
@@ -49,7 +49,7 @@ const StartMenu = (function () {
       const active = document.activeElement;
       const choice = (active && root.contains(active) && active.getAttribute)
         ? active.getAttribute('data-start-choice') : null;
-      start(choice || 'game');
+      start(choice || 'hall');
       return;
     }
     if (e.code === 'Tab') {
@@ -73,9 +73,9 @@ const StartMenu = (function () {
       QS.get('demo') === '1';
   }
 
-  function show() {
+  function show(force) {
     if (!root) return;
-    if (shouldSkip()) {
+    if (!force && shouldSkip()) {
       root.classList.add('hidden');
       return;
     }
@@ -96,7 +96,7 @@ const StartMenu = (function () {
 
   function start(choice) {
     if (!open || closing) return;
-    choice = choice || 'game';
+    choice = choice || 'hall';
     open = false;
     closing = true;
     root.classList.add('closing');

@@ -48,10 +48,23 @@ const Hall = (function () {
 
   function add(geo, d, lx, ly, lz, sx, sy, sz, color, opt) {
     opt = opt || {};
-    const p = localToWorld(d, lx, lz);
+    const kx = d.kx || 1, ky = d.ky || kx, kz = d.kz || kx;
+    if (d._b) {
+      /* 测量阶段：记录模型在设备局部坐标里的包围盒（含额外 yaw） */
+      const rot = opt.yaw || 0;
+      const c = Math.abs(Math.cos(rot)), s = Math.abs(Math.sin(rot));
+      const hx = (sx * c + sz * s) * 0.5;
+      const hz = (sx * s + sz * c) * 0.5;
+      d._b.minX = Math.min(d._b.minX, lx - hx);
+      d._b.maxX = Math.max(d._b.maxX, lx + hx);
+      d._b.minZ = Math.min(d._b.minZ, lz - hz);
+      d._b.maxZ = Math.max(d._b.maxZ, lz + hz);
+      d._b.maxY = Math.max(d._b.maxY, ly + sy * 0.5);
+    }
+    const p = localToWorld(d, lx * kx, lz * kz);
     geo.box({
-      x: p.x, y: ly, z: p.z,
-      sx: sx, sy: sy, sz: sz,
+      x: p.x, y: ly * ky, z: p.z,
+      sx: sx * kx, sy: sy * ky, sz: sz * kz,
       yaw: d.yaw + (opt.yaw || 0),
       rotX: opt.rotX || 0,
       color: color,
@@ -59,6 +72,18 @@ const Hall = (function () {
       emis: !!opt.emis,
       shadow: opt.shadow !== false
     });
+  }
+
+  /* 装置地面环：跟随装置统一缩放 */
+  function deviceArc(geo, d, r0, r1, a0, a1, w, color, seg) {
+    const k = d.kx || 1;
+    if (d._b) {
+      d._b.minX = Math.min(d._b.minX, -r1);
+      d._b.maxX = Math.max(d._b.maxX, r1);
+      d._b.minZ = Math.min(d._b.minZ, -r1);
+      d._b.maxZ = Math.max(d._b.maxZ, r1);
+    }
+    geo.arc(d.x, d.z, r0 * k, r1 * k, a0, a1, w * k, color, seg);
   }
 
   function statusLight(geo, d, y, color, k) {
@@ -318,9 +343,7 @@ const Hall = (function () {
   }
 
   function buildTeleporter(geo, d) {
-    geo.arc(d.x, d.z, 0, 1.62, 0, Math.PI * 2, 0.05, [0.115, 0.13, 0.14], 36);
-    geo.arc(d.x, d.z, 1.40, 1.62, 0, Math.PI * 2, 0.06, C.iceDim, 36);
-    geo.arc(d.x, d.z, 1.20, 1.30, 0, Math.PI * 2, 0.062, [0.10, 0.14, 0.16], 36);
+    teleporterRings(geo, d);
 
     for (let sx = -1; sx <= 1; sx += 2) {
       for (let sz = -1; sz <= 1; sz += 2) {
@@ -343,14 +366,40 @@ const Hall = (function () {
     add(geo, d, 0, 0.10, -0.98, 0.42, 0.07, 0.42, C.amberDim, { outline: 0, emis: true });
   }
 
+  /* 传送台地面环（静态部分）：Blender 资产只包含框架，地面环继续程序化绘制 */
+  function teleporterRings(geo, d) {
+    deviceArc(geo, d, 0, 1.62, 0, Math.PI * 2, 0.05, [0.115, 0.13, 0.14], 36);
+    deviceArc(geo, d, 1.40, 1.62, 0, Math.PI * 2, 0.06, C.iceDim, 36);
+    deviceArc(geo, d, 1.20, 1.30, 0, Math.PI * 2, 0.062, [0.10, 0.14, 0.16], 36);
+  }
+
+  /* Blender 装置资产（未加载完成时返回 null，回退到程序化建模） */
+  function deviceMesh(id) {
+    if (typeof ASSETS === 'undefined' || !ASSETS.devices) return null;
+    if (!ASSETS.devices.ready) return null;
+    return ASSETS.devices.list[id] || null;
+  }
+
   const DEVICE_DEFS = [
     { id: 'armory', name: '军械库', angle: -Math.PI * 0.5, color: C.amber, build: buildArmory, collider: 1.38, range: 2.65 },
-    { id: 'printer', name: '打印机', angle: -Math.PI / 6, color: C.ice, build: buildPrinter, collider: 1.18, range: 2.55 },
+    { id: 'printer', name: '躯体打印机', angle: -Math.PI / 6, color: C.ice, build: buildPrinter, collider: 1.18, range: 2.55 },
     { id: 'storage', name: '仓库', angle: Math.PI / 6, color: C.amber, build: buildStorage, collider: 1.45, range: 2.75 },
     { id: 'fabricator', name: '制造台', angle: Math.PI * 0.5, color: [0.95, 0.48, 0.24], build: buildFabricator, collider: 1.28, range: 2.65 },
     { id: 'comms', name: '联络台', angle: Math.PI * 5 / 6, color: C.ice, build: buildComms, collider: 1.18, range: 2.60 },
     { id: 'teleporter', name: '传送台', angle: Math.PI * 7 / 6, color: C.ice, build: buildTeleporter, collider: 0, range: 2.85 }
   ];
+
+  /* 统一装置尺寸：先测出每个装置的包围盒，再缩放到同一档位 */
+  const DEVICE_TARGET_W = 3.05;
+  const DEVICE_TARGET_H = 2.75;
+
+  function measureDevice(src) {
+    const box = { minX: 0, maxX: 0, minZ: 0, maxZ: 0, maxY: 0 };
+    const stub = { box: function () {}, arc: function () {} };
+    const tmp = { x: 0, z: 0, yaw: 0, _b: box };
+    src.build(stub, tmp);
+    return box;
+  }
 
   function initDevices() {
     deviceList = [];
@@ -359,6 +408,11 @@ const Hall = (function () {
       const src = DEVICE_DEFS[i];
       const x = Math.cos(src.angle) * DEVICE_R;
       const z = Math.sin(src.angle) * DEVICE_R;
+      const b = measureDevice(src);
+      const w = Math.max(0.2, b.maxX - b.minX);
+      const h = Math.max(0.2, b.maxY);
+      const kx = clamp(DEVICE_TARGET_W / w, 0.7, 1.25);
+      const ky = clamp(DEVICE_TARGET_H / h, kx * 0.82, kx * 1.18);
       const d = {
         id: src.id,
         name: src.name,
@@ -367,7 +421,12 @@ const Hall = (function () {
         yaw: Math.atan2(-x, -z),
         color: src.color,
         build: src.build,
-        collider: src.collider,
+        kx: kx, ky: ky, kz: kx,
+        width: w * kx,
+        height: h * ky,
+        depth: (b.maxZ - b.minZ) * kx,
+        frontZ: b.maxZ * kx,
+        collider: src.collider * kx,
         range: src.range
       };
       deviceList.push(d);
@@ -379,7 +438,24 @@ const Hall = (function () {
     initDevices();
     buildRoom(geo);
     for (let i = 0; i < deviceList.length; i++) {
-      deviceList[i].build(geo, deviceList[i]);
+      const d = deviceList[i];
+      const mesh = deviceMesh(d.id);
+      if (mesh) {
+        geo.mesh(mesh, {
+          x: d.x, z: d.z, yaw: d.yaw,
+          scaleX: d.kx, scaleY: d.ky, scaleZ: d.kz
+        });
+        /* 资产网格不带逐盒阴影，补一个落地投影 */
+        geo.box({
+          x: d.x, y: 0.05, z: d.z,
+          sx: d.width * 0.82, sy: 0.1, sz: d.depth * 0.82,
+          yaw: d.yaw, color: [0, 0, 0], outline: 0,
+          castOnly: true, shadow: true
+        });
+        if (d.id === 'teleporter') teleporterRings(geo, d);
+      } else {
+        d.build(geo, d);
+      }
     }
   }
 
@@ -443,7 +519,7 @@ const Hall = (function () {
 
       if (near || flash > 0) {
         const ring = 1.62 + (flash > 0 ? flash * 0.24 : 0);
-        geo.arc(d.x, d.z, ring, ring + 0.12, 0, Math.PI * 2, 0.062,
+        deviceArc(geo, d, ring, ring + 0.12, 0, Math.PI * 2, 0.062,
           flash > 0 ? [0.95, 0.92, 0.78] : d.color, 26);
         const my = 3.12 + Math.sin(t * 3.2) * 0.07;
         add(geo, d, 0, my, 0, 0.17, 0.17, 0.17, d.color, {

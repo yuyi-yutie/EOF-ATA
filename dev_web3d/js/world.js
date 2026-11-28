@@ -24,6 +24,11 @@ const World = (function () {
   let floorPoints = [];
   let houseCellIndex = null;
   let pathWallEdges = null;
+  let pathCornerBlocked = null;
+  /* 2m 网格导航可走表：按标准 AI 半径预先排除木箱 / 设备 / 物资箱附近的格子，
+     A* 不再把“穿箱子”当成可行路线。 */
+  let navWalk = null;
+  const NAV_RADIUS = 0.55;
   /* A* 复用缓冲区：避免每次寻路都分配 4 张全地图 typed array。 */
   let pathCap = 0;
   let pathG = null, pathF = null, pathParent = null, pathClosed = null, pathInOpen = null;
@@ -765,6 +770,74 @@ const World = (function () {
     return pathWallEdges.has(a < b ? a * total + b : b * total + a);
   }
 
+  /* 预计算 A* 可走格：格子中心按标准 AI 半径做一次完整碰撞检测。
+     墙体格子本身仍由 isFloor 排除；木箱 / 油桶 / 物资箱会被这里排除。 */
+  function rebuildNavWalk() {
+    navWalk = new Uint8Array(W * H);
+    for (let cz = 0; cz < H; cz++) {
+      for (let cx = 0; cx < W; cx++) {
+        if (!isFloor(cx, cz)) continue;
+        const c = cellCenter(cx, cz);
+        if (!blocked(c.x, c.z, NAV_RADIUS, true)) navWalk[idx(cx, cz)] = 1;
+      }
+    }
+    /* 预计算斜向边：格子中心连线被墙 / 门框 / 箱子挡住时，A* 不允许斜穿。
+       只算一次，避免每个 A* 节点都做射线检测。 */
+    pathCornerBlocked = new Set();
+    const total = W * H;
+    const diag = [[1, 1], [1, -1], [-1, 1], [-1, -1]];
+    for (let cz = 0; cz < H; cz++) {
+      for (let cx = 0; cx < W; cx++) {
+        if (!navWalk[idx(cx, cz)]) continue;
+        const ca = cellCenter(cx, cz);
+        for (let di = 0; di < diag.length; di++) {
+          const nx = cx + diag[di][0], nz = cz + diag[di][1];
+          if (!inside(nx, nz) || !navWalk[idx(nx, nz)]) continue;
+          const cb = cellCenter(nx, nz);
+          if (!moveLineBlocked(ca.x, ca.z, cb.x, cb.z, NAV_RADIUS)) continue;
+          const a = idx(cx, cz), b = idx(nx, nz);
+          pathCornerBlocked.add(a < b ? a * total + b : b * total + a);
+        }
+      }
+    }
+  }
+
+  function pathCornerIsBlocked(cx, cz, nx, nz) {
+    if (!pathCornerBlocked || !pathCornerBlocked.size) return false;
+    const total = W * H;
+    const a = idx(cx, cz), b = idx(nx, nz);
+    return pathCornerBlocked.has(a < b ? a * total + b : b * total + a);
+  }
+
+  function segmentCircleHit(x0, z0, x1, z1, cx, cz, rr) {
+    const dx = x1 - x0, dz = z1 - z0;
+    const l2 = dx * dx + dz * dz;
+    let t = 0;
+    if (l2 > 1e-9) t = ((cx - x0) * dx + (cz - z0) * dz) / l2;
+    t = t < 0 ? 0 : (t > 1 ? 1 : t);
+    const qx = x0 + dx * t, qz = z0 + dz * t;
+    const sx = cx - qx, sz = cz - qz;
+    return sx * sx + sz * sz < rr * rr;
+  }
+
+  /* 移动用直线检测：墙体 / 关闭的门 + 木箱 / 设备 / 物资箱。
+     与 los() 不同，这里把障碍物也当作不可穿越，并考虑单位半径。 */
+  function moveLineBlocked(x0, z0, x1, z1, r) {
+    if (!los(x0, z0, x1, z1)) return true;
+    r = r || 0.45;
+    for (let i = 0; i < props.length; i++) {
+      const p = props[i];
+      const pr = (p.cr || (p.kind === 'crate' ? 0.72 : 0.45)) + r;
+      if (segmentCircleHit(x0, z0, x1, z1, p.x, p.z, pr)) return true;
+    }
+    for (let i = 0; i < chests.length; i++) {
+      const c = chests[i];
+      if (c.corpse || !(c.cr > 0)) continue;
+      if (segmentCircleHit(x0, z0, x1, z1, c.x, c.z, c.cr + r)) return true;
+    }
+    return false;
+  }
+
   function houseSegmentBlocked(x0, z0, x1, z1, includeDoor) {
     if (!houses.length) return false;
     const dx = x1 - x0, dz = z1 - z0;
@@ -1264,7 +1337,7 @@ const World = (function () {
     floor = new Uint8Array(W * H);
     rooms = []; props = []; loot = [];
     respawn = null; test = null;
-    chests = []; houses = []; houseCellIndex = null; pathWallEdges = null;
+    chests = []; houses = []; houseCellIndex = null; pathWallEdges = null; navWalk = null; pathCornerBlocked = null;
     pads = []; enemySpawns = []; customMap = false;
     spawnYaw = 0; floorPoints = []; mapId = ''; mapName = '';
 
@@ -1447,6 +1520,7 @@ const World = (function () {
       chests.push(makeWeaponCrate(c.x, c.z, Math.atan2(spawn.x - c.x, spawn.z - c.z), rnd));
       weaponCrates++;
     }
+    rebuildNavWalk();
     return api;
   }
 
@@ -1463,7 +1537,7 @@ const World = (function () {
     W = 24; H = 24;
     floor = new Uint8Array(W * H);
     rooms = [{ x: 1, z: 1, w: W - 2, h: H - 2, cx: W >> 1, cz: H >> 1 }];
-    props = []; loot = []; respawn = null; test = null; chests = []; houses = []; houseCellIndex = null; pathWallEdges = null;
+    props = []; loot = []; respawn = null; test = null; chests = []; houses = []; houseCellIndex = null; pathWallEdges = null; navWalk = null; pathCornerBlocked = null;
     pads = []; enemySpawns = []; customMap = false;
     spawnYaw = 0; floorPoints = []; mapId = ''; mapName = '';
 
@@ -1591,6 +1665,7 @@ const World = (function () {
 
     test = { respawn: respawn, spawns: spawns, extractHold: 2.0, loadout: loadoutPad };
     rebuildPathWallEdges();
+    rebuildNavWalk();
     return api;
   }
 
@@ -1605,7 +1680,7 @@ const World = (function () {
     W = Math.max(8, map.cols | 0);
     H = Math.max(8, map.rows | 0);
     floor = new Uint8Array(W * H);
-    rooms = []; props = []; loot = []; chests = []; houses = []; houseCellIndex = null; pathWallEdges = null;
+    rooms = []; props = []; loot = []; chests = []; houses = []; houseCellIndex = null; pathWallEdges = null; navWalk = null; pathCornerBlocked = null;
     pads = []; enemySpawns = []; respawn = null; test = null;
     customMap = true;
     spawnYaw = 0;
@@ -1717,6 +1792,7 @@ const World = (function () {
       });
     });
     rebuildPathWallEdges();
+    rebuildNavWalk();
     return api;
   }
 
@@ -2183,6 +2259,9 @@ const World = (function () {
     };
     const walkable = function (cx, cz) {
       if (!isFloor(cx, cz)) return false;
+      /* 木箱 / 设备 / 物资箱附近的格子不可走；目标格本身允许进入，
+         这样单位可以走到障碍旁再靠最终接近 / 交互判定处理。 */
+      if (navWalk && navWalk[idx(cx, cz)] === 0 && idx(cx, cz) !== goal) return false;
       if (block) {
         const c = cellCenter(cx, cz);
         const h = houseAt(c.x, c.z, 0.01);
@@ -2224,6 +2303,8 @@ const World = (function () {
         if (d[0] && d[1]) {
           if (pathEdgeBlocked(cx, cz, cx + d[0], cz) ||
               pathEdgeBlocked(cx, cz, cx, cz + d[1])) continue;
+          /* 斜线本身也要检查墙体 / 门框，避免从门角斜穿过去 */
+          if (pathCornerIsBlocked(cx, cz, nx, nz)) continue;
         } else if (pathEdgeBlocked(cx, cz, nx, nz)) {
           continue;
         }
@@ -2284,6 +2365,7 @@ const World = (function () {
     worldToCell: worldToCell,
     cellCenter: cellCenter,
     blocked: blocked,
+    moveLineBlocked: moveLineBlocked,
     bulletBlocked: bulletBlocked,
     nearWall: nearWall,
     moveCircle: moveCircle,

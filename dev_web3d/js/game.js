@@ -36,10 +36,14 @@ const G = (function () {
   let hallFlashId = '';
   let hallFlashT = 0;
   let hallToastT = 0;
-  let hallCamSaved = null;
+  let hallPaused = false;
+  let hallDeviceT = null;
+  let missionCamSaved = { dist: CFG.CAM.DIST, fov: CFG.CAM.FOV };
   let hallAtaCanvas = null;
   let hallAtaCtx = null;
   let hallAtaPos = null;
+  let hallAtaPulse = 0;
+  let hallMuteDialogueId = '';
 
   /* 大厅中央 ATA 泛光字：参考 dev_ata 主菜单，按玩家位置实时改变字形 */
   const HALL_ATA_SCALE = (typeof Hall !== 'undefined' ? Hall.CENTER_R : 3.2) / 220;
@@ -60,7 +64,8 @@ const G = (function () {
     eye: [0, 20, 20],
     focus: [0, 0, 0],
     fov: CFG.CAM.FOV,
-    tanHalf: 0
+    tanHalf: 0,
+    shiftX: 0        // 离轴投影横向偏移（NDC）：0 = 居中，负数 = 画面右移 / 主体左移
   };
 
   const player = {
@@ -86,6 +91,7 @@ const G = (function () {
   };
 
   let enemies = [];
+  let nextAiId = 1;
   let enemyAlive = [];    // 每帧复用：只含存活单位，避免目标 / 推挤扫描尸体
   let squads = [];        // 清剿小队编组 / 共享目标
   let aiPathBudget = 0;   // 每帧最多重算几条 A*，避免所有 AI 同帧寻路造成尖峰
@@ -201,19 +207,21 @@ const G = (function () {
     fovPunch = Math.max(0, fovPunch - dt * 9);
     const fov = CAM.fov + fovPunch;
     CAM.tanHalf = Math.tan(fov * Math.PI / 360);
-    R.setCamera(CAM.eye, CAM.focus, fov);
+    CAM.shiftX = 0;
+    R.setCamera(CAM.eye, CAM.focus, fov, 0);
   }
 
   function updateLobbyCamera(dt) {
     lobbyT += dt;
     const cam = Hangar.camera(lobbyT);
     CAM.tanHalf = Math.tan(cam.fov * Math.PI / 360);
-    R.setCamera(cam.eye, cam.focus, cam.fov);
+    CAM.shiftX = 0;
+    R.setCamera(cam.eye, cam.focus, cam.fov, 0);
   }
 
   function screenToGround(mx, my, hy) {
     const w = canvas.clientWidth, h = canvas.clientHeight;
-    const ndcx = (mx / w) * 2 - 1;
+    const ndcx = (mx / w) * 2 - 1 - (CAM.shiftX || 0);
     const ndcy = 1 - (my / h) * 2;
 
     const fx = CAM.focus[0] - CAM.eye[0];
@@ -265,7 +273,7 @@ const G = (function () {
     if (zc <= 0.05) return null;
 
     const asp = w / h;
-    const xc = (vx * rx + vz * rz) / (zc * CAM.tanHalf * asp);
+    const xc = (vx * rx + vz * rz) / (zc * CAM.tanHalf * asp) + (CAM.shiftX || 0);
     const yc = (vx * ux + vy * uy + vz * uz) / (zc * CAM.tanHalf);
     return { x: (xc * 0.5 + 0.5) * w, y: (0.5 - yc * 0.5) * h };
   }
@@ -345,9 +353,25 @@ const G = (function () {
   function bindInput() {
     window.addEventListener('keydown', function (e) {
       keys[e.code] = true;
+      if (e.code === 'F8' && typeof AIDebug !== 'undefined' && AIDebug.enabled) {
+        e.preventDefault();
+        AIDebug.dump();
+        return;
+      }
 
       if (mode === 'hall') {
-        if (e.code === 'Escape') { e.preventDefault(); leaveHall(); }
+        if (hallPaused) {
+          if (e.code === 'Escape') { e.preventDefault(); closeHallPause(); }
+          return;
+        }
+        if (hallDeviceT) {
+          if (e.code === 'Escape' && hallDeviceT.phase === 'open') {
+            e.preventDefault();
+            closeDevicePanel();
+          }
+          return;
+        }
+        if (e.code === 'Escape') { e.preventDefault(); openHallPause(); }
         else if (e.code === 'KeyF' && !e.repeat) { e.preventDefault(); interactHall(); }
         else if (e.code === 'KeyL') {
           e.preventDefault();
@@ -358,7 +382,7 @@ const G = (function () {
       }
       if (mode === 'lobby') return;
 
-      /* 结算界面：R / ESC 返回机库 */
+      /* 结算界面：R / ESC 返回大厅 */
       if (ended) {
         if (e.code === 'Escape' || e.code === 'KeyR') { e.preventDefault(); toLobby(); }
         return;
@@ -491,7 +515,7 @@ const G = (function () {
         mouse.autoLockPending = false;
         if (mode !== 'hall') HUD.toast('鼠标已锁定 · 移动鼠标瞄准 · L 解除', 'good');
       } else if (mode === 'hall') {
-        hallToast('鼠标已解锁 · 点击画面重新锁定 / 右上角返回机库');
+        hallToast('鼠标已解锁 · 点击画面重新锁定 / 右上角返回开始菜单');
       } else if (!Inventory.isOpen() && !trainingOpen) {
         /* 解除锁定后系统指针回到窗口中心：同步一下虚拟指针，方便操作 UI。
            打开界面时不解锁重置，避免关闭界面后视角突然回正。 */
@@ -868,6 +892,19 @@ const G = (function () {
     };
   }
 
+  /* 换弹姿势：玩家与敌人共用同一套动画（MODELS.reloadPose）。
+     统一在这里叠加，保证 NPC 和玩家看到的是同一段换弹动作。 */
+  function applyReloadPose(remain, dur, pose) {
+    const phase = 1 - remain / (dur || 1);
+    const rp = MODELS.reloadPose(phase);
+    pose.y += rp.y;
+    pose.yawOffset += rp.yaw;
+    pose.pitch += rp.pitch;
+    pose.magY = rp.magY;
+    pose.magScale = rp.magScale;
+    return pose;
+  }
+
   /* 玩家枪械姿势：普通持枪 / 横枪奔跑 / 换弹
      sway 与身体使用同一组摆动；gunCarryMix 让进入 / 离开奔跑时快速缓动 */
   function playerGunPose(sway) {
@@ -892,14 +929,10 @@ const G = (function () {
     let reloading = false, magY = 0, magScale = 1;
     if (player.reload > 0) {
       reloading = true;
-      const dur = player.reloadDur || 1;
-      const phase = 1 - player.reload / dur;
-      const rp = MODELS.reloadPose(phase);
-      y += rp.y;
-      yawOffset += rp.yaw;
-      pitch += rp.pitch;
-      magY = rp.magY;
-      magScale = rp.magScale;
+      const rp = applyReloadPose(player.reload, player.reloadDur || 1,
+        { y: y, yawOffset: yawOffset, pitch: pitch, magY: 0, magScale: 1 });
+      y = rp.y; yawOffset = rp.yawOffset; pitch = rp.pitch;
+      magY = rp.magY; magScale = rp.magScale;
     }
     /* 奔跑时武器随步伐上下颠动，并带一点俯仰 / 横向晃动 */
     if (player.sprinting) {
@@ -934,14 +967,11 @@ const G = (function () {
     let reloading = false, magY = 0, magScale = 1;
     if (e.gunner && e.reloadT > 0) {
       reloading = true;
-      const dur = e.reloadDur || CFG.GUNNER.reload || 1;
-      const phase = 1 - e.reloadT / dur;
-      const rp = MODELS.reloadPose(phase);
-      y += rp.y;
-      yawOffset += rp.yaw;
-      pitch += rp.pitch;
-      magY = rp.magY;
-      magScale = rp.magScale;
+      /* 与玩家完全同一段换弹动画 */
+      const rp = applyReloadPose(e.reloadT, e.reloadDur || CFG.GUNNER.reload || 1,
+        { y: y, yawOffset: yawOffset, pitch: pitch, magY: 0, magScale: 1 });
+      y = rp.y; yawOffset = rp.yawOffset; pitch = rp.pitch;
+      magY = rp.magY; magScale = rp.magScale;
     }
     if (e.gunner && e.carry) {
       const run = MODELS.gunRunMotion(e.animT);
@@ -1567,7 +1597,7 @@ const G = (function () {
     }
   }
 
-  function damageEnemy(e, dmg, ang, col, silent, credit, fromX, fromZ) {
+  function damageEnemy(e, dmg, ang, col, silent, credit, fromX, fromZ, killer) {
     if (!e || e.dead) return;
     /* 玩家来源的伤害用玩家真实位置，而不是手雷 / 燃烧区中心；
        这样清剿小队只会在“玩家确实从屋内攻击”时获得屋内情报。 */
@@ -1623,6 +1653,9 @@ const G = (function () {
         if (e.type === 'spitter') spittersKilled++;
         HUD.kills(kills);
         HUD.hit(true);
+      }
+      if (killer && killer.squadRef && !e.squadRef && typeof Speech !== 'undefined') {
+        Speech.bark(killer, 'kill');
       }
       sparks.push({ x: e.x, y: 1.0, z: e.z, t: 0.3, c: [0.85, 0.35, 0.25], s: 0.5 });
     }
@@ -1868,7 +1901,10 @@ const G = (function () {
     /* 已经卡在门框里时无条件开门，不论朝向和上一帧是否在移动。 */
     const inDoor = World.doorOccupied(door, e.x, e.z, e.r + 0.04);
     if (!e.moving && !inDoor && facing < 0.35) return;
-    if (World.openDoor(door)) e.doorCd = 0.5 + Math.random() * 0.3;
+    if (World.openDoor(door)) {
+      e.doorCd = 0.5 + Math.random() * 0.3;
+      if (e.squadRef && typeof Speech !== 'undefined') Speech.bark(e, 'door');
+    }
   }
 
   function canSeePoint(e, tx, tz, maxD) {
@@ -1946,7 +1982,16 @@ const G = (function () {
       const r = 2.5 + Math.random() * 7;
       const x = e.home.x + Math.cos(a) * r;
       const z = e.home.z + Math.sin(a) * r;
-      if (!World.blocked(x, z, e.r)) return { x: x, z: z };
+      if (!World.blocked(x, z, e.r)) {
+        /* 巡逻点必须真的可达：封闭房间 / 隔墙外的点不要选 */
+        if (typeof World.findPath === 'function') {
+          const path = World.findPath(e.x, e.z, x, z);
+          if (!path || !path.length) continue;
+          const last = path[path.length - 1];
+          if (Math.hypot(last.x - x, last.z - z) > 2.2) continue;
+        }
+        return { x: x, z: z };
+      }
     }
     return { x: e.home.x, z: e.home.z };
   }
@@ -1960,6 +2005,38 @@ const G = (function () {
     /* 只有真的走到了才算到达；“被墙挡住原地等”不能当成到达，
        否则队长会以为目标已完成，换下一个不可达目标，整队一直站着。 */
     return Math.hypot(tx - e.x, tz - e.z) < 0.35;
+  }
+
+  /* 追击目标时的移动：
+     - 前方 0.9m 直线可走时才直接朝目标扑，避免走向墙 / 箱子。
+     - 正前方被墙 / 障碍挡住时退回 A* 绕路；没有路就停住，不硬推。
+     远程单位只在需要接近目标时调用；保持距离的后撤仍然走原逻辑。 */
+  function chaseStep(e, tx, tz, speed, dt, faceYaw) {
+    /* 保留过门引导：先走到门洞中线再穿过，避免直扑时卡在门框上 */
+    const guide = doorCrossGuide(e, tx, tz);
+    const gx = guide ? guide.x : tx;
+    const gz = guide ? guide.z : tz;
+    const dx = gx - e.x, dz = gz - e.z;
+    const len = Math.hypot(dx, dz);
+    if (len < 0.001) {
+      e.moving = false;
+      return false;
+    }
+    const ux = dx / len, uz = dz / len;
+    /* 用短距离直线检测代替单点探测：前方 0.9m 内有墙 / 箱子就不直扑。 */
+    const probe = Math.min(0.9, len);
+    let clear;
+    if (guide) clear = true;
+    else if (typeof World.moveLineBlocked === 'function') {
+      clear = !World.moveLineBlocked(e.x, e.z, e.x + ux * probe, e.z + uz * probe, e.r);
+    } else {
+      clear = !World.blocked(e.x + ux * probe, e.z + uz * probe, e.r, true);
+    }
+    if (clear) {
+      return gunnerMove(e, dx, dz, speed, dt,
+        faceYaw === undefined ? Math.atan2(dx, dz) : faceYaw);
+    }
+    return stepTo(e, tx, tz, speed, dt);
   }
 
   /* ============================================================
@@ -2007,6 +2084,7 @@ const G = (function () {
     const w = WEAPONS[wi] || WEAPONS[CFG.GUNNER.weaponId];
     return {
       x: x, z: z, home: { x: x, z: z }, type: type, gunner: true, faction: 'scav',
+      aiId: nextAiId++,
       weaponId: wi,
       hp: c.hp, maxHp: c.hp, r: c.r, speed: c.speed, dmg: c.dmg,
       cd: 0, cdMax: c.cd, yaw: Math.random() * 6.28, animT: 0,
@@ -2029,7 +2107,7 @@ const G = (function () {
       lootVisitT: 0, lootAbsorbT: 0, lootAbsorbed: 0,
       lootIgnoreRef: null, lootIgnoreT: 0,
       lootCooldown: 0, lootSessionT: 0,
-      moveStuckT: 0, wanderT: 0, wanderYaw: 0,
+      moveStuckT: 0, stopT: 0,
       path: null, pathGoal: null, pathTime: 0
     };
   }
@@ -2039,12 +2117,14 @@ const G = (function () {
     const ecfg = CFG.ENEMY[type] || CFG.ENEMY.zombie;
     return {
       x: x, z: z, home: { x: x, z: z }, type: type, faction: 'undead',
+      aiId: nextAiId++,
       hp: ecfg.hp, maxHp: ecfg.hp, r: ecfg.r, speed: ecfg.speed, dmg: ecfg.dmg,
       cd: 0, cdMax: ecfg.cd, yaw: Math.random() * 6.28, animT: 0,
       moving: false, dead: false, fade: 1.9, hitFlash: 0, lunge: 0,
       state: 'idle', alertT: 0, lostT: 6, waitT: 0, patrol: null,
       lastSeenX: x, lastSeenZ: z, seen: false, seed: Math.random() * 10,
       swayT: Math.random() * 10, moveBlend: 0, sprintBlend: 0,
+      moveStuckT: 0, stopT: 0, stuckT: 0, progT: 0,
       viewR: type === 'spitter' ? 20 : (type === 'gaunt' ? 15 : 16),
       viewHalf: type === 'spitter' ? 1.15 : 0.95,
       path: null, pathGoal: null, pathTime: 0
@@ -2189,6 +2269,53 @@ const G = (function () {
       m.alertT = Math.max(m.alertT || 0, 0.5);
       m.squadAlert = true;
     }
+    const speaker = !e.dead ? e : (sq.leader && !sq.leader.dead ? sq.leader : null);
+    if (speaker && typeof Speech !== 'undefined') Speech.bark(speaker, 'hostile');
+  }
+
+  /* ---------- 清剿小队：驱赶贴近的中立单位 ----------
+     低优先级个人行为：只有队员自己处于空闲 / 巡逻，且没有交战、搜索、
+     搜刮、换弹等任务时，才会对贴近的中立单位（目前只有玩家）出言驱赶，
+     并转身用枪指向对方。不会停下移动，也不会主动开火；
+     任何更高优先级的指令（发现目标、交火、搜刮、换弹…）都会立即打断。
+     冷却和状态都按队员个人计算，不影响其他队员和小队指令。 */
+  const SQUAD_WARN_RANGE = 4.0;
+
+  function squadWarnBusy(e) {
+    if (e.seen) return true;
+    const st = e.state;
+    if (st !== 'patrol' && st !== 'idle') return true;
+    if (e.lootTarget || e.pryingChest) return true;
+    if (e.reloadT > 0) return true;
+    return false;
+  }
+
+  function updateSquadWarning(e, dt) {
+    if (!e.squadRef || !e.gunner) return;
+    if (e.warnCd > 0) e.warnCd = Math.max(0, e.warnCd - dt);
+    const neutral = relationOf(e) === 'neutral' &&
+      !player.dead && !player.extracted;
+    const d = neutral ? Math.hypot(player.x - e.x, player.z - e.z) : Infinity;
+    /* 正在驱赶：任何其他指令、玩家走远或被墙挡住，都立即取消 */
+    if (e.warnT > 0) {
+      if (!neutral || d > SQUAD_WARN_RANGE + 1.5 || squadWarnBusy(e) ||
+          World.sightBlocked(e.x, e.z, player.x, player.z)) {
+        e.warnT = 0;
+        return;
+      }
+      e.warnT = Math.max(0, e.warnT - dt);
+      /* 只转身体 / 枪口，不干扰移动指令 */
+      e.yaw = angLerp(e.yaw, Math.atan2(player.x - e.x, player.z - e.z),
+        1 - Math.exp(-16 * dt));
+      return;
+    }
+    if (!neutral || d > SQUAD_WARN_RANGE || e.warnCd > 0) return;
+    if (squadWarnBusy(e)) return;
+    if (World.sightBlocked(e.x, e.z, player.x, player.z)) return;
+    e.warnT = 2.0;
+    /* 个人冷却：同一名队员不会连续驱赶，队员之间互不影响 */
+    e.warnCd = 16 + Math.random() * 8;
+    if (typeof Speech !== 'undefined') Speech.bark(e, 'warn');
   }
 
   function squadMarkHouseIntel(squad, x, z) {
@@ -2454,7 +2581,14 @@ const G = (function () {
         ignoreGunnerLoot(e, t);
         return true;
       }
-      aiMoveTo(e, t.x, t.z, e.speed * 0.72, dt, Math.atan2(t.x - e.x, t.z - e.z));
+      /* 最后 2.8m 直接朝物资点走：目标箱子本身就是障碍，
+         允许贴到交互距离；撞到别的障碍时由 lootStuckT 放弃。 */
+      if (td < 2.8) {
+        gunnerMove(e, t.x - e.x, t.z - e.z, e.speed * 0.72, dt,
+          Math.atan2(t.x - e.x, t.z - e.z));
+      } else {
+        aiMoveTo(e, t.x, t.z, e.speed * 0.72, dt, Math.atan2(t.x - e.x, t.z - e.z));
+      }
       return true;
     }
     e.lootStuckT = 0;
@@ -2484,6 +2618,7 @@ const G = (function () {
       }
       if (gunnerAddLoot(e, t.ref.item)) {
         t.ref.taken = true;
+        if (typeof Speech !== 'undefined') Speech.bark(e, 'loot');
         finishGunnerLootVisit(e, t, false);
       } else {
         ignoreGunnerLoot(e, t);
@@ -2506,6 +2641,7 @@ const G = (function () {
       finishGunnerLootVisit(e, t, true);
       return true;
     }
+    if (typeof Speech !== 'undefined') Speech.bark(e, 'loot');
     e.lootAbsorbed = (e.lootAbsorbed || 0) + 1;
     e.lootAbsorbT = CFG.GUNNER.lootInterval;
     if (e.lootAbsorbed >= CFG.GUNNER.lootMaxItems || !c.inv.length || !gunnerChestHasFit(e, c)) {
@@ -2583,13 +2719,16 @@ const G = (function () {
     if (same && age < (e.path && e.path.length ? 1.2 : 0.8)) return e.path;
 
     const dist = Math.hypot(tx - e.x, tz - e.z);
-    /* 近距离但中间有墙 / 门框时仍需寻路，否则单位会顶着墙原地推。 */
-    if (dist < 2.4 &&
-        (!World.los || World.los(e.x, e.z, tx, tz))) return null;
+    /* 移动用直线检测：墙、木箱、设备、物资箱都算障碍，不再只看墙体。 */
+    const walkClear = (typeof World.moveLineBlocked === 'function')
+      ? !World.moveLineBlocked(e.x, e.z, tx, tz, e.r)
+      : (!World.los || World.los(e.x, e.z, tx, tz));
+    /* 近距离但中间有墙 / 障碍时仍需寻路，否则单位会顶着障碍原地推。 */
+    if (dist < 2.4 && walkClear) return null;
 
-    /* 普通单位：直线无墙时直接走，避免全场单位频繁跑 A*。
+    /* 普通单位：直线可走时直接走，避免全场单位频繁跑 A*。
        清剿小队始终走寻路，保证不会误入未侦察建筑。 */
-    if (!e.squadRef && World.los && World.los(e.x, e.z, tx, tz)) {
+    if (!e.squadRef && walkClear) {
       e.path = null;
       e.pathGoal = { x: tx, z: tz };
       e.pathTime = time;
@@ -2650,24 +2789,104 @@ const G = (function () {
   }
 
   function aiMoveTo(e, tx, tz, speed, dt, faceYaw) {
+    if (e.stopT > 0) { e.moving = false; return false; }
     const path = aiPathFor(e, tx, tz);
     let wx = tx, wz = tz;
     let onPath = false;
     if (path && path.length) {
-      while (path.length && Math.hypot(path[0].x - e.x, path[0].z - e.z) < 0.55) path.shift();
-      if (path.length) { wx = path[0].x; wz = path[0].z; onPath = true; }
-      else e.path = null;
+      /* 跳过已经到了的、以及落在障碍物里的路点 */
+      while (path.length) {
+        const wp = path[0];
+        const reached = Math.hypot(wp.x - e.x, wp.z - e.z) < 0.55;
+        const blockedWp = World.blocked(wp.x, wp.z, e.r, true);
+        if (!reached && !blockedWp) break;
+        if (blockedWp && !reached && typeof AIDebug !== 'undefined') {
+          AIDebug.event('skip-waypoint', {
+            wx: Math.round(wp.x * 10) / 10, wz: Math.round(wp.z * 10) / 10,
+            path: path.length
+          }, e);
+        }
+        path.shift();
+      }
+      if (path.length) {
+        /* 只跟随“从当前位置能直线走到”的路点；否则先回到本格中心 / 门口对齐，
+           避免单位从门角或墙斜穿，反复撞在同一处。 */
+        let pick = -1;
+        const maxAhead = Math.min(path.length - 1, 2);
+        for (let i = 0; i <= maxAhead; i++) {
+          const p = path[i];
+          if (World.blocked(p.x, p.z, e.r, true)) continue;
+          if (typeof World.moveLineBlocked === 'function' &&
+              World.moveLineBlocked(e.x, e.z, p.x, p.z, e.r)) continue;
+          pick = i;
+          break;
+        }
+        if (pick >= 0) {
+          if (pick > 0) path.splice(0, pick);
+          wx = path[0].x;
+          wz = path[0].z;
+          onPath = true;
+        } else {
+          let ax = null, az = null, why = '';
+          const cell = World.worldToCell(e.x, e.z);
+          const center = World.cellCenter(cell.cx, cell.cz);
+          if (Math.hypot(center.x - e.x, center.z - e.z) > 0.25 &&
+              !World.blocked(center.x, center.z, e.r, true) &&
+              (typeof World.moveLineBlocked !== 'function' ||
+               !World.moveLineBlocked(e.x, e.z, center.x, center.z, e.r))) {
+            ax = center.x; az = center.z; why = 'cell-center';
+          } else {
+            const door = World.nearestDoor(e.x, e.z);
+            if (door && door.open &&
+                Math.hypot(door.x - e.x, door.z - e.z) < 1.8 &&
+                (typeof World.moveLineBlocked !== 'function' ||
+                 !World.moveLineBlocked(e.x, e.z, door.x, door.z, e.r))) {
+              ax = door.x; az = door.z; why = 'door-center';
+            }
+          }
+          if (ax !== null) {
+            wx = ax; wz = az; onPath = true;
+            e.path = null;
+            e.pathGoal = null;
+            if (typeof AIDebug !== 'undefined') {
+              AIDebug.event('align-waypoint', {
+                x: Math.round(e.x * 10) / 10, z: Math.round(e.z * 10) / 10,
+                ax: Math.round(ax * 10) / 10, az: Math.round(az * 10) / 10,
+                why: why, path: path.length
+              }, e);
+            }
+          } else {
+            e.path = null;
+            e.pathGoal = null;
+            e.moving = false;
+            return false;
+          }
+        }
+      } else e.path = null;
     }
     /* 门口对齐：只在前方这段路真的跨过门洞时，才插一个门前中线点，
        保证单位是从门中间垂直穿过，而不是斜着切门框被挡在门口。 */
     const guide = doorCrossGuide(e, wx, wz);
     if (guide) { wx = guide.x; wz = guide.z; onPath = true; }
-    /* 没有可用路径、而目标又被墙体挡住时，不要继续朝墙硬推。
-       A* 下一条 / 下一帧会重新算路，单位先原地等待。 */
-    if (!onPath && Math.hypot(tx - e.x, tz - e.z) > 0.35 &&
-        typeof World.los === 'function' && !World.los(e.x, e.z, tx, tz)) {
-      e.moving = false;
-      return false;
+    /* 没有可用路径、而目标又被墙 / 障碍挡住时，不要继续朝障碍硬推。
+       清掉路径缓存，下一帧重新寻路；如果仍然没有路就停住。 */
+    if (!onPath && Math.hypot(tx - e.x, tz - e.z) > 0.35) {
+      const blocked = (typeof World.moveLineBlocked === 'function')
+        ? World.moveLineBlocked(e.x, e.z, tx, tz, e.r)
+        : (typeof World.los === 'function' && !World.los(e.x, e.z, tx, tz));
+      if (blocked) {
+        if (typeof AIDebug !== 'undefined') {
+          AIDebug.event('no-path', {
+            x: Math.round(e.x * 10) / 10, z: Math.round(e.z * 10) / 10,
+            tx: Math.round(tx * 10) / 10, tz: Math.round(tz * 10) / 10,
+            path: e.path ? e.path.length : 0
+          }, e);
+        }
+        e.path = null;
+        e.pathGoal = null;
+        e.moving = false;
+        return false;
+      }
     }
     const dx = wx - e.x, dz = wz - e.z;
     if (Math.hypot(dx, dz) < 0.001) { e.moving = false; return false; }
@@ -2680,27 +2899,14 @@ const G = (function () {
   }
 
   function gunnerMove(e, dirX, dirZ, speed, dt, faceYaw) {
+    if (e.stopT > 0) { e.moving = false; return false; }
     let len = Math.hypot(dirX, dirZ);
     if (len < 0.001) { e.moving = false; return false; }
-    /* 卡在墙角 / 门框时短暂强制侧移，避免持续顶着墙原地打转 */
-    if (e.wanderT > 0) {
-      dirX = Math.sin(e.wanderYaw);
-      dirZ = Math.cos(e.wanderYaw);
-      len = 1;
-    }
     const want = speed * dt;
-    let mv = World.moveCircle(e.x, e.z, dirX / len * speed * dt, dirZ / len * speed * dt, e.r, true);
-    if (Math.hypot(mv.x - e.x, mv.z - e.z) < 0.0005) {
-      /* 正面被挡住时尝试垂直侧移 */
-      const px = -dirZ / len, pz = dirX / len;
-      for (const s of [1, -1]) {
-        const m2 = World.moveCircle(e.x, e.z, px * s * speed * dt, pz * s * speed * dt, e.r, true);
-        if (Math.hypot(m2.x - e.x, m2.z - e.z) > 0.0005) { mv = m2; break; }
-      }
-    }
+    const mv = World.moveCircle(e.x, e.z, dirX / len * speed * dt, dirZ / len * speed * dt, e.r, true);
     /* 没有观测到内部敌人的房屋：不主动跨进门口。
        如果这一帧的移动被这条规则整个吃掉，记一次“门禁拒绝”，
-       由 gunnerMove 的卡住检测负责放弃这个目标，而不是原地顶着门板推。 */
+       由下面的卡住检测负责放弃这个目标，而不是原地顶着门板推。 */
     if (squadBlockedByHouse(e, mv.x, mv.z)) {
       const wanted = Math.hypot(mv.x - e.x, mv.z - e.z);
       mv.x = e.x;
@@ -2714,34 +2920,17 @@ const G = (function () {
     const moved = movedDist > 0.0005;
     e.x = mv.x;
     e.z = mv.z;
-    if (speed > 0.05 && e.wanderT <= 0) {
-      if (movedDist < want * 0.22) e.moveStuckT = (e.moveStuckT || 0) + dt;
+    /* 撞击 / 顶墙检测：位移明显小于请求值就累计，短暂停止并重新寻路，
+       不再用随机侧移把单位继续往墙上推。 */
+    if (speed > 0.05) {
+      if (movedDist < 0.0005) e.moveStuckT = 1.0;
+      else if (movedDist < want * 0.18) e.moveStuckT = (e.moveStuckT || 0) + dt;
       else e.moveStuckT = Math.max(0, (e.moveStuckT || 0) - dt * 2);
-      if (e.moveStuckT > 1.0) {
+      if (e.moveStuckT > 0.28) {
         e.moveStuckT = 0;
-        e.wanderT = 0.55;
-        /* 卡住多半是“这条路径已经走不通了”（别人挡路 / 贴着墙角）。
-           清掉路径缓存，下一帧重新 A*，比盲目侧移有效得多。 */
         e.path = null;
         e.pathGoal = null;
-        let wa = (faceYaw !== undefined ? faceYaw : e.yaw) +
-          (Math.random() < 0.5 ? -1 : 1) * (Math.PI * 0.5 + Math.random() * 0.35);
-        /* 侧移方向要能走：依次尝试 ±45° / ±90° / 斜后方 / 正后方 */
-        const offs = [0, 0.785, -0.785, 1.571, -1.571, 2.356, -2.356, 3.142];
-        for (let oi = 0; oi < offs.length; oi++) {
-          const a = wa + offs[oi];
-          if (!World.blocked(e.x + Math.sin(a) * 1.1, e.z + Math.cos(a) * 1.1, e.r)) {
-            wa = a;
-            break;
-          }
-        }
-        e.wanderYaw = wa;
-        e.patrol = null;
-        e.coverTarget = null;
-        /* 被“不许进屋”挡在门口的，直接放弃这个目标：
-           否则它会一秒一秒地重算同一条进屋路径，永远顶在门槛上。
-           （houseDeniedT 与这里的 1 秒卡住计时同速累计，0.4 秒的门槛用于
-           区分“被门禁挡住”和“被别的东西挡住”。） */
+        e.stopT = 0.18 + Math.random() * 0.1;
         if ((e.houseDeniedT || 0) > 0.4) {
           e.houseDeniedT = 0;
           e.lastSeenX = e.x;
@@ -2750,16 +2939,26 @@ const G = (function () {
           e.squadHolding = false;
           if (e.squadRef && e.isLeader) e.squadThinkT = 0;
         }
-        if (e.state === 'search') {
-          /* 追最后目击点时撞墙：立即结束搜索，避免盯着墙角走满 6 秒 */
-          e.lastSeenX = e.x;
-          e.lastSeenZ = e.z;
-          e.lostT = 6;
+        if (e.coverTarget) {
+          e.coverTarget = null;
+          e.coverCd = Math.max(e.coverCd || 0, 1.5);
+          e.state = e.seen ? 'engage' : 'patrol';
         }
-        if (e.lootTarget) {
-          e.lootTarget = null;
-          e.lootCooldown = Math.max(e.lootCooldown || 0, 4 + Math.random() * 4);
+        if (typeof AIDebug !== 'undefined') {
+          const dbgDoor = enemyDoor(e);
+          AIDebug.event('move-stop', {
+            x: Math.round(e.x * 10) / 10, z: Math.round(e.z * 10) / 10,
+            stopT: Math.round((e.stopT || 0) * 100) / 100,
+            moveStuckT: Math.round((e.moveStuckT || 0) * 100) / 100,
+            path: e.path ? e.path.length : 0,
+            goal: e.pathGoal ? ((Math.round(e.pathGoal.x * 10) / 10) + ',' + (Math.round(e.pathGoal.z * 10) / 10)) : '-',
+            inWall: !!(World.blocked && World.blocked(e.x, e.z, e.r, true)),
+            door: dbgDoor ? ((Math.round(Math.hypot(e.x - dbgDoor.x, e.z - dbgDoor.z) * 10) / 10) + (dbgDoor.open ? 'O' : 'C')) : '-',
+            other: '-'
+          }, e);
         }
+        e.moving = false;
+        return false;
       }
     }
     if (speed > 0.01) e.moving = true;
@@ -2803,7 +3002,7 @@ const G = (function () {
       x: mx, z: mz, y: 1.02,
       vx: Math.sin(a) * speed, vz: Math.cos(a) * speed,
       dmg: w.dmg, dmgFar: w.dmgFar, range: w.range,
-      travelled: 0, r: 0.2, c: w.rgb2, dead: false
+      travelled: 0, r: 0.2, c: w.rgb2, dead: false, srcRef: e
     });
     flashes.push({ x: mx, y: 1.04, z: mz, yaw: a, t: 0.06, s: 0.34, c: w.rgb2 });
     flashes.push({ x: mx, y: 1.04, z: mz, yaw: a, t: 0.1, s: 0.16, c: [1.0, 0.95, 0.82] });
@@ -2822,6 +3021,21 @@ const G = (function () {
     e.ammo = Math.max(0, e.ammo - 1);
   }
 
+  /* 远程单位后撤：后方被墙 / 箱子挡住时改走横向，避免一直贴着墙往后顶 */
+  function retreatStep(e, dx, dz, d, dt, faceYaw) {
+    const ux = dx / d, uz = dz / d;
+    const backClear = (typeof World.moveLineBlocked === 'function')
+      ? !World.moveLineBlocked(e.x, e.z, e.x - ux * 0.6, e.z - uz * 0.6, e.r)
+      : !World.blocked(e.x - ux * 0.6, e.z - uz * 0.6, e.r, true);
+    if (backClear) {
+      return gunnerMove(e, -dx, -dz, e.speed, dt, faceYaw);
+    }
+    const dir = e.strafeDir || 1;
+    if (gunnerMove(e, -uz * dir, ux * dir, e.speed * 0.75, dt, faceYaw)) return true;
+    e.strafeDir = -dir;
+    return gunnerMove(e, -uz * e.strafeDir, ux * e.strafeDir, e.speed * 0.75, dt, faceYaw);
+  }
+
   function updateGunnerAI(e, dt, d, sees, dx, dz, target) {
     const w = WEAPONS[e.weaponId === undefined ? CFG.GUNNER.weaponId : e.weaponId];
     const faceYaw = Math.atan2(dx, dz);
@@ -2829,7 +3043,6 @@ const G = (function () {
     const threatZ = (sees && target) ? target.z : e.lastSeenZ;
     if (e.coverCd > 0) e.coverCd -= dt;
     if (e.underFire > 0) e.underFire -= dt;
-    if (e.wanderT > 0) e.wanderT = Math.max(0, e.wanderT - dt);
     if (e.reloadT > 0) {
       e.reloadT -= dt;
       if (e.reloadT <= 0) {
@@ -2859,6 +3072,7 @@ const G = (function () {
         e.coverHold = 1.0 + Math.random() * 0.8;
         e.coverCd = 5.5 + Math.random() * 4;
         e.state = 'cover';
+        if (e.squadRef && typeof Speech !== 'undefined') Speech.bark(e, 'cover');
       } else {
         e.coverCd = 2.0;
       }
@@ -2910,17 +3124,17 @@ const G = (function () {
           const s = sd >= 0 ? 1 : -1;
           gunnerMove(e, nx * s, nz * s, e.speed * 0.85, dt, faceYaw);
         } else if (d > CFG.GUNNER.rangeMax) {
-          aiMoveTo(e, target.x, target.z, e.speed, dt, faceYaw);
+          chaseStep(e, target.x, target.z, e.speed, dt, faceYaw);
         } else if (d < CFG.GUNNER.rangeMin) {
-          gunnerMove(e, -dx, -dz, e.speed, dt, faceYaw);
+          retreatStep(e, dx, dz, d, dt, faceYaw);
         } else {
           e.moving = false;
           e.yaw = angLerp(e.yaw, faceYaw, 1 - Math.exp(-12 * dt));
         }
       } else if (d > CFG.GUNNER.rangeMax) {
-        aiMoveTo(e, target.x, target.z, e.speed, dt, faceYaw);
+        chaseStep(e, target.x, target.z, e.speed, dt, faceYaw);
       } else if (d < CFG.GUNNER.rangeMin) {
-        gunnerMove(e, -dx, -dz, e.speed, dt, faceYaw);
+        retreatStep(e, dx, dz, d, dt, faceYaw);
       } else {
         e.strafeT -= dt;
         if (e.strafeT <= 0) {
@@ -2936,7 +3150,7 @@ const G = (function () {
           e.moving = false;
           e.yaw = angLerp(e.yaw, faceYaw, 1 - Math.exp(-12 * dt));
           if (d > CFG.GUNNER.rangeMax * 0.8) {
-            aiMoveTo(e, target.x, target.z, e.speed * 0.9, dt, faceYaw);
+            chaseStep(e, target.x, target.z, e.speed * 0.9, dt, faceYaw);
           }
         } else {
           if (e.strafeDir > 0 && !canA) e.strafeDir = -1;
@@ -2961,6 +3175,7 @@ const G = (function () {
             e.reloadDur = reload;
             e.burstLeft = 0;
             e.burstCool = 0.45;
+            if (e.squadRef && typeof Speech !== 'undefined') Speech.bark(e, 'reload');
           } else {
             fireEnemyWeapon(e, target, threatX, threatZ, d);
             e.burstLeft--;
@@ -2992,8 +3207,18 @@ const G = (function () {
       if (td > 0.8) {
         aiMoveTo(e, e.lastSeenX, e.lastSeenZ, e.speed * 0.9, dt,
           Math.atan2(e.lastSeenX - e.x, e.lastSeenZ - e.z));
+        if (!e.moving || e.stopT > 0) e.searchStuckT = (e.searchStuckT || 0) + dt;
+        else e.searchStuckT = 0;
+        if (e.searchStuckT > 1.2) {
+          /* 最后目击点走不到：不要贴着墙搜索满 6 秒 */
+          e.searchStuckT = 0;
+          e.lastSeenX = e.x;
+          e.lastSeenZ = e.z;
+          e.lostT = 6;
+        }
       } else {
         e.moving = false;
+        e.searchStuckT = 0;
         e.yaw += Math.sin(time * 1.4 + e.seed) * dt * 0.7;
       }
       return;
@@ -3191,17 +3416,12 @@ const G = (function () {
     }
   }
 
-  /* 队伍顺位：队长最优先，其余按号码。推挤时只让顺位靠后的让路。 */
-  function squadRank(e) {
-    if (!e.squadRef) return 99;
-    return e.isLeader ? -1 : (e.squadSlot || 0);
-  }
-
   function updateEnemies(dt) {
     aiPathBudget = 3;
     squadPathBudget = 6;
     enemyAlive.length = 0;
     for (const e of enemies) if (!e.dead) enemyAlive.push(e);
+    if (typeof AIDebug !== 'undefined') AIDebug.sample(enemies);
     /* 队长阵亡后由第一个存活成员接替，避免小队直接散架。 */
     for (let si = 0; si < squads.length; si++) {
       const sq = squads[si];
@@ -3226,6 +3446,7 @@ const G = (function () {
         continue;
       }
 
+      if (e.stopT > 0) e.stopT = Math.max(0, e.stopT - dt);
       e.hitFlash = Math.max(0, e.hitFlash - dt);
       /* 清剿小队护盾：脱战一段时间后自动充能 */
       if (e.maxShield > 0) {
@@ -3258,19 +3479,23 @@ const G = (function () {
         e.lastSeenZ = tz;
         e.lostT = 0;
         e.seen = true;
+        e.searchStuckT = 0;
       } else {
         e.lostT += dt;
         e.seen = false;
         tx = e.lastSeenX;
         tz = e.lastSeenZ;
       }
+      /* 视野从“没有目标”切到“有目标”时喊一次；同类台词有单位冷却 */
+      if (sees && !e.barkSeen && typeof Speech !== 'undefined') Speech.bark(e, 'detect');
+      e.barkSeen = sees;
       const dx = tx - e.x, dz = tz - e.z;
       const d = Math.hypot(dx, dz) || 1;
       const ux = dx / d, uz = dz / d;
 
       if (sees && (e.state === 'idle' || e.state === 'patrol')) {
         e.state = 'alert';
-        e.alertT = 0.4;
+        e.alertT = 0.25;
       }
 
       const prevX = e.x, prevZ = e.z;
@@ -3288,8 +3513,8 @@ const G = (function () {
         const reach = e.type === 'spitter' ? 8.5 : (e.r + tr + 0.35);
 
         if (e.type === 'spitter') {
-          if (td > 9) stepTo(e, tx, tz, e.speed, dt);
-          else if (td < 5) stepTo(e, e.x - ux * 2, e.z - uz * 2, e.speed * 0.8, dt);
+          if (td > 9) chaseStep(e, tx, tz, e.speed, dt);
+          else if (td < 5) gunnerMove(e, -ux, -uz, e.speed * 0.8, dt, Math.atan2(dx, dz));
           else { e.yaw = angLerp(e.yaw, Math.atan2(dx, dz), 1 - Math.exp(-8 * dt)); }
           if (sees && e.cd <= 0 && td < 17) {
             e.cd = CFG.ENEMY.spitter.cd;
@@ -3301,7 +3526,7 @@ const G = (function () {
             flashes.push({ x: e.x + ux * 0.7, y: 1.3, z: e.z + uz * 0.7, yaw: Math.atan2(ux, uz), t: 0.08, s: 0.22 });
           }
         } else {
-          if (td > reach) stepTo(e, tx, tz, e.speed, dt);
+          if (td > reach) chaseStep(e, tx, tz, e.speed, dt);
           else {
             e.yaw = angLerp(e.yaw, Math.atan2(dx, dz), 1 - Math.exp(-10 * dt));
             if (sees && e.cd <= 0 && d < reach + 0.5) {
@@ -3312,6 +3537,17 @@ const G = (function () {
                 damageEnemy(target.ref, e.dmg, Math.atan2(dx, dz), [0.85, 0.42, 0.30], true, false, e.x, e.z);
               }
             }
+          }
+        }
+        if (!sees) {
+          if (!e.moving || e.stopT > 0) e.searchStuckT = (e.searchStuckT || 0) + dt;
+          else e.searchStuckT = 0;
+          if (e.searchStuckT > 1.2) {
+            /* 最后目击点走不到：停止在墙边搜索，尽快转回巡逻 */
+            e.searchStuckT = 0;
+            e.lastSeenX = e.x;
+            e.lastSeenZ = e.z;
+            e.lostT = 6;
           }
         }
         if (!sees && e.lostT > 5) {
@@ -3330,83 +3566,51 @@ const G = (function () {
         }
       }
 
-      /* 卡墙检测：持续想走但没有位移时，放弃当前目标并换方向 */
+      /* 卡墙备份检测：持续想走但没有位移时，停止推墙并清路径重新寻路 */
       const movedNow = Math.hypot(e.x - prevX, e.z - prevZ);
       if (e.moving && movedNow < 0.003) e.stuckT = (e.stuckT || 0) + dt;
       else e.stuckT = Math.max(0, (e.stuckT || 0) - dt * 1.5);
       if (e.stuckT > 0.55) {
         e.stuckT = 0;
         if (e.pryingChest) gunnerCancelPry(e);
-        e.lootTarget = null;
-        e.coverTarget = null;
-        e.coverCd = Math.max(e.coverCd || 0, 1.2);
-        if (e.gunner) {
-          e.strafeDir *= -1;
-          e.strafeT = 0.8;
-          e.lootT = Math.max(e.lootT || 0, 1.5);
+        e.path = null;
+        e.pathGoal = null;
+        e.stopT = Math.max(e.stopT || 0, 0.2);
+        e.moving = false;
+        if (e.coverTarget) {
+          e.coverTarget = null;
+          e.coverCd = Math.max(e.coverCd || 0, 1.2);
           e.state = sees ? 'engage' : 'patrol';
-        } else {
-          e.state = 'patrol';
-          e.patrol = pickPatrol(e);
-          e.waitT = 0;
         }
       }
 
       if (e.lunge) e.lunge = Math.max(0, e.lunge - dt);
 
       /* 逐帧位移可能被门框 / 墙体回弹抵消，单帧检测会漏掉“原地抖动”。
-         用 0.7s 窗口判断真实前进距离，没前进就强制侧移脱困。 */
+         用 0.7s 窗口判断真实前进距离，没前进就停止推墙并重新寻路。 */
       e.progT = (e.progT || 0) + dt;
       if (e.progT >= 0.7) {
         const px = (e.progX === undefined) ? e.x : e.progX;
         const pz = (e.progZ === undefined) ? e.z : e.progZ;
         if (e.moving && Math.hypot(e.x - px, e.z - pz) < 0.14) {
           e.moveStuckT = 0;
-          e.wanderT = Math.max(e.wanderT || 0, 0.55);
-          /* 路径失效：先清缓存让下一帧重新寻路，再考虑侧移 */
           e.path = null;
           e.pathGoal = null;
-          /* 侧移方向必须是能走的方向，否则会继续贴着墙滑。 */
-          let wa = e.yaw + (Math.random() < 0.5 ? -1 : 1) *
-            (Math.PI * 0.5 + Math.random() * 0.3);
-          const offs = [0, 0.785, -0.785, 1.571, -1.571, 2.356, -2.356, 3.142];
-          for (let oi = 0; oi < offs.length; oi++) {
-            const a = wa + offs[oi];
-            if (!World.blocked(e.x + Math.sin(a) * 1.1, e.z + Math.cos(a) * 1.1, e.r, true)) {
-              wa = a;
-              break;
-            }
-          }
-          e.wanderYaw = wa;
-          e.patrol = null;
-          if (e.gunner) e.lootTarget = null;
+          e.stopT = Math.max(e.stopT || 0, 0.2);
+          e.moving = false;
         }
         e.progX = e.x; e.progZ = e.z; e.progT = 0;
       }
 
+      /* 清剿小队：贴近的中立单位会被个人口头驱赶并遭枪口指向 */
+      updateSquadWarning(e, dt);
+
       /* 拾荒者在非交战状态快速移动时把枪横在胸前（与玩家奔跑姿势一致） */
-      e.carry = !!e.gunner && e.moving && e.reloadT <= 0 &&
+      e.carry = !!e.gunner && e.warnT <= 0 && e.moving && e.reloadT <= 0 &&
         (e.state === 'cover' || e.state === 'search' || e.state === 'patrol');
       e.moveBlend = (e.moveBlend || 0) + ((e.moving ? 1 : 0) - (e.moveBlend || 0)) * (1 - Math.exp(-6 * dt));
       e.sprintBlend = (e.sprintBlend || 0) + ((e.carry ? 1 : 0) - (e.sprintBlend || 0)) * (1 - Math.exp(-14 * dt));
-
-      /* 队伍内部推挤：
-         门口 / 走廊不再需要“禁止互推”的老办法（那会让两个人完全重叠、
-         看起来像穿模卡住）。改成单向让路：每一对只推顺位靠后的那个，
-         净位移永远有方向，不会出现两人对称互顶、原地抖的死锁。 */
-      for (const o of enemyAlive) {
-        if (o === e || o.dead) continue;
-        const mates = e.squadRef && o.squadRef === e.squadRef;
-        if (mates && squadRank(e) < squadRank(o)) continue;
-        const ox = e.x - o.x, oz = e.z - o.z;
-        const od = Math.hypot(ox, oz);
-        const mn = e.r + o.r;
-        if (od <= 0.0001 || od >= mn) continue;
-        const push = (mn - od) * 0.5;
-        const nx = e.x + ox / od * push;
-        const nz = e.z + oz / od * push;
-        if (!World.blocked(nx, nz, e.r)) { e.x = nx; e.z = nz; }
-      }
+      if (typeof Speech !== 'undefined') Speech.idleTick(e, dt);
     }
     enemies = enemies.filter(function (e) { return e.corpse || !(e.dead && e.fade <= 0); });
   }
@@ -3668,6 +3872,7 @@ const G = (function () {
     if (mode !== 'mission' || ended) return;
     if (paused) return;
     time += dt;
+    if (typeof Speech !== 'undefined') Speech.update(dt);
     /* 训练场数据无限：每帧回填，所有消耗都可以正常扣除但不会耗尽 */
     if (player.infiniteData) player.data = 999999;
     const houseAimYaw = (player.headWorldYaw === undefined) ? player.yaw : player.headWorldYaw;
@@ -3984,7 +4189,8 @@ const G = (function () {
               Math.atan2(hitEnemy.x - b.x, hitEnemy.z - b.z),
               b.c, true, false,
               b.ox === undefined ? b.x : b.ox,
-              b.oz === undefined ? b.z : b.oz);
+              b.oz === undefined ? b.z : b.oz,
+              b.srcRef);
             sparks.push({ x: hitEnemy.x, y: 1.02, z: hitEnemy.z, t: 0.2, c: b.c, s: 0.3 });
             b.dead = true;
             bulletImpact(b);
@@ -5047,6 +5253,7 @@ const G = (function () {
       toast.classList.remove('show');
       toast.textContent = '';
     }
+    if (typeof Dialogue !== 'undefined') Dialogue.hide();
     hallNear = null;
     hallFlashId = '';
     hallFlashT = 0;
@@ -5073,15 +5280,256 @@ const G = (function () {
     hallToastT = 2.4;
   }
 
+  function hallFollowPose() {
+    const p = CAM.pitch * Math.PI / 180;
+    const focus = [player.x * 0.55, 1.05, player.z * 0.55 - 0.9];
+    return {
+      focus: focus,
+      eye: [
+        focus[0],
+        focus[1] + Math.sin(p) * CAM.dist,
+        focus[2] + Math.cos(p) * CAM.dist
+      ]
+    };
+  }
+
+  /* 右侧终端占用的屏幕宽度（与 CSS --device-w 保持一致） */
+  function devicePanelWidth() {
+    const vw = Math.max(320, window.innerWidth);
+    if (vw <= 720) return vw * 0.92;
+    if (vw <= 1100) return Math.min(vw * 0.70, 880);
+    return Math.min(vw * 0.62, 980);
+  }
+
+  function hallDevicePose(d) {
+    /* 镜头直接落在装置正面的法线上，视线水平；再用离轴投影把装置
+       整体平移到左侧区域。这样正面完全平行于屏幕、左右竖边保持垂直，
+       也不会露出装置侧面。 */
+    const fx = Math.sin(d.yaw), fz = Math.cos(d.yaw);
+    const vw = Math.max(320, window.innerWidth);
+    const sideGap = 22;
+    const leftFrac = clamp((vw - devicePanelWidth() - sideGap) / vw, 0.18, 0.5);
+    const aspect = Math.max(0.6, vw / Math.max(1, window.innerHeight));
+    const tanHalf = Math.tan(CAM.fov * Math.PI / 360);
+    const deviceWidth = d.width || 3.05;
+    const fill = 0.9;                        // 装置正面占左侧区域 90%
+    const widthFrac = leftFrac * fill;
+    let frontDist = clamp(deviceWidth / (widthFrac * 2 * tanHalf * aspect), 4, 12);
+    /* 相机不越过大厅中心太远，避免推进到对面的装置模型里 */
+    frontDist = clamp(Math.min(frontDist, 9 - (d.frontZ || 0.8)), 3, 12);
+    const halfFront = frontDist * tanHalf * aspect;
+    const realWf = deviceWidth / (2 * halfFront);
+    /* 装置中心：优先落在左侧区域中心；窗口过窄时至少保证左边不被裁掉 */
+    let centerFrac = leftFrac * 0.5;
+    centerFrac = Math.max(centerFrac, realWf * 0.5 + 0.015);
+    centerFrac = clamp(centerFrac, 0.04, 0.5);
+    const shift = centerFrac * 2 - 1;
+    const dist = frontDist + (d.frontZ || 0.8);
+    const y = (d.height || 2.7) * 0.5;      // 装置竖直中心：与焦点同高
+    return {
+      focus: [d.x, y, d.z],
+      eye: [d.x + fx * dist, y, d.z + fz * dist],
+      shift: shift
+    };
+  }
+
+  function viewAngles(eye, focus) {
+    const dx = focus[0] - eye[0], dy = focus[1] - eye[1], dz = focus[2] - eye[2];
+    const dist = Math.hypot(dx, dy, dz) || 0.001;
+    return {
+      yaw: Math.atan2(dx, dz),
+      pitch: Math.asin(Math.max(-1, Math.min(1, dy / dist))),
+      dist: dist
+    };
+  }
+
+  function beginHallDevice(id) {
+    if (mode !== 'hall' || hallPaused || hallDeviceT) return;
+    let d = null;
+    for (let i = 0; i < Hall.devices.length; i++) {
+      if (Hall.devices[i].id === id) { d = Hall.devices[i]; break; }
+    }
+    if (!d) return;
+    const wasNear = !!(hallNear && hallNear.id === id);
+    const pose = hallDevicePose(d);
+    const from = viewAngles(CAM.eye, CAM.focus);
+    const to = viewAngles(pose.eye, pose.focus);
+    hallDeviceT = {
+      id: id,
+      phase: 'enter',
+      t: 0,
+      dur: 0.95,
+      fromEye: CAM.eye.slice(),
+      eye: pose.eye,
+      focus: pose.focus,
+      fromYaw: from.yaw,
+      fromPitch: from.pitch,
+      fromDist: from.dist,
+      toYaw: to.yaw,
+      toPitch: to.pitch,
+      toDist: to.dist,
+      fromShift: CAM.shiftX || 0,
+      toShift: pose.shift || 0
+    };
+    hallNear = null;
+    hallPromptFor(null);
+    if (typeof Dialogue !== 'undefined') Dialogue.hide();
+    /* 从装置终端退出后，不立刻把同一条提示再弹一遍 */
+    if (wasNear) hallMuteDialogueId = id;
+    hallFlashId = id;
+    hallFlashT = 0.65;
+  }
+
   function interactHall() {
-    if (mode !== 'hall') return;
+    if (mode !== 'hall' || hallPaused || hallDeviceT) return;
     if (!hallNear) {
       hallToast('附近没有可互动的设备');
       return;
     }
-    hallFlashId = hallNear.id;
-    hallFlashT = 0.65;
-    hallToast('「' + hallNear.name + '」 · 功能尚未接入');
+    beginHallDevice(hallNear.id);
+  }
+
+  function closeDevicePanel() {
+    if (!hallDeviceT || hallDeviceT.phase !== 'open') return;
+    if (typeof Lobby !== 'undefined') Lobby.closeDevice();
+    hideDeviceLabel();
+    showHallUi();
+    hallPromptFor(null);
+    HUD.setCursorVisible(false);
+    const t = hallDeviceT;
+    const follow = hallFollowPose();
+    const from = viewAngles(t.eye, t.focus);
+    const to = viewAngles(follow.eye, follow.focus);
+    t.fromEye = t.eye.slice();
+    t.eye = follow.eye;
+    t.focus = follow.focus;
+    t.fromYaw = from.yaw;
+    t.fromPitch = from.pitch;
+    t.fromDist = from.dist;
+    t.toYaw = to.yaw;
+    t.toPitch = to.pitch;
+    t.toDist = to.dist;
+    t.fromShift = CAM.shiftX || 0;
+    t.toShift = 0;
+    t.phase = 'exit';
+    t.t = 0;
+    t.dur = 0.68;
+  }
+
+  function showDeviceLabel(id) {
+    const label = $('deviceLabel');
+    if (!label) return;
+    const name = $('deviceTitle');
+    const kicker = $('deviceKicker');
+    const nameEl = $('deviceLabelName');
+    const kickerEl = $('deviceLabelKicker');
+    if (nameEl) nameEl.textContent = name ? name.textContent : '';
+    if (kickerEl) kickerEl.textContent = kicker ? kicker.textContent : '';
+    label.classList.remove('hidden');
+    positionDeviceLabel();
+  }
+
+  function hideDeviceLabel() {
+    const label = $('deviceLabel');
+    if (label) label.classList.add('hidden');
+  }
+
+  function positionDeviceLabel() {
+    if (!hallDeviceT || hallDeviceT.phase !== 'open') return;
+    let d = null;
+    for (let i = 0; i < Hall.devices.length; i++) {
+      if (Hall.devices[i].id === hallDeviceT.id) { d = Hall.devices[i]; break; }
+    }
+    if (!d) return;
+    const labelY = (d.height || 2.7) + 0.16;
+    const ground = worldToScreen(d.x, 0.1, d.z);
+    const top = worldToScreen(d.x, labelY, d.z);
+    const label = $('deviceLabel');
+    if (!label) return;
+    if (!ground || !top) { label.style.opacity = '0'; return; }
+    label.style.opacity = '1';
+    label.style.left = Math.round(ground.x) + 'px';
+    label.style.top = Math.round(top.y - 10) + 'px';
+  }
+
+  function renderHallPausePitch() {
+    const box = $('hallPausePitch');
+    if (!box) return;
+    box.innerHTML = '';
+    const current = Store.raw().settings.pitch;
+    [55, 62, 70, 80, 90].forEach(function (p) {
+      const b = UI.el('button', 'chip' + (current === p ? ' on' : ''), p + '°');
+      b.type = 'button';
+      b.addEventListener('click', function () {
+        Store.raw().settings.pitch = p;
+        Store.save();
+        renderHallPausePitch();
+      });
+      box.appendChild(b);
+    });
+  }
+
+  function openHallPause() {
+    if (mode !== 'hall' || hallPaused || hallDeviceT) return;
+    hallPaused = true;
+    setMouseLock(false);
+    HUD.setCursorVisible(false);
+    hallPromptFor(null);
+    renderHallPausePitch();
+    const box = $('hallPause');
+    if (box) box.classList.remove('hidden');
+  }
+
+  function closeHallPause() {
+    if (!hallPaused) return;
+    hallPaused = false;
+    const box = $('hallPause');
+    if (box) box.classList.add('hidden');
+    HUD.setCursorVisible(false);
+    if (!TOUCH_MODE) {
+      mouse.autoLockPending = true;
+      setMouseLock(true);
+    }
+  }
+
+  function toggleHallFullscreen() {
+    const doc = document;
+    const full = doc.fullscreenElement || doc.webkitFullscreenElement;
+    if (full) {
+      if (doc.exitFullscreen) doc.exitFullscreen().catch(function () {});
+      else if (doc.webkitExitFullscreen) doc.webkitExitFullscreen();
+      return;
+    }
+    const el = doc.documentElement;
+    const req = el.requestFullscreen || el.webkitRequestFullscreen;
+    if (!req) { UI.toast('当前浏览器不支持全屏', 'warn'); return; }
+    try {
+      const p = req.call(el, { navigationUI: 'hide' });
+      if (p && p.catch) p.catch(function () { UI.toast('浏览器拒绝进入全屏', 'warn'); });
+    } catch (err) {
+      UI.toast('浏览器拒绝进入全屏', 'warn');
+    }
+  }
+
+  function toStartMenu() {
+    if (mode !== 'hall') return;
+    hallPaused = false;
+    hallDeviceT = null;
+    const hp = $('hallPause');
+    if (hp) hp.classList.add('hidden');
+    hideDeviceLabel();
+    R.setFloorOverlay(null);
+    if (typeof Lobby !== 'undefined') {
+      Lobby.closeDevice();
+      Lobby.hide();
+    }
+    hideHallUi();
+    setMouseLock(false);
+    HUD.setCursorVisible(false);
+    R.setFog(34, 92);
+    R.setSky([0.11, 0.13, 0.15]);
+    mode = 'lobby';
+    if (typeof StartMenu !== 'undefined') StartMenu.show(true);
   }
 
   /* ---------- 大厅中央 ATA 泛光字 ---------- */
@@ -5134,6 +5582,7 @@ const G = (function () {
     const cy = HALL_ATA_TEX * 0.5;
     const h = HALL_ATA_H * HALL_ATA_PPM;
     const w = HALL_ATA_W * HALL_ATA_PPM;
+    const talk = hallAtaPulse;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.globalAlpha = 1;
     ctx.globalCompositeOperation = 'source-over';
@@ -5190,9 +5639,9 @@ const G = (function () {
       for (let i = 0; i < layers.length; i++) {
         const layer = layers[i];
         ctx.strokeStyle = layer[1];
-        ctx.lineWidth = Math.max(0.7, layer[0] * scale);
+        ctx.lineWidth = Math.max(0.7, layer[0] * scale * (1 + talk * 0.06));
         ctx.shadowColor = '#ffffff';
-        ctx.shadowBlur = layer[2] * scale;
+        ctx.shadowBlur = layer[2] * scale * (1 + talk * 0.5);
         ctx.beginPath();
         ctx.moveTo(x0, y0);
         ctx.lineTo(x1, y1);
@@ -5228,7 +5677,18 @@ const G = (function () {
       ctx.restore();
     }
 
-    ctx.globalAlpha = 0.82;
+    ctx.globalAlpha = 0.82 + talk * 0.14;
+    const top = hallAtaTopPoint();
+    drawA(hallAtaPos.aL);
+    drawT(top.x, top.z);
+    drawA(hallAtaPos.aR);
+    ctx.shadowBlur = 0;
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+
+  /* ATA 字「T」的中心；气泡也锚在它的上缘 */
+  function hallAtaTopPoint() {
     const midX = (hallAtaPos.aL.x + hallAtaPos.aR.x) * 0.5;
     const midZ = (hallAtaPos.aL.z + hallAtaPos.aR.z) * 0.5;
     let tX = midX;
@@ -5238,45 +5698,79 @@ const G = (function () {
     const tZMax = Hall.CENTER_R - HALL_ATA_H - 0.16;
     tX = clamp(tX, -tXLimit, tXLimit);
     tZ = clamp(tZ, tZMin, tZMax);
-    drawA(hallAtaPos.aL);
-    drawT(tX, tZ);
-    drawA(hallAtaPos.aR);
-    ctx.shadowBlur = 0;
-    ctx.globalAlpha = 1;
-    ctx.restore();
+    return { x: tX, z: tZ };
+  }
+
+  /* 气泡跟随 ATA 字，屏幕边缘会把气泡推回可视区 */
+  function positionAtaDialogue() {
+    if (typeof Dialogue === 'undefined' || !Dialogue.isVisible() || !hallAtaPos) return;
+    const top = hallAtaTopPoint();
+    const s = worldToScreenClamped(
+      top.x,
+      0.14,
+      top.z - HALL_ATA_H * 0.5 - 0.10
+    );
+    Dialogue.place(s.x, s.y);
   }
 
   function enterHall() {
-    if (mode === 'mission' || mode === 'hall') return;
+    if (mode === 'hall') return;
+    if (typeof Speech !== 'undefined') Speech.clear();
+    if (mode === 'mission') {
+      missionCamSaved = { dist: CAM.dist, fov: CAM.fov };
+    }
     closeTrainingLoadout();
     setMouseLock(false);
     mouse.down = false;
     mouse.autoLockPending = false;
+    mouse.lastUiLock = false;
     paused = false;
     ended = false;
     endReason = '';
     testMap = false;
     document.body.classList.remove('test-map');
     Inventory.close();
+    Inventory.reset();
+    cancelGadgetAim();
+    for (const k in keys) keys[k] = false;
     if (TOUCH_MODE) TOUCH.setEnabled(false);
     HUD.setCombatMode(false);
     HUD.setCursorVisible(false);
     HUD.hideEnd();
     const pauseBox = $('pause');
     if (pauseBox) pauseBox.classList.add('hidden');
-    if (typeof Lobby !== 'undefined') Lobby.hide();
+    const hallPauseBox = $('hallPause');
+    if (hallPauseBox) hallPauseBox.classList.add('hidden');
+    hallPaused = false;
+    hallDeviceT = null;
+    if (typeof Lobby !== 'undefined') {
+      Lobby.closeDevice();
+      Lobby.hide();
+      Lobby.refreshBank();
+    }
 
-    hallCamSaved = { pitch: CAM.pitch, dist: CAM.dist, fov: CAM.fov };
     hallT = 0;
     hallNear = null;
+    hallMuteDialogueId = '';
+    hallAtaPulse = 0;
     hallFlashId = '';
     hallFlashT = 0;
     hallToastT = 0;
     initHallAta();
+    if (typeof Dialogue !== 'undefined') Dialogue.hide();
     R.setFloorOverlay(null);
     R.buildStatic(function (geo) { Hall.buildStatic(geo); });
     R.setFog(24, 72);
     R.setSky([0.085, 0.095, 0.105]);
+
+    /* 装置 Blender 资产若晚于大厅静态几何加载完成，补一次静态重建 */
+    if (typeof ASSETS !== 'undefined' && ASSETS.devices && !ASSETS.devices.ready) {
+      ASSETS.load().then(function () {
+        if (mode === 'hall') {
+          R.buildStatic(function (geo) { Hall.buildStatic(geo); });
+        }
+      });
+    }
 
     player.charKey = charKeyOf(Store.char());
     player.x = Hall.SPAWN.x;
@@ -5295,6 +5789,12 @@ const G = (function () {
     player.sprintBlend = 0;
     player.gunCarryMix = 0;
     player.dead = false;
+    player.deadT = 0;
+    player.extracted = false;
+    player.extractT = 0;
+    player.reload = 0;
+    player.cool = 0;
+    player.gadgetAim = -1;
 
     CAM.pitch = 74;
     CAM.dist = 15;
@@ -5311,6 +5811,7 @@ const G = (function () {
     showHallUi();
     hallPromptFor(null);
     mode = 'hall';
+    if (typeof Dialogue !== 'undefined') Dialogue.say('welcome');
 
     /* 大厅也属于游戏内：进入后锁定鼠标；用户手势内请求，通常可直接成功 */
     if (!TOUCH_MODE) {
@@ -5319,23 +5820,19 @@ const G = (function () {
     }
   }
 
-  function leaveHall() {
-    if (mode !== 'hall') return;
-    R.setFloorOverlay(null);
-    hideHallUi();
-    if (hallCamSaved) {
-      CAM.pitch = hallCamSaved.pitch;
-      CAM.dist = hallCamSaved.dist;
-      CAM.fov = hallCamSaved.fov;
-      hallCamSaved = null;
-    }
-    R.setFog(34, 92);
-    R.setSky([0.11, 0.13, 0.15]);
-    toLobby();
-  }
-
   function updateHall(dt) {
     hallT += dt;
+    if (typeof Dialogue !== 'undefined') Dialogue.update(dt);
+    const talk = (typeof Dialogue !== 'undefined') ? Dialogue.pulse() : 0;
+    hallAtaPulse += (talk - hallAtaPulse) * (1 - Math.exp(-9 * dt));
+    if (hallPaused || hallDeviceT) {
+      player.moving = false;
+      player.sprinting = false;
+      player.moveBlend += (0 - player.moveBlend) * (1 - Math.exp(-8 * dt));
+      player.sprintBlend += (0 - player.sprintBlend) * (1 - Math.exp(-10 * dt));
+      updateHallAta(dt);
+      return;
+    }
     let ix = 0, iz = 0;
     if (keys.KeyW || keys.ArrowUp) iz -= 1;
     if (keys.KeyS || keys.ArrowDown) iz += 1;
@@ -5373,6 +5870,14 @@ const G = (function () {
     if (nearId !== oldId) {
       hallNear = near;
       hallPromptFor(hallNear);
+      if (near) {
+        if (near.id !== hallMuteDialogueId && typeof Dialogue !== 'undefined') {
+          Dialogue.say(near.id, { device: true });
+        }
+        hallMuteDialogueId = '';
+      } else if (typeof Dialogue !== 'undefined') {
+        Dialogue.hideDevice();
+      }
     }
 
     if (hallFlashT > 0) {
@@ -5389,8 +5894,52 @@ const G = (function () {
     updateHallAta(dt);
   }
 
-  /* 大厅镜头：跟随玩家，但焦点向房间中心偏移，保证相机始终留在墙内侧 */
+  /* 大厅镜头：跟随玩家；装置交互时推进到设备前再返回 */
   function updateHallCamera(dt) {
+    if (hallDeviceT) {
+      const t = hallDeviceT;
+      t.t += dt;
+      const k = Math.min(1, t.t / t.dur);
+      const e = k * k * (3 - 2 * k);
+      /* 位置和视线方向分开插值，避免焦点穿过相机导致瞬间 180° 翻转 */
+      CAM.eye[0] = lerp(t.fromEye[0], t.eye[0], e);
+      CAM.eye[1] = lerp(t.fromEye[1], t.eye[1], e);
+      CAM.eye[2] = lerp(t.fromEye[2], t.eye[2], e);
+      const yaw = angLerp(t.fromYaw, t.toYaw, e);
+      const pitch = lerp(t.fromPitch, t.toPitch, e);
+      const dist = lerp(t.fromDist, t.toDist, e);
+      const cp = Math.cos(pitch);
+      CAM.focus[0] = CAM.eye[0] + Math.sin(yaw) * cp * dist;
+      CAM.focus[1] = CAM.eye[1] + Math.sin(pitch) * dist;
+      CAM.focus[2] = CAM.eye[2] + Math.cos(yaw) * cp * dist;
+      if (k >= 1) {
+        CAM.eye[0] = t.eye[0];
+        CAM.eye[1] = t.eye[1];
+        CAM.eye[2] = t.eye[2];
+        CAM.focus[0] = t.focus[0];
+        CAM.focus[1] = t.focus[1];
+        CAM.focus[2] = t.focus[2];
+        if (t.phase === 'enter') {
+          t.phase = 'open';
+          setMouseLock(false);
+          HUD.setCursorVisible(false);
+          hideHallUi();
+          if (typeof Lobby !== 'undefined') Lobby.openDevice(t.id);
+          showDeviceLabel(t.id);
+        } else if (t.phase === 'exit') {
+          hallDeviceT = null;
+          if (!TOUCH_MODE) {
+            mouse.autoLockPending = true;
+            setMouseLock(true);
+          }
+        }
+      }
+      CAM.tanHalf = Math.tan(CAM.fov * Math.PI / 360);
+      CAM.shiftX = lerp(t.fromShift || 0, t.toShift || 0, e);
+      R.setCamera(CAM.eye, CAM.focus, CAM.fov, CAM.shiftX);
+      return;
+    }
+
     const k = 1 - Math.exp(-8 * dt);
     CAM.focus[0] = lerp(CAM.focus[0], player.x * 0.55, k);
     CAM.focus[1] = lerp(CAM.focus[1], 1.05, k);
@@ -5400,7 +5949,8 @@ const G = (function () {
     CAM.eye[1] = CAM.focus[1] + Math.sin(p) * CAM.dist;
     CAM.eye[2] = CAM.focus[2] + Math.cos(p) * CAM.dist;
     CAM.tanHalf = Math.tan(CAM.fov * Math.PI / 360);
-    R.setCamera(CAM.eye, CAM.focus, CAM.fov);
+    CAM.shiftX = 0;
+    R.setCamera(CAM.eye, CAM.focus, CAM.fov, 0);
   }
 
   function renderHall() {
@@ -5432,12 +5982,14 @@ const G = (function () {
       MODELS.drawUnit(R.overlay, player.charKey, ovUnit);
     }
     drawHallAta();
-    R.setFloorOverlay(hallAtaCanvas, 0, 0, HALL_ATA_SPAN, 0.13);
+    R.setFloorOverlay(hallAtaCanvas, 0, 0, HALL_ATA_SPAN, 0.13 + hallAtaPulse * 0.045);
+    positionAtaDialogue();
     Hall.drawDynamic(geo, hallT,
       hallNear ? hallNear.id : '',
       hallFlashId,
       hallFlashT > 0 ? hallFlashT / 0.65 : 0);
     R.end();
+    positionDeviceLabel();
   }
 
   /* ---------- 训练场配装台 ---------- */
@@ -5582,6 +6134,18 @@ const G = (function () {
   /* ---------- 出击 / 结算 / 回大厅 ---------- */
   function beginMission(cfg) {
     if (mode === 'mission') return;
+    if (typeof Speech !== 'undefined') Speech.clear();
+    hallPaused = false;
+    hallDeviceT = null;
+    hideDeviceLabel();
+    const hallPauseBox = $('hallPause');
+    if (hallPauseBox) hallPauseBox.classList.add('hidden');
+    R.setFloorOverlay(null);
+    if (typeof Lobby !== 'undefined') {
+      Lobby.closeDevice();
+      Lobby.hide();
+    }
+    hideHallUi();
     cfg = cfg || {};
     const isTest = !!cfg.testMap;
     testMap = isTest;
@@ -5631,6 +6195,13 @@ const G = (function () {
     player.maxShield = Store.maxShield();
     player.hp = player.maxHp;
     player.shield = player.maxShield;
+    if (QS.get('god') === '1') {
+      player.maxHp = 99999;
+      player.maxShield = 99999;
+      player.hp = player.maxHp;
+      player.shield = player.maxShield;
+      player.infiniteData = true;
+    }
     player.stam = CFG.PLAYER.stam;
     player.dead = false;
     player.deadT = 0;
@@ -5722,6 +6293,8 @@ const G = (function () {
     CAM.pitch = (Q_PITCH >= 30 && Q_PITCH <= 90)
       ? Q_PITCH
       : clamp(Store.raw().settings.pitch || CFG.CAM.PITCH, 30, 90);
+    CAM.dist = missionCamSaved.dist;
+    CAM.fov = missionCamSaved.fov;
     CAM.focus = [player.x, CFG.CAM.HEIGHT_OFF, player.z];
     CAM.eye = [player.x, player.maxShield + 12, player.z + 12];
 
@@ -5818,6 +6391,7 @@ const G = (function () {
 
   function finishRun(win, reason) {
     if (ended || mode !== 'mission') return;
+    if (typeof Speech !== 'undefined') Speech.clear();
     closeTrainingLoadout();
     setMouseLock(false);
     mouse.autoLockPending = false;
@@ -5836,7 +6410,7 @@ const G = (function () {
       if (TOUCH_MODE) TOUCH.setEnabled(false);
       Inventory.close();
       toLobby();
-      HUD.toast('测试场结束 · 返回机库', 'good');
+      HUD.toast('测试场结束 · 返回大厅', 'good');
       return;
     }
     setPause(false);
@@ -5917,34 +6491,8 @@ const G = (function () {
 
   function toLobby() {
     if (mode === 'lobby') return;
-    R.setFloorOverlay(null);
-    hideHallUi();
-    closeTrainingLoadout();
-    setMouseLock(false);
-    mouse.autoLockPending = false;
-    mouse.lastUiLock = false;
-    cancelGadgetAim();
-    knives = []; grenades = []; blasts = []; radFields = [];
-    mode = 'lobby';
-    ended = false;
-    paused = false;
-    mouse.down = false;
-    endReason = '';
-    testMap = false;
-    document.body.classList.remove('test-map');
-    if (canvas) canvas.style.cursor = 'grab';
-    if (TOUCH_MODE) TOUCH.setEnabled(false);
     HUD.respawn(0);
-    Inventory.reset();
-    HUD.setCombatMode(false);
-    HUD.setCursorVisible(false);
-    HUD.hideEnd();
-    const pauseBox = $('pause');
-    if (pauseBox) pauseBox.classList.add('hidden');
-    R.buildStatic(function (geo) { Hangar.buildStatic(geo); });
-    CAM.pitch = 23;
-    Lobby.show();
-    Lobby.refreshBank();
+    enterHall();
   }
 
   let flashTimer = 0;
@@ -6063,6 +6611,9 @@ const G = (function () {
           if (sp) HUD.aimAt(sp.x, sp.y);
         }
         render();
+        if (typeof Speech !== 'undefined') {
+          Speech.layout(!paused && !ended && !Inventory.isOpen() && !trainingOpen && !player.dead);
+        }
       }
       HUD.tick(dt);
     } catch (err) {
@@ -6082,7 +6633,13 @@ const G = (function () {
   function bindUi() {
     $('againBtn').addEventListener('click', toLobby);
     const hallExit = $('hallExit');
-    if (hallExit) hallExit.addEventListener('click', function () { leaveHall(); });
+    if (hallExit) hallExit.addEventListener('click', function () { toStartMenu(); });
+    const hallResume = $('hallResumeBtn');
+    if (hallResume) hallResume.addEventListener('click', closeHallPause);
+    const hallStartMenu = $('hallStartMenuBtn');
+    if (hallStartMenu) hallStartMenu.addEventListener('click', toStartMenu);
+    const hallFullscreen = $('hallFullscreenBtn');
+    if (hallFullscreen) hallFullscreen.addEventListener('click', toggleHallFullscreen);
     $('resumeBtn').addEventListener('click', function () {
       setPause(false);
       armMouseLock();
@@ -6141,7 +6698,13 @@ const G = (function () {
       Shop.init();
       ChipShop.init();
       Contracts.init();
+      Armory.init();
       Lobby.init();
+      if (typeof Dialogue !== 'undefined') Dialogue.init();
+      if (typeof Speech !== 'undefined') Speech.init();
+      if (typeof AIDebug !== 'undefined') {
+        AIDebug.init(QS.get('aidbg') === '1' || QS.get('aistuck') === '1');
+      }
       HUD.setCombatMode(false);
       TOUCH.init();
       if (typeof MOBILE !== 'undefined') MOBILE.init();
@@ -6188,6 +6751,23 @@ const G = (function () {
     const tab = QS.get('tab');
     if (tab) Lobby.setTab(tab);
 
+    const mapFile = QS.get('mapfile');
+    if (mapFile) {
+      document.body.classList.remove('menu-open');
+      const sm = $('startMenu');
+      if (sm) sm.classList.add('hidden');
+      fetch(mapFile).then(function (r) { return r.json(); }).then(function (m) {
+        if (!m || !m.floor) throw new Error('map file has no floor');
+        if (!m.id) m.id = 'test_map';
+        MAPSTORE.save(m);
+        beginMission({ weapons: [], character: Store.char(), mapId: m.id });
+      }).catch(function (err) {
+        console.error(err);
+        document.title = 'MAPFILE-ERR: ' + (err && err.message);
+      });
+      return;
+    }
+
     const go = QS.get('go');
     if (!go) return;
     setTimeout(function () {
@@ -6203,6 +6783,14 @@ const G = (function () {
   function devGo(kind) {
     if (kind === 'lobby') return;
     if (kind === 'hall') { enterHall(); return; }
+    if (kind === 'armory' || kind === 'printer' || kind === 'storage' ||
+        kind === 'fabricator' || kind === 'comms' || kind === 'teleporter') {
+      enterHall();
+      setTimeout(function () {
+        if (mode === 'hall') beginHallDevice(kind);
+      }, 120);
+      return;
+    }
     if (kind === 'test') {
       beginMission({ testMap: true, character: Store.char() });
       return;
@@ -6233,6 +6821,8 @@ const G = (function () {
     beginTestMap: function () { beginMission({ testMap: true, character: Store.char() }); },
     finishRun: finishRun,
     toLobby: toLobby,
+    closeDevicePanel: closeDevicePanel,
+    toStartMenu: toStartMenu,
     switchSlot: switchSlot,
     installChip: installChip,
     uninstallChip: uninstallChip,

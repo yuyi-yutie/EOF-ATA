@@ -7,7 +7,8 @@
    ============================================================ */
 
 const ASSETS = (function () {
-  const V = '20261126e3';
+  const V = '20261128d1';
+  const DEVICE_IDS = ['armory', 'printer', 'storage', 'fabricator', 'comms', 'teleporter'];
   const chest = {
     ready: false,
     body: null,
@@ -44,6 +45,8 @@ const ASSETS = (function () {
     openAngle: 1.76,
     error: null
   };
+  /* 大厅六个装置：Blender 导出的 OBJ / MTL，每个文件一个整体网格 */
+  const devices = { ready: false, list: {}, error: null };
   let loading = null;
 
   function parseMtl(text) {
@@ -91,7 +94,7 @@ const ASSETS = (function () {
     return 'body';
   }
 
-  function parseObj(text, mtl) {
+  function parseObj(text, mtl, keepWinding) {
     const verts = [];
     const faces = [];
     let group = 'body';
@@ -173,19 +176,22 @@ const ASSETS = (function () {
         arr.push(d[0], d[1], d[2], nx, ny, nz, c.color[0], c.color[1], c.color[2], emis);
       }
     }
-    /* 整组法线朝内时统一翻转：反转绕序并取反法线 */
-    for (const g in groups) {
-      if (orient[g] >= 0) continue;
-      const arr = groups[g];
-      for (let i = 0; i + 29 < arr.length; i += 30) {
-        for (let k = 0; k < 10; k++) {
-          const tmp = arr[i + 10 + k];
-          arr[i + 10 + k] = arr[i + 20 + k];
-          arr[i + 20 + k] = tmp;
+    /* 整组法线朝内时统一翻转：反转绕序并取反法线。
+       Blender 直接导出的多盒体网格绕序正确，可用 keepWinding 跳过该启发式。 */
+    if (!keepWinding) {
+      for (const g in groups) {
+        if (orient[g] >= 0) continue;
+        const arr = groups[g];
+        for (let i = 0; i + 29 < arr.length; i += 30) {
+          for (let k = 0; k < 10; k++) {
+            const tmp = arr[i + 10 + k];
+            arr[i + 10 + k] = arr[i + 20 + k];
+            arr[i + 20 + k] = tmp;
+          }
+          arr[i + 3] = -arr[i + 3]; arr[i + 4] = -arr[i + 4]; arr[i + 5] = -arr[i + 5];
+          arr[i + 13] = -arr[i + 13]; arr[i + 14] = -arr[i + 14]; arr[i + 15] = -arr[i + 15];
+          arr[i + 23] = -arr[i + 23]; arr[i + 24] = -arr[i + 24]; arr[i + 25] = -arr[i + 25];
         }
-        arr[i + 3] = -arr[i + 3]; arr[i + 4] = -arr[i + 4]; arr[i + 5] = -arr[i + 5];
-        arr[i + 13] = -arr[i + 13]; arr[i + 14] = -arr[i + 14]; arr[i + 15] = -arr[i + 15];
-        arr[i + 23] = -arr[i + 23]; arr[i + 24] = -arr[i + 24]; arr[i + 25] = -arr[i + 25];
       }
     }
     return groups;
@@ -240,7 +246,18 @@ const ASSETS = (function () {
       }).catch(function () { return ''; }),
       get('assets/house/house.json?v=' + V).then(function (r) {
         return r.ok ? r.json() : null;
-      }).catch(function () { return null; })
+      }).catch(function () { return null; }),
+      Promise.all(DEVICE_IDS.map(function (id) {
+        return Promise.all([
+          get('assets/devices/' + id + '.obj?v=' + V).then(function (r) {
+            if (!r.ok) throw new Error(id + '.obj ' + r.status);
+            return r.text();
+          }).catch(function () { return null; }),
+          get('assets/devices/' + id + '.mtl?v=' + V).then(function (r) {
+            return r.ok ? r.text() : '';
+          }).catch(function () { return ''; })
+        ]);
+      }))
     ]).then(function (res) {
       function assign(target, objText, mtlText, json) {
         const mtl = parseMtl(mtlText);
@@ -291,15 +308,31 @@ const ASSETS = (function () {
       assign(chest, res[0], res[1], res[2]);
       assign(weaponcrate, res[3], res[4], res[5]);
       assignHouse(house, res[6], res[7], res[8]);
-      return { chest: chest, weaponcrate: weaponcrate, house: house };
+      const devRes = Array.isArray(res[9]) ? res[9] : [];
+      for (let i = 0; i < DEVICE_IDS.length; i++) {
+        const pair = devRes[i] || [];
+        if (!pair[0]) continue;
+        const groups = parseObj(pair[0], parseMtl(pair[1]), true);
+        let arr = [];
+        for (const k in groups) {
+          for (let j = 0; j < groups[k].length; j++) arr.push(groups[k][j]);
+        }
+        if (arr.length) devices.list[DEVICE_IDS[i]] = arr;
+      }
+      devices.ready = DEVICE_IDS.every(function (id) {
+        return !!(devices.list[id] && devices.list[id].length);
+      });
+      return { chest: chest, weaponcrate: weaponcrate, house: house, devices: devices };
     }).catch(function (err) {
       chest.error = String(err);
       weaponcrate.error = String(err);
       house.error = String(err);
+      devices.error = String(err);
       chest.ready = false;
       weaponcrate.ready = false;
       house.ready = false;
-      return { chest: chest, weaponcrate: weaponcrate, house: house };
+      devices.ready = false;
+      return { chest: chest, weaponcrate: weaponcrate, house: house, devices: devices };
     });
     return loading;
   }
@@ -313,6 +346,7 @@ const ASSETS = (function () {
     chest: chest,
     weaponcrate: weaponcrate,
     house: house,
+    devices: devices,
     load: load
   };
 })();

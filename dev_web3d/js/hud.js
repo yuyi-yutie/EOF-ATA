@@ -314,7 +314,7 @@ const HUD = (function () {
           '<i class="g-cdbar"></i>'
         : '<div class="g-top"><span class="g-key">' + (slot === 0 ? 'Q' : 'E') + '</span></div>' +
           '<div class="g-name">空道具槽</div>' +
-          '<div class="g-foot"><span class="g-state">机库配置</span></div>';
+          '<div class="g-foot"><span class="g-state">军械库配置</span></div>';
       el.gadgets.appendChild(d);
     }
     updateGadgets(p);
