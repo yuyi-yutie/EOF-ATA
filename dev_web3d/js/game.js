@@ -37,6 +37,21 @@ const G = (function () {
   let hallFlashT = 0;
   let hallToastT = 0;
   let hallCamSaved = null;
+  let hallAtaCanvas = null;
+  let hallAtaCtx = null;
+  let hallAtaPos = null;
+
+  /* 大厅中央 ATA 泛光字：参考 dev_ata 主菜单，按玩家位置实时改变字形 */
+  const HALL_ATA_SCALE = (typeof Hall !== 'undefined' ? Hall.CENTER_R : 3.2) / 220;
+  const HALL_ATA_H = 100 * HALL_ATA_SCALE;
+  const HALL_ATA_W = HALL_ATA_H * 0.62;
+  const HALL_ATA_REST_GAP = 75 * HALL_ATA_SCALE;
+  const HALL_ATA_MAX_DRIFT = (220 - 75 - 20) * HALL_ATA_SCALE;
+  const HALL_ATA_FAR = 520 * HALL_ATA_SCALE;
+  const HALL_ATA_NEAR_GAP = 22 * HALL_ATA_SCALE;
+  const HALL_ATA_TEX = 512;
+  const HALL_ATA_SPAN = 7.4;
+  const HALL_ATA_PPM = HALL_ATA_TEX / HALL_ATA_SPAN;
 
   const CAM = {
     pitch: CFG.CAM.PITCH,
@@ -5069,6 +5084,168 @@ const G = (function () {
     hallToast('「' + hallNear.name + '」 · 功能尚未接入');
   }
 
+  /* ---------- 大厅中央 ATA 泛光字 ---------- */
+  function initHallAta() {
+    if (!hallAtaCanvas) {
+      hallAtaCanvas = document.createElement('canvas');
+      hallAtaCanvas.width = HALL_ATA_TEX;
+      hallAtaCanvas.height = HALL_ATA_TEX;
+      hallAtaCtx = hallAtaCanvas.getContext('2d');
+    }
+    hallAtaPos = {
+      aL: { x: -HALL_ATA_REST_GAP, z: 0 },
+      aR: { x: HALL_ATA_REST_GAP, z: 0 }
+    };
+    drawHallAta();
+  }
+
+  function updateHallAta(dt) {
+    if (!hallAtaPos) return;
+    const dx = player.x, dz = player.z;
+    const dist = Math.hypot(dx, dz) || 0.001;
+    const nx = dx / dist, nz = dz / dist;
+    const ratio = Math.min(dist / HALL_ATA_FAR, 1);
+    const drift = ratio * HALL_ATA_MAX_DRIFT;
+    const farL = { x: -HALL_ATA_REST_GAP + nx * drift, z: nz * drift };
+    const farR = { x: HALL_ATA_REST_GAP + nx * drift, z: nz * drift };
+    const nearL = { x: dx - HALL_ATA_NEAR_GAP, z: dz };
+    const nearR = { x: dx + HALL_ATA_NEAR_GAP, z: dz };
+    const ib = Math.max(0, 1 - dist / Hall.CENTER_R);
+    const b = ib * ib;
+    const k = 1 - Math.exp(-2.5 * dt);
+    const targetL = { x: farL.x + (nearL.x - farL.x) * b, z: farL.z + (nearL.z - farL.z) * b };
+    const targetR = { x: farR.x + (nearR.x - farR.x) * b, z: farR.z + (nearR.z - farR.z) * b };
+    /* 字母中心限制在圆内，给字形和泛光留出安全边距 */
+    const safeA = Hall.CENTER_R - 0.9;
+    const dl = Math.hypot(targetL.x, targetL.z);
+    if (dl > safeA) { targetL.x = targetL.x / dl * safeA; targetL.z = targetL.z / dl * safeA; }
+    const dr = Math.hypot(targetR.x, targetR.z);
+    if (dr > safeA) { targetR.x = targetR.x / dr * safeA; targetR.z = targetR.z / dr * safeA; }
+    hallAtaPos.aL.x += (targetL.x - hallAtaPos.aL.x) * k;
+    hallAtaPos.aL.z += (targetL.z - hallAtaPos.aL.z) * k;
+    hallAtaPos.aR.x += (targetR.x - hallAtaPos.aR.x) * k;
+    hallAtaPos.aR.z += (targetR.z - hallAtaPos.aR.z) * k;
+  }
+
+  function drawHallAta() {
+    if (!hallAtaCtx || !hallAtaPos) return;
+    const ctx = hallAtaCtx;
+    const cx = HALL_ATA_TEX * 0.5;
+    const cy = HALL_ATA_TEX * 0.5;
+    const h = HALL_ATA_H * HALL_ATA_PPM;
+    const w = HALL_ATA_W * HALL_ATA_PPM;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.clearRect(0, 0, HALL_ATA_TEX, HALL_ATA_TEX);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    /* 中央圆形屏幕：冷色扫描线 + 暖色字芯，贴合大厅的琥珀 / 冰蓝配色 */
+    const screenR = Hall.CENTER_R * HALL_ATA_PPM - 2;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, screenR, 0, Math.PI * 2);
+    ctx.clip();
+
+    const tint = ctx.createRadialGradient(cx, cy, 0, cx, cy, screenR);
+    tint.addColorStop(0, 'rgba(70, 150, 175, 0.10)');
+    tint.addColorStop(0.72, 'rgba(40, 90, 110, 0.055)');
+    tint.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    ctx.fillStyle = tint;
+    ctx.fillRect(0, 0, HALL_ATA_TEX, HALL_ATA_TEX);
+
+    ctx.strokeStyle = 'rgba(120, 210, 230, 0.045)';
+    ctx.lineWidth = 1;
+    for (let sy = cy - screenR; sy <= cy + screenR; sy += 4) {
+      ctx.beginPath();
+      ctx.moveTo(cx - screenR, sy);
+      ctx.lineTo(cx + screenR, sy);
+      ctx.stroke();
+    }
+    const sweep = ((hallT * 0.12) % 1) * 2 - 1;
+    ctx.strokeStyle = 'rgba(150, 230, 245, 0.12)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(cx - screenR, cy + sweep * screenR);
+    ctx.lineTo(cx + screenR, cy + sweep * screenR);
+    ctx.stroke();
+
+    ctx.strokeStyle = 'rgba(240, 176, 76, 0.20)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, screenR - 3, 0, Math.PI * 2);
+    ctx.stroke();
+
+    const layers = [
+      [22, 'rgba(111, 216, 239, 0.025)', 60],
+      [18, 'rgba(226, 126, 42, 0.09)', 50],
+      [10, 'rgba(240, 160, 58, 0.17)', 25],
+      [4, 'rgba(250, 190, 92, 0.58)', 10],
+      [2, 'rgba(238, 166, 58, 0.78)', 4]
+    ];
+    const scale = h / 100;
+
+    function seg(x0, y0, x1, y1) {
+      for (let i = 0; i < layers.length; i++) {
+        const layer = layers[i];
+        ctx.strokeStyle = layer[1];
+        ctx.lineWidth = Math.max(0.7, layer[0] * scale);
+        ctx.shadowColor = '#ffffff';
+        ctx.shadowBlur = layer[2] * scale;
+        ctx.beginPath();
+        ctx.moveTo(x0, y0);
+        ctx.lineTo(x1, y1);
+        ctx.stroke();
+      }
+    }
+
+    function anchor(p) {
+      return { x: cx + p.x * HALL_ATA_PPM, y: cy + p.z * HALL_ATA_PPM };
+    }
+
+    function drawA(p) {
+      const c = anchor(p);
+      const ddx = player.x - p.x;
+      const ddz = player.z - p.z;
+      const dd = Math.hypot(ddx, ddz) || 1;
+      const px = (ddx / dd) * w * 0.10;
+      const py = (ddz / dd) * h * 0.14;
+      ctx.save();
+      ctx.translate(c.x, c.y);
+      seg(-w / 2, h / 2, 0, -h / 2);
+      seg(0, -h / 2, w / 2, h / 2);
+      seg(-w * 0.32 + px, h * 0.06 + py, w * 0.32 + px, h * 0.06 + py);
+      ctx.restore();
+    }
+
+    function drawT(tx, tz) {
+      const c = anchor({ x: tx, z: tz });
+      ctx.save();
+      ctx.translate(c.x, c.y);
+      seg(-w * 0.9, -h / 2, w * 0.9, -h / 2);
+      seg(0, -h / 2, 0, h * 1.0);
+      ctx.restore();
+    }
+
+    ctx.globalAlpha = 0.82;
+    const midX = (hallAtaPos.aL.x + hallAtaPos.aR.x) * 0.5;
+    const midZ = (hallAtaPos.aL.z + hallAtaPos.aR.z) * 0.5;
+    let tX = midX;
+    let tZ = midZ - HALL_ATA_H * 0.35;
+    const tXLimit = Hall.CENTER_R - HALL_ATA_W * 0.9 - 0.16;
+    const tZMin = -Hall.CENTER_R + HALL_ATA_H * 0.5 + 0.16;
+    const tZMax = Hall.CENTER_R - HALL_ATA_H - 0.16;
+    tX = clamp(tX, -tXLimit, tXLimit);
+    tZ = clamp(tZ, tZMin, tZMax);
+    drawA(hallAtaPos.aL);
+    drawT(tX, tZ);
+    drawA(hallAtaPos.aR);
+    ctx.shadowBlur = 0;
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+
   function enterHall() {
     if (mode === 'mission' || mode === 'hall') return;
     closeTrainingLoadout();
@@ -5095,6 +5272,8 @@ const G = (function () {
     hallFlashId = '';
     hallFlashT = 0;
     hallToastT = 0;
+    initHallAta();
+    R.setFloorOverlay(null);
     R.buildStatic(function (geo) { Hall.buildStatic(geo); });
     R.setFog(24, 72);
     R.setSky([0.085, 0.095, 0.105]);
@@ -5142,6 +5321,7 @@ const G = (function () {
 
   function leaveHall() {
     if (mode !== 'hall') return;
+    R.setFloorOverlay(null);
     hideHallUi();
     if (hallCamSaved) {
       CAM.pitch = hallCamSaved.pitch;
@@ -5206,6 +5386,7 @@ const G = (function () {
         if (toast) toast.classList.remove('show');
       }
     }
+    updateHallAta(dt);
   }
 
   /* 大厅镜头：跟随玩家，但焦点向房间中心偏移，保证相机始终留在墙内侧 */
@@ -5250,6 +5431,8 @@ const G = (function () {
       ovUnit.overlay = true;
       MODELS.drawUnit(R.overlay, player.charKey, ovUnit);
     }
+    drawHallAta();
+    R.setFloorOverlay(hallAtaCanvas, 0, 0, HALL_ATA_SPAN, 0.13);
     Hall.drawDynamic(geo, hallT,
       hallNear ? hallNear.id : '',
       hallFlashId,
@@ -5734,6 +5917,7 @@ const G = (function () {
 
   function toLobby() {
     if (mode === 'lobby') return;
+    R.setFloorOverlay(null);
     hideHallUi();
     closeTrainingLoadout();
     setMouseLock(false);

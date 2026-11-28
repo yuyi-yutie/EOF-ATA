@@ -9,7 +9,9 @@
 const R = (function () {
   let gl = null;
   let W = 1, H = 1, dpr = 1;
-  let progSolid = null, progShadow = null, progPost = null, progNormal = null;
+  let progSolid = null, progShadow = null, progPost = null, progNormal = null, progFloor = null;
+  let floorVbo = null, floorTex = null;
+  let floorOverlay = null;
   let vpMat = new Float32Array(16);
   let viewMat = new Float32Array(16);
   let camPos = [0, 0, 0];
@@ -193,6 +195,21 @@ const R = (function () {
     'precision mediump float;',
     'uniform vec3 uColor; uniform float uAlpha;',
     'void main(){ gl_FragColor = vec4(uColor, uAlpha); }'
+  ].join('\n');
+
+  /* 地面发光贴片：把 2D canvas 作为透明纹理铺在地板上 */
+  const VS_FLOOR_TEX = [
+    'attribute vec3 aPos; attribute vec2 aUV;',
+    'uniform mat4 uVP;',
+    'varying vec2 vUV;',
+    'void main(){ vUV = aUV; gl_Position = uVP * vec4(aPos, 1.0); }'
+  ].join('\n');
+
+  const FS_FLOOR_TEX = [
+    'precision mediump float;',
+    'varying vec2 vUV;',
+    'uniform sampler2D uTex;',
+    'void main(){ gl_FragColor = texture2D(uTex, vUV); }'
   ].join('\n');
 
   /* 法线通道：给折边检测用 */
@@ -652,6 +669,15 @@ const R = (function () {
     progShadow = program(VS_FLAT, FS_FLAT, { aPos: 0 });
     progPost = program(VS_POST, FS_POST, { aPos: 0 });
     progNormal = program(VS_NRM, FS_NRM, { aPos: 0, aNrm: 1 });
+    progFloor = program(VS_FLOOR_TEX, FS_FLOOR_TEX, { aPos: 0, aUV: 1 });
+
+    floorVbo = gl.createBuffer();
+    floorTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, floorTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
     quadBuf = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
@@ -736,6 +762,52 @@ const R = (function () {
     staticGeo.upload();
   }
 
+  /* 地板发光贴片：透明纹理 + 加法混合，写在人物 / 覆盖层之前 */
+  function drawFloorOverlay() {
+    if (!floorOverlay || !floorOverlay.canvas) return;
+    const ov = floorOverlay;
+    const tex = ov.canvas;
+    if (!tex.width || !tex.height) return;
+
+    gl.bindTexture(gl.TEXTURE_2D, floorTex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, tex);
+
+    const s = ov.size * 0.5;
+    const x = ov.x, z = ov.z, y = ov.y;
+    const verts = new Float32Array([
+      x - s, y, z - s, 0, 0,
+      x + s, y, z - s, 1, 0,
+      x + s, y, z + s, 1, 1,
+      x - s, y, z - s, 0, 0,
+      x + s, y, z + s, 1, 1,
+      x - s, y, z + s, 0, 1
+    ]);
+
+    gl.useProgram(progFloor.p);
+    gl.uniformMatrix4fv(progFloor.u.uVP, false, vpMat);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, floorTex);
+    gl.uniform1i(progFloor.u.uTex, 0);
+
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+    gl.depthMask(false);
+    gl.disable(gl.CULL_FACE);
+    gl.bindBuffer(gl.ARRAY_BUFFER, floorVbo);
+    gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 20, 0);
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 20, 12);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    gl.disable(gl.BLEND);
+    gl.depthMask(true);
+    gl.enable(gl.CULL_FACE);
+    gl.cullFace(gl.BACK);
+  }
+
   function drawScene() {
     gl.enable(gl.DEPTH_TEST);
     gl.depthMask(true);
@@ -749,6 +821,8 @@ const R = (function () {
 
     /* 地面投影不再直接画纯色三角形，改为在 drawShadowMask 写入绿色遮罩，
        后处理阶段只乘暗地面纹理。 */
+    drawFloorOverlay();
+
     gl.depthMask(true);
     gl.enable(gl.CULL_FACE);
     gl.cullFace(gl.BACK);
@@ -1013,6 +1087,16 @@ const R = (function () {
     stat: staticGeo,
     setSky: function (c) { sky = c; },
     setFog: function (a, b) { fogRange = [a, b]; },
+    setFloorOverlay: function (canvas, x, z, size, y) {
+      if (!canvas) { floorOverlay = null; return; }
+      floorOverlay = {
+        canvas: canvas,
+        x: x || 0,
+        z: z || 0,
+        size: size || 6.4,
+        y: (y === undefined) ? 0.12 : y
+      };
+    },
     setVision: function (v) {
       if (!v) { visionOn = false; return; }
       visionOn = true;
