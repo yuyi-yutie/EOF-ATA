@@ -30,7 +30,7 @@
     if (standalone) document.documentElement.classList.add('standalone');
   })();
 </script>
-<link rel="stylesheet" href="css/app.css?v=20261127c5" />
+<link rel="stylesheet" href="css/app.css?v=20261128a6" />
 </head>
 <body>
 <div id="app">
@@ -477,6 +477,49 @@
     </div>
   </div>
 
+  <!-- ================= 开始菜单 ================= -->
+  <div id="startMenu" class="start-menu hidden" role="dialog" aria-modal="true" aria-labelledby="startTitle">
+    <div class="start-grid" aria-hidden="true"></div>
+    <div class="start-scan" aria-hidden="true"></div>
+
+    <div class="start-top">
+      <span>// EOFATA TERMINAL</span>
+      <span class="start-state"><i></i> SYSTEM READY</span>
+    </div>
+
+    <div class="start-core">
+      <div class="start-kicker">END OF FUTURE : ATA</div>
+      <h1 class="start-logo" id="startTitle" data-text="EOFATA">EOFATA</h1>
+      <div class="start-sub">末日撤离 · 轻量化战术射击</div>
+      <button type="button" id="startGameBtn" class="start-btn" data-start-choice="game">
+        <span class="start-btn-label">点击开始游戏</span>
+        <em>CLICK TO START</em>
+      </button>
+      <button type="button" id="startHallBtn" class="start-btn start-btn-hall" data-start-choice="hall">
+        <span class="start-btn-label">进入大厅</span>
+        <em>PHYSICAL LOBBY</em>
+      </button>
+    </div>
+
+    <div class="start-foot">
+      <span>机库终端 // HANGAR</span>
+      <span class="start-build">BUILD <b id="startBuild">—</b></span>
+    </div>
+  </div>
+
+  <!-- ================= 实体大厅 ================= -->
+  <div id="hallUI" class="hall-ui hidden">
+    <div class="hall-top">
+      <span class="hall-title">EOFATA <em>// 大厅</em></span>
+      <div class="hall-right">
+        <span class="hall-hint"><b>WASD</b> 移动 · <b>F</b> 互动 · <b>L</b> 锁定鼠标 · <b>ESC</b> 返回</span>
+        <button type="button" class="hall-exit" id="hallExit">返回机库</button>
+      </div>
+    </div>
+    <div class="hall-prompt hidden" id="hallPrompt"></div>
+    <div class="hall-toast" id="hallToast"></div>
+  </div>
+
   <div class="toast" id="toast"></div>
   <div class="flash" id="flash"></div>
 
@@ -495,7 +538,7 @@
 
 <script>
   window.__errs = [];
-  window.__build = '20261127c30';
+  window.__build = '20261128a6';
   console.info('EOFATA build ' + window.__build);
   document.title = 'EOFATA 3D — End of Future : ATA · ' + window.__build;
   window.addEventListener('error', function (e) {
@@ -508,9 +551,9 @@
   (function () {
     var files = [
       'config', 'items', 'grid', 'store', 'mapstore', 'animdata', 'charmodels', 'models', 'weaponview', 'weapondrag',
-      'world', 'hangar', 'gl', 'asset', 'ui', 'mobile', 'minimap', 'hud',
+      'world', 'hangar', 'hall', 'gl', 'asset', 'ui', 'mobile', 'minimap', 'hud',
       'itemtip', 'inventory', 'stash', 'shop', 'chipshop', 'contracts',
-      'lobby', 'touch', 'game', 'selftest'
+      'startmenu', 'lobby', 'touch', 'game', 'selftest'
     ];
     var v = window.__build + '.' + Date.now();
     for (var i = 0; i < files.length; i++) {

@@ -2,8 +2,8 @@
 
 /* ============================================================
    R — 极简 WebGL 渲染器（零依赖）
-   1) 场景渲染到离屏缓冲：方块 + 两段色阶 + 地面投影阴影
-   2) 全屏后处理：深度边缘检测 → 均匀墨线（不会断、不会黑块）
+   1) 场景渲染到离屏缓冲：方块 + 两段色阶 + 地面投影遮罩
+   2) 全屏后处理：深度边缘检测 → 均匀墨线 + 地面阴影乘暗 + 视野压暗
    ============================================================ */
 
 const R = (function () {
@@ -21,7 +21,7 @@ const R = (function () {
   let sky = [0.26, 0.29, 0.33];
   let fogRange = [30, 78];
   const NEAR = 0.2, FAR = 260;
-  const SHADOW_COL = [0.335, 0.295, 0.285];
+  const CAST_SHADOW = [0.88, 0.86, 0.83];
   const INK = [0.086, 0.075, 0.059];
 
   let fbo = null, colTex = null, depTex = null, fboN = null, nrmTex = null, fboW = 0, fboH = 0;
@@ -228,6 +228,7 @@ const R = (function () {
     'uniform float uVisionRange; uniform float uVisionOn;',
     'uniform float uVisionYaw; uniform float uVisionHalf;',
     'uniform float uVisionShade;',
+    'uniform vec3 uCastShadow;',
     'uniform sampler2D uShadowTex;',
     'float lin(float d){',
     '  float z = d * 2.0 - 1.0;',
@@ -272,6 +273,9 @@ const R = (function () {
     '                 min(min(dot(n0, n5), dot(n0, n6)), min(dot(n0, n7), dot(n0, n8))) * 0.98);',
     '  float eN = smoothstep(0.99, 0.93, nd);',
     '  float e = max(eD, eN * 0.92);',
+    '  vec3 P = worldAt(vUv);',
+    '  float ground = smoothstep(0.55, 0.85, n0.y) * (1.0 - smoothstep(0.035, 0.10, P.y));',
+    '  float castShadow = texture2D(uShadowTex, vUv).g;',
     '  float un0 = texture2D(uMask, vUv).b;',
     '  float un = un0;',
     '  un = max(un, texture2D(uMask, vUv + vec2(t2.x, 0.0)).b);',
@@ -317,6 +321,8 @@ const R = (function () {
     '  float nearBand = band * (1.0 - mn);',
     '  vec3 ink = mix(uInk, vec3(0.97, 0.98, 1.0), band);',
     '  vec3 c = texture2D(uColor, vUv).rgb;',
+    /* 地面投影只乘暗已有地砖颜色，不覆盖砖缝 / 纹理 */
+    '  c *= mix(vec3(1.0), uCastShadow, castShadow * ground);',
     '  c = mix(c, ink, max(e, nearBand * 0.92));',
     '  float ux1 = texture2D(uMask, vUv + vec2(t1.x, 0.0)).b;',
     '  float ux2 = texture2D(uMask, vUv - vec2(t1.x, 0.0)).b;',
@@ -334,7 +340,6 @@ const R = (function () {
     '  else if (urel > 0.12) unitCol = vec3(0.28, 0.95, 0.38);',
     '  c = mix(c, unitCol, clamp(unitEdge, 0.0, 1.0) * 0.92);',
     '  if (uVisionOn > 0.5) {',
-    '    vec3 P = worldAt(vUv);',
     '    vec2 rel = P.xz - uVisionPos;',
     '    float vd = length(rel);',
     '    float shadow = step(0.5, texture2D(uShadowTex, vUv).r);',
@@ -343,7 +348,6 @@ const R = (function () {
     '    float vdang = abs(vang - uVisionYaw);',
     '    vdang = abs(mod(vdang + 3.14159265, 6.2831853) - 3.14159265);',
     '    float cone = step(vdang, uVisionHalf);',
-    '    float ground = smoothstep(0.55, 0.85, n0.y) * (1.0 - smoothstep(0.035, 0.10, P.y));',
     '    float dark = max(shadow, 1.0 - inRange * cone);',
     '    c *= mix(1.0, uVisionShade, dark * ground);',
     '  }',
@@ -743,16 +747,8 @@ const R = (function () {
        后面的纯色覆盖层也能检测到遮挡。 */
     sceneGeo.drawSolid();
 
-    gl.depthMask(false);
-    gl.disable(gl.CULL_FACE);
-    gl.useProgram(progShadow.p);
-    gl.uniformMatrix4fv(progShadow.u.uVP, false, vpMat);
-    gl.uniform3f(progShadow.u.uColor, SHADOW_COL[0], SHADOW_COL[1], SHADOW_COL[2]);
-    gl.uniform1f(progShadow.u.uAlpha, 1.0);
-    staticGeo.drawShadow();
-    sceneGeo.drawShadow();
-    dynGeo.drawShadow();
-
+    /* 地面投影不再直接画纯色三角形，改为在 drawShadowMask 写入绿色遮罩，
+       后处理阶段只乘暗地面纹理。 */
     gl.depthMask(true);
     gl.enable(gl.CULL_FACE);
     gl.cullFace(gl.BACK);
@@ -873,24 +869,39 @@ const R = (function () {
     gl.cullFace(gl.BACK);
   }
 
-  /* 硬边地面阴影遮罩：把视野遮挡多边形画成 1-bit 屏幕遮罩 */
+  /* 硬边地面阴影遮罩
+     R = 视野遮挡（角色 / 地面视野阴影）
+     G = 墙体 / 物体向地面投射的阴影，后处理仅乘暗地面纹理 */
   function drawShadowMask() {
     gl.bindFramebuffer(gl.FRAMEBUFFER, fboS);
     gl.viewport(0, 0, W, H);
     gl.clearColor(0, 0, 0, 1);
     gl.clear(gl.COLOR_BUFFER_BIT);
-    if (!shadowGeo.nS || shadowGeo.nS <= 0) return;
     gl.disable(gl.DEPTH_TEST);
     gl.disable(gl.CULL_FACE);
     gl.disable(gl.BLEND);
     gl.useProgram(progShadow.p);
     gl.uniformMatrix4fv(progShadow.u.uVP, false, vpMat);
-    gl.uniform3f(progShadow.u.uColor, 1, 1, 1);
     gl.uniform1f(progShadow.u.uAlpha, 1);
-    gl.bindBuffer(gl.ARRAY_BUFFER, shadowGeo.bufS);
-    gl.enableVertexAttribArray(0);
-    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 40, 0);
-    gl.drawArrays(gl.TRIANGLES, 0, shadowGeo.nS / 10);
+
+    /* R 通道：视野遮挡多边形（存在 shadowGeo.solid 里） */
+    if (shadowGeo.nS > 0) {
+      gl.uniform3f(progShadow.u.uColor, 1, 0, 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, shadowGeo.bufS);
+      gl.enableVertexAttribArray(0);
+      gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 40, 0);
+      gl.drawArrays(gl.TRIANGLES, 0, shadowGeo.nS / 10);
+    }
+
+    /* G 通道：静态 / 动态物体的硬边地面投影，重叠只取一次 */
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE);
+    gl.uniform3f(progShadow.u.uColor, 0, 1, 0);
+    staticGeo.drawShadow();
+    sceneGeo.drawShadow();
+    dynGeo.drawShadow();
+    gl.disable(gl.BLEND);
+
     gl.enable(gl.DEPTH_TEST);
     gl.enable(gl.CULL_FACE);
     gl.cullFace(gl.BACK);
@@ -953,6 +964,7 @@ const R = (function () {
     gl.uniform1f(progPost.u.uVisionHalf, visionHalf);
     gl.uniform1f(progPost.u.uVisionShade, visionShade);
     gl.uniform1f(progPost.u.uVisionOn, visionOn ? 1 : 0);
+    gl.uniform3f(progPost.u.uCastShadow, CAST_SHADOW[0], CAST_SHADOW[1], CAST_SHADOW[2]);
 
     gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
     gl.enableVertexAttribArray(0);

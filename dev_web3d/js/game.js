@@ -25,12 +25,18 @@ const G = (function () {
   let inspectDrag = null;
   let paused = false;
   let ended = false;
-  let mode = 'lobby';           // 'lobby' | 'mission'
+  let mode = 'lobby';           // 'lobby' | 'hall' | 'mission'
   let endReason = '';
   let testMap = false;
   let trainingOpen = false;     // 训练场配装台界面
   let trainingWeapons = [];     // 训练场当前选择的武器 id
   let trainingGadgets = [];     // 训练场当前选择的道具 id
+  let hallT = 0;
+  let hallNear = null;
+  let hallFlashId = '';
+  let hallFlashT = 0;
+  let hallToastT = 0;
+  let hallCamSaved = null;
 
   const CAM = {
     pitch: CFG.CAM.PITCH,
@@ -73,7 +79,7 @@ const G = (function () {
   let flashes = [];
   let sparks = [];
   let projectiles = [];   // 敌方喷吐弹
-  let bullets = [];       // 玩家的实弹（热学/力学/电学）
+  let bullets = [];       // 玩家 / NPC 共用的实体子弹（热学/力学/电学/光学/声学）
   let zones = [];         // 热学燃烧区
   let beams = [];         // 激光折线
   let lidDebris = [];     // 撬飞的箱盖
@@ -135,12 +141,13 @@ const G = (function () {
   function setMouseLock(on) {
     if (TOUCH_MODE || !canvas) return;
     if (on) {
-      if (mode !== 'mission' || paused || ended || Inventory.isOpen()) return;
+      if ((mode !== 'mission' && mode !== 'hall') || paused || ended || Inventory.isOpen()) return;
       if (canvas.requestPointerLock) {
         const p = canvas.requestPointerLock();
         if (p && p.catch) {
           p.catch(function () {
-            HUD.toast('无法锁定鼠标 · 点击画面或按 L 重试', 'warn');
+            if (mode === 'hall') hallToast('无法锁定鼠标 · 点击画面或按 L 重试');
+            else HUD.toast('无法锁定鼠标 · 点击画面或按 L 重试', 'warn');
           });
         }
       }
@@ -324,6 +331,16 @@ const G = (function () {
     window.addEventListener('keydown', function (e) {
       keys[e.code] = true;
 
+      if (mode === 'hall') {
+        if (e.code === 'Escape') { e.preventDefault(); leaveHall(); }
+        else if (e.code === 'KeyF' && !e.repeat) { e.preventDefault(); interactHall(); }
+        else if (e.code === 'KeyL') {
+          e.preventDefault();
+          if (mouse.locked) setMouseLock(false);
+          else { mouse.autoLockPending = true; setMouseLock(true); }
+        }
+        return;
+      }
       if (mode === 'lobby') return;
 
       /* 结算界面：R / ESC 返回机库 */
@@ -457,7 +474,9 @@ const G = (function () {
       mouse.locked = document.pointerLockElement === canvas;
       if (mouse.locked) {
         mouse.autoLockPending = false;
-        HUD.toast('鼠标已锁定 · 移动鼠标瞄准 · L 解除', 'good');
+        if (mode !== 'hall') HUD.toast('鼠标已锁定 · 移动鼠标瞄准 · L 解除', 'good');
+      } else if (mode === 'hall') {
+        hallToast('鼠标已解锁 · 点击画面重新锁定 / 右上角返回机库');
       } else if (!Inventory.isOpen() && !trainingOpen) {
         /* 解除锁定后系统指针回到窗口中心：同步一下虚拟指针，方便操作 UI。
            打开界面时不解锁重置，避免关闭界面后视角突然回正。 */
@@ -468,10 +487,18 @@ const G = (function () {
     });
     document.addEventListener('pointerlockerror', function () {
       mouse.locked = false;
-      HUD.toast('浏览器拒绝锁定鼠标 · 点击画面或按 L 重试', 'warn');
+      if (mode === 'hall') hallToast('无法锁定鼠标 · 点击画面或按 L 重试');
+      else HUD.toast('浏览器拒绝锁定鼠标 · 点击画面或按 L 重试', 'warn');
     });
     canvas.addEventListener('mousedown', function (e) {
       if (TOUCH_MODE) return;
+      if (mode === 'hall') {
+        if (e.button === 0 && !mouse.locked) {
+          mouse.autoLockPending = true;
+          setMouseLock(true);
+        }
+        return;
+      }
       if (e.button !== 0 || mode !== 'mission' || paused || ended || Inventory.isOpen()) return;
       /* 系统指针未锁定：第一次点击用来请求锁定，不误开火 */
       if (!mouse.locked && mouse.autoLockPending) {
@@ -1431,7 +1458,8 @@ const G = (function () {
           c: i % 2 ? [1, 0.48, 0.18] : [1, 0.76, 0.3], s: 0.2 + Math.random() * 0.16
         });
       }
-      spawnZone(b.x, b.z, b.c, b.zMul, b.zoneR);
+      /* 敌人子弹命中墙 / 地面不生成玩家阵营的燃烧区，避免误伤和直接伤害。 */
+      if (!b.hostile) spawnZone(b.x, b.z, b.c, b.zMul, b.zoneR);
     } else if (b.kind === 'voltaic') {
       for (let i = 0; i < 3; i++) {
         sparks.push({
@@ -1453,16 +1481,6 @@ const G = (function () {
       tick: 0, dps: (w.tickDmg || 3.5) * 4 * (dmgMul || 1), c: c || w.rgb2,
       seed: Math.random() * 10,
       faction: 'player', hostile: false, ignorePlayer: true
-    });
-  }
-
-  function spawnHostileZone(x, z, w, e) {
-    zones.push({
-      x: x, z: z, r: w.zoneR || 3.1, life: w.zoneLife || 3.2,
-      tick: 0, dps: (w.tickDmg || 3.5) * 4, c: w.rgb2,
-      seed: Math.random() * 10,
-      faction: e.faction || 'squad', hostile: true,
-      ignorePlayer: !enemyHostileToPlayer(e)
     });
   }
 
@@ -2745,21 +2763,8 @@ const G = (function () {
     return !e.squadRef || relationOf(e) === 'hostile';
   }
 
-  function damageTargetFromEnemy(e, target, dmg, col) {
-    if (!target) return;
-    const tx = target.kind === 'player' ? player.x : (target.ref ? target.ref.x : target.x);
-    const tz = target.kind === 'player' ? player.z : (target.ref ? target.ref.z : target.z);
-    /* 最后一次视线校验：直接伤害型武器不能在走位 / 失去视野后隔墙命中。 */
-    if (World.sightBlocked(e.x, e.z, tx, tz)) return;
-    if (target.kind === 'player') {
-      if (enemyHostileToPlayer(e) && !player.dead) damagePlayer(dmg);
-      return;
-    }
-    const o = target.ref;
-    if (!o || o.dead || factionOf(o) === factionOf(e)) return;
-    damageEnemy(o, dmg, Math.atan2(o.x - e.x, o.z - e.z), col, true, false, e.x, e.z);
-  }
-
+  /* 所有持枪 NPC（清剿小队 / 拾荒者 / 其他枪手）统一走发射实体子弹的逻辑，
+     不做任何“看到即命中”的直接伤害。 */
   function fireEnemyBullet(e, tx, tz, d) {
     const w = enemyWeapon(e);
     let spread = CFG.GUNNER.spread;
@@ -2776,7 +2781,7 @@ const G = (function () {
       mz = e.z + Math.cos(a) * 0.3;
     }
     bullets.push({
-      kind: 'kinetic', wi: e.weaponId === undefined ? CFG.GUNNER.weaponId : e.weaponId,
+      kind: w.id || 'kinetic', wi: e.weaponId === undefined ? CFG.GUNNER.weaponId : e.weaponId,
       hostile: true, faction: e.faction || 'scav',
       ignorePlayer: !enemyHostileToPlayer(e),
       ox: e.x, oz: e.z,
@@ -2789,91 +2794,16 @@ const G = (function () {
     flashes.push({ x: mx, y: 1.04, z: mz, yaw: a, t: 0.1, s: 0.16, c: [1.0, 0.95, 0.82] });
   }
 
-  /* 敌人的其它武器模态：保持与玩家版本相近的视觉 / 伤害反馈 */
-  function fireEnemyLaser(e, target, tx, tz, d) {
-    const w = enemyWeapon(e);
-    const fx = e.x + Math.sin(e.yaw) * 0.7;
-    const fz = e.z + Math.cos(e.yaw) * 0.7;
-    beams.push({ pts: [{ x: fx, z: fz }, { x: tx, z: tz }], t: 0.18, c: w.rgb2 });
-    flashes.push({ x: fx, y: 1.03, z: fz, yaw: e.yaw, t: 0.08, s: 0.28, c: w.rgb2 });
-    damageTargetFromEnemy(e, target, w.dmg, w.rgb2);
-    sparks.push({ x: tx, y: 1.04, z: tz, t: 0.2, c: w.rgb2, s: 0.28 });
-  }
-
-  function fireEnemySonic(e, target, tx, tz, d) {
-    const w = enemyWeapon(e);
-    const half = (w.halfAngle || 33) * Math.PI / 180;
-    sonicWaves.push({
-      x: e.x + Math.sin(e.yaw) * 0.5, z: e.z + Math.cos(e.yaw) * 0.5,
-      ang: e.yaw, half: half, range: w.range,
-      t: 0, life: 0.72, c: w.rgb2, seed: Math.random() * 10
-    });
-    damageTargetFromEnemy(e, target, w.dmg, w.rgb2);
-    sparks.push({ x: e.x, y: 1.0, z: e.z, t: 0.2, c: w.rgb2, s: 0.4 });
-  }
-
-  function fireEnemyThermal(e, target, tx, tz, d) {
-    const w = enemyWeapon(e);
-    const mx = e.x + Math.sin(e.yaw) * 0.7;
-    const mz = e.z + Math.cos(e.yaw) * 0.7;
-    tracers.push({ x0: mx, z0: mz, x1: tx, z1: tz, c: w.rgb2, t: 0.12 });
-    damageTargetFromEnemy(e, target, w.dmg, w.rgb2);
-    for (let i = 0; i < 4; i++) {
-      sparks.push({
-        x: tx + (Math.random() - 0.5) * 0.6, y: 0.65 + Math.random() * 0.9,
-        z: tz + (Math.random() - 0.5) * 0.6, t: 0.2 + Math.random() * 0.12,
-        c: i % 2 ? [1, 0.48, 0.18] : w.rgb2, s: 0.2 + Math.random() * 0.14
-      });
-    }
-    spawnHostileZone(tx, tz, w, e);
-  }
-
-  function fireEnemyVoltaic(e, target, tx, tz, d) {
-    const w = enemyWeapon(e);
-    const mx = e.x + Math.sin(e.yaw) * 0.7;
-    const mz = e.z + Math.cos(e.yaw) * 0.7;
-    bolts.push({
-      x0: mx, z0: mz, x1: tx, z1: tz,
-      t: 0.18, c: w.rgb2, seed: Math.random() * 10
-    });
-    damageTargetFromEnemy(e, target, w.dmg, w.rgb2);
-    const used = [];
-    if (target && target.ref) used.push(target.ref);
-    let src = { x: tx, z: tz };
-    const maxN = w.chainMax || 3;
-    for (let i = 0; i < maxN; i++) {
-      let best = null, bd = w.chainR || 6;
-      for (const o of enemies) {
-        if (o.dead || o === e || factionOf(o) === factionOf(e) || used.indexOf(o) >= 0) continue;
-        const od = Math.hypot(o.x - src.x, o.z - src.z);
-        if (od >= bd) continue;
-        if (World.sightBlocked(src.x, src.z, o.x, o.z)) continue;
-        bd = od; best = o;
-      }
-      if (!best) break;
-      bolts.push({
-        x0: src.x, z0: src.z, x1: best.x, z1: best.z,
-        t: 0.18, c: w.rgb2, seed: Math.random() * 10
-      });
-      const mul = i < (w.chainMul || []).length ? w.chainMul[i] : 0.25;
-      damageEnemy(best, w.dmg * mul, Math.atan2(best.x - src.x, best.z - src.z), w.rgb2, true, false, e.x, e.z);
-      used.push(best);
-      src = { x: best.x, z: best.z };
-    }
-  }
-
+  /* 所有持枪 NPC 统一发射实体子弹，不做任何“看到即命中”的直接伤害。
+     laser / sonic / thermal / voltaic 的子弹会带对应颜色和弹体外观。 */
   function fireEnemyWeapon(e, target, tx, tz, d) {
     const w = enemyWeapon(e);
-    /* 走位后可能已经绕到墙角后面；不再产生光束 / 燃烧区 / 电弧。 */
+    /* 走位后可能已经绕到墙角后面；先做一次视线校验。 */
     if (World.sightBlocked(e.x, e.z, tx, tz)) return;
     const mx = e.x + Math.sin(e.yaw) * 0.7;
     const mz = e.z + Math.cos(e.yaw) * 0.7;
     flashes.push({ x: mx, y: 1.03, z: mz, yaw: e.yaw, t: 0.06, s: 0.3, c: w.rgb2 });
-    if (w.id === 'laser') fireEnemyLaser(e, target, tx, tz, d);
-    else if (w.id === 'sonic') fireEnemySonic(e, target, tx, tz, d);
-    else if (w.id === 'thermal') fireEnemyThermal(e, target, tx, tz, d);
-    else if (w.id === 'voltaic') fireEnemyVoltaic(e, target, tx, tz, d);
-    else fireEnemyBullet(e, tx, tz, d);
+    fireEnemyBullet(e, tx, tz, d);
     e.ammo = Math.max(0, e.ammo - 1);
   }
 
@@ -5083,6 +5013,250 @@ const G = (function () {
     R.end();
   }
 
+  /* ---------- 实体大厅 ---------- */
+  function showHallUi() {
+    const box = $('hallUI');
+    if (box) box.classList.remove('hidden');
+  }
+
+  function hideHallUi() {
+    const box = $('hallUI');
+    if (box) box.classList.add('hidden');
+    const prompt = $('hallPrompt');
+    if (prompt) {
+      prompt.classList.add('hidden');
+      prompt.innerHTML = '';
+    }
+    const toast = $('hallToast');
+    if (toast) {
+      toast.classList.remove('show');
+      toast.textContent = '';
+    }
+    hallNear = null;
+    hallFlashId = '';
+    hallFlashT = 0;
+    hallToastT = 0;
+  }
+
+  function hallPromptFor(d) {
+    const prompt = $('hallPrompt');
+    if (!prompt) return;
+    if (!d) {
+      prompt.classList.add('hidden');
+      prompt.innerHTML = '';
+      return;
+    }
+    prompt.innerHTML = '<b>F</b> 与 <span class="hp-name">「' + d.name + '」</span> 互动';
+    prompt.classList.remove('hidden');
+  }
+
+  function hallToast(msg) {
+    const toast = $('hallToast');
+    if (!toast) return;
+    toast.textContent = msg;
+    toast.classList.add('show');
+    hallToastT = 2.4;
+  }
+
+  function interactHall() {
+    if (mode !== 'hall') return;
+    if (!hallNear) {
+      hallToast('附近没有可互动的设备');
+      return;
+    }
+    hallFlashId = hallNear.id;
+    hallFlashT = 0.65;
+    hallToast('「' + hallNear.name + '」 · 功能尚未接入');
+  }
+
+  function enterHall() {
+    if (mode === 'mission' || mode === 'hall') return;
+    closeTrainingLoadout();
+    setMouseLock(false);
+    mouse.down = false;
+    mouse.autoLockPending = false;
+    paused = false;
+    ended = false;
+    endReason = '';
+    testMap = false;
+    document.body.classList.remove('test-map');
+    Inventory.close();
+    if (TOUCH_MODE) TOUCH.setEnabled(false);
+    HUD.setCombatMode(false);
+    HUD.setCursorVisible(false);
+    HUD.hideEnd();
+    const pauseBox = $('pause');
+    if (pauseBox) pauseBox.classList.add('hidden');
+    if (typeof Lobby !== 'undefined') Lobby.hide();
+
+    hallCamSaved = { pitch: CAM.pitch, dist: CAM.dist, fov: CAM.fov };
+    hallT = 0;
+    hallNear = null;
+    hallFlashId = '';
+    hallFlashT = 0;
+    hallToastT = 0;
+    R.buildStatic(function (geo) { Hall.buildStatic(geo); });
+    R.setFog(24, 72);
+    R.setSky([0.085, 0.095, 0.105]);
+
+    player.charKey = charKeyOf(Store.char());
+    player.x = Hall.SPAWN.x;
+    player.z = Hall.SPAWN.z;
+    player.yaw = Hall.SPAWN.yaw;
+    player.moveYaw = player.yaw;
+    player.aimYaw = player.yaw;
+    player.headWorldYaw = player.yaw;
+    player.headYaw = 0;
+    player.aimActive = false;
+    player.moving = false;
+    player.sprinting = false;
+    player.animT = 0;
+    player.swayT = 0;
+    player.moveBlend = 0;
+    player.sprintBlend = 0;
+    player.gunCarryMix = 0;
+    player.dead = false;
+
+    CAM.pitch = 74;
+    CAM.dist = 15;
+    CAM.fov = 58;
+    const pitch = CAM.pitch * Math.PI / 180;
+    CAM.focus = [player.x * 0.55, 1.05, player.z * 0.55 - 0.9];
+    CAM.eye = [
+      CAM.focus[0],
+      CAM.focus[1] + Math.sin(pitch) * CAM.dist,
+      CAM.focus[2] + Math.cos(pitch) * CAM.dist
+    ];
+
+    if (canvas) canvas.style.cursor = 'default';
+    showHallUi();
+    hallPromptFor(null);
+    mode = 'hall';
+
+    /* 大厅也属于游戏内：进入后锁定鼠标；用户手势内请求，通常可直接成功 */
+    if (!TOUCH_MODE) {
+      mouse.autoLockPending = true;
+      setMouseLock(true);
+    }
+  }
+
+  function leaveHall() {
+    if (mode !== 'hall') return;
+    hideHallUi();
+    if (hallCamSaved) {
+      CAM.pitch = hallCamSaved.pitch;
+      CAM.dist = hallCamSaved.dist;
+      CAM.fov = hallCamSaved.fov;
+      hallCamSaved = null;
+    }
+    R.setFog(34, 92);
+    R.setSky([0.11, 0.13, 0.15]);
+    toLobby();
+  }
+
+  function updateHall(dt) {
+    hallT += dt;
+    let ix = 0, iz = 0;
+    if (keys.KeyW || keys.ArrowUp) iz -= 1;
+    if (keys.KeyS || keys.ArrowDown) iz += 1;
+    if (keys.KeyA || keys.ArrowLeft) ix -= 1;
+    if (keys.KeyD || keys.ArrowRight) ix += 1;
+    const mag = Math.hypot(ix, iz);
+    const sprint = !!(keys.ShiftLeft || keys.ShiftRight) && mag > 0;
+    player.sprinting = sprint;
+    player.moving = mag > 0;
+
+    if (mag > 0) {
+      ix /= mag;
+      iz /= mag;
+      const targetYaw = Math.atan2(ix, iz);
+      player.moveYaw = angLerp(player.moveYaw, targetYaw, 1 - Math.exp(-18 * dt));
+      player.yaw = angLerp(player.yaw, targetYaw, 1 - Math.exp(-16 * dt));
+      const speed = sprint ? 5.0 : 3.2;
+      const mv = Hall.moveCircle(player.x, player.z, ix * speed * dt, iz * speed * dt, CFG.PLAYER.r);
+      player.x = mv.x;
+      player.z = mv.z;
+    } else {
+      player.moveYaw = player.yaw;
+    }
+    player.aimYaw = player.yaw;
+    player.headWorldYaw = player.yaw;
+    player.headYaw = 0;
+    player.animT += dt * (sprint ? 1.35 : 1);
+    player.swayT += dt;
+    player.moveBlend += ((player.moving ? 1 : 0) - player.moveBlend) * (1 - Math.exp(-8 * dt));
+    player.sprintBlend += ((sprint ? 1 : 0) - player.sprintBlend) * (1 - Math.exp(-10 * dt));
+
+    const near = Hall.nearest(player.x, player.z);
+    const nearId = near ? near.id : '';
+    const oldId = hallNear ? hallNear.id : '';
+    if (nearId !== oldId) {
+      hallNear = near;
+      hallPromptFor(hallNear);
+    }
+
+    if (hallFlashT > 0) {
+      hallFlashT = Math.max(0, hallFlashT - dt);
+      if (hallFlashT <= 0) hallFlashId = '';
+    }
+    if (hallToastT > 0) {
+      hallToastT = Math.max(0, hallToastT - dt);
+      if (hallToastT <= 0) {
+        const toast = $('hallToast');
+        if (toast) toast.classList.remove('show');
+      }
+    }
+  }
+
+  /* 大厅镜头：跟随玩家，但焦点向房间中心偏移，保证相机始终留在墙内侧 */
+  function updateHallCamera(dt) {
+    const k = 1 - Math.exp(-8 * dt);
+    CAM.focus[0] = lerp(CAM.focus[0], player.x * 0.55, k);
+    CAM.focus[1] = lerp(CAM.focus[1], 1.05, k);
+    CAM.focus[2] = lerp(CAM.focus[2], player.z * 0.55 - 0.9, k);
+    const p = CAM.pitch * Math.PI / 180;
+    CAM.eye[0] = CAM.focus[0];
+    CAM.eye[1] = CAM.focus[1] + Math.sin(p) * CAM.dist;
+    CAM.eye[2] = CAM.focus[2] + Math.cos(p) * CAM.dist;
+    CAM.tanHalf = Math.tan(CAM.fov * Math.PI / 360);
+    R.setCamera(CAM.eye, CAM.focus, CAM.fov);
+  }
+
+  function renderHall() {
+    R.setVision(null);
+    R.begin();
+    const geo = R.dyn;
+    /* 玩家脚下的定位环：俯视时让角色位置更清楚 */
+    geo.arc(player.x, player.z, 0.38, 0.48, 0, Math.PI * 2, 0.058, [0.62, 0.45, 0.20], 18);
+    const stance = MODELS.bodyStance(player.animT, player.sprinting, player.moving, player.sprintBlend);
+    stance.yaw *= player.moveBlend;
+    stance.shift *= player.moveBlend;
+    const unit = {
+      x: player.x, y: 0.02, z: player.z, yaw: player.yaw,
+      moving: player.moving, animT: player.animT,
+      moveYaw: player.moveYaw,
+      sprint: player.sprinting,
+      headYaw: player.headYaw,
+      swayT: player.swayT, moveBlend: player.moveBlend, swayPhase: 0,
+      sprintMix: player.sprintBlend,
+      bodySway: stance.yaw, bodyShift: stance.shift,
+      deadT: 0
+    };
+    MODELS.drawUnit(geo, player.charKey, unit);
+    if (R.unitMask) MODELS.drawUnit(R.unitMask, player.charKey, unit);
+    if (R.overlay) {
+      const ovUnit = {};
+      for (const k in unit) ovUnit[k] = unit[k];
+      ovUnit.overlay = true;
+      MODELS.drawUnit(R.overlay, player.charKey, ovUnit);
+    }
+    Hall.drawDynamic(geo, hallT,
+      hallNear ? hallNear.id : '',
+      hallFlashId,
+      hallFlashT > 0 ? hallFlashT / 0.65 : 0);
+    R.end();
+  }
+
   /* ---------- 训练场配装台 ---------- */
   function trainingPad() {
     return (testMap && World.test && World.test.loadout) ? World.test.loadout : null;
@@ -5560,6 +5734,7 @@ const G = (function () {
 
   function toLobby() {
     if (mode === 'lobby') return;
+    hideHallUi();
     closeTrainingLoadout();
     setMouseLock(false);
     mouse.autoLockPending = false;
@@ -5690,6 +5865,10 @@ const G = (function () {
       if (mode === 'lobby') {
         updateLobbyCamera(dt);
         renderLobby();
+      } else if (mode === 'hall') {
+        updateHall(dt);
+        updateHallCamera(dt);
+        renderHall();
       } else {
         update(dt);
         updateCamera(dt);
@@ -5718,6 +5897,8 @@ const G = (function () {
 
   function bindUi() {
     $('againBtn').addEventListener('click', toLobby);
+    const hallExit = $('hallExit');
+    if (hallExit) hallExit.addEventListener('click', function () { leaveHall(); });
     $('resumeBtn').addEventListener('click', function () {
       setPause(false);
       armMouseLock();
@@ -5794,6 +5975,14 @@ const G = (function () {
       requestAnimationFrame(frame);
       $('loading').classList.add('hidden');
 
+      if (typeof StartMenu !== 'undefined') {
+        StartMenu.init();
+        StartMenu.setOnChoose(function (choice) {
+          if (choice === 'hall') enterHall();
+        });
+        StartMenu.show();
+      }
+
       devBoot();
     } catch (err) {
       const el = $('loading');
@@ -5829,6 +6018,7 @@ const G = (function () {
 
   function devGo(kind) {
     if (kind === 'lobby') return;
+    if (kind === 'hall') { enterHall(); return; }
     if (kind === 'test') {
       beginMission({ testMap: true, character: Store.char() });
       return;
@@ -5905,6 +6095,7 @@ const G = (function () {
       player: player,
       cam: CAM,
       get enemies() { return enemies; },
+      get bullets() { return bullets; },
       get beams() { return beams; },
       get knives() { return knives; },
       get grenades() { return grenades; },
